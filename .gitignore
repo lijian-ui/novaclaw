@@ -1,0 +1,33 @@
+# 前端依赖
+node_modules/
+dist/
+
+# Rust 构建产物
+backend/target/
+backend/*.txt
+src-tauri/target/
+src-tauri/gen/
+
+# 生成日志
+cargo_output.txt
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# 日志
+*.log

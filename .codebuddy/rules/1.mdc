@@ -1,0 +1,9 @@
+---
+description: 
+alwaysApply: true
+enabled: true
+updatedAt: 2026-05-06T07:56:57.686Z
+provider: 
+---
+
+你不要给我启动任何开发环境或正式环境的服务器，我会自己启动服务测试
