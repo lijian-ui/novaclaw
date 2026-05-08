@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 
 use crate::agent::runtime::AgentRuntime;
 use crate::agent::AgentSession;
+use crate::storage;
 use crate::APP_STATE;
 
 /// WebSocket 升级处理
@@ -31,7 +32,7 @@ async fn handle_chat_socket(socket: WebSocket) {
     };
 
     // 解析初始化消息: {"type":"send","data":{"message":"...","model":"...","session_id":"..."}}
-    let (user_message, model_name, _session_id) = match serde_json::from_str::<serde_json::Value>(&init_msg)
+    let (user_message, model_name, session_id_opt) = match serde_json::from_str::<serde_json::Value>(&init_msg)
     {
         Ok(val) => {
             let msg = val["data"]["message"].as_str().unwrap_or("").to_string();
@@ -67,6 +68,14 @@ async fn handle_chat_socket(socket: WebSocket) {
     }
 
     tracing::info!("WebSocket 对话: {:?}", &user_message[..user_message.len().min(50)]);
+
+    // 从用户消息提取简洁标题
+    fn make_session_title(msg: &str) -> String {
+        let cleaned: String = msg.chars().take(50).collect();
+        let cleaned = cleaned.replace('\r', " ").replace('\n', " ");
+        let trimmed = cleaned.trim().to_string();
+        if trimmed.is_empty() { "新对话".to_string() } else { trimmed }
+    }
 
     // 获取配置并构建 Agent
     let state = APP_STATE.read().await;
@@ -119,23 +128,93 @@ async fn handle_chat_socket(socket: WebSocket) {
     let agent_task = {
         let sender = Arc::clone(&ws_sender);
         let user_msg = user_message.clone();
+        let sid = session_id_opt.clone();
         tokio::spawn(async move {
             let mut _build_tx = None;
             // 保存 step_tx 用于 runtime
             _build_tx = Some(step_tx);
 
             let result = runtime.run_turn(&user_msg, _build_tx).await;
+            let model = runtime.session().model.clone();
 
             // 发送最终结果
             let mut sender = sender.lock().await;
             match result {
                 Ok(agent_result) => {
+                    // ---- 持久化会话消息到 SessionStore ----
+                    let state = APP_STATE.read().await;
+
+                    // 1. 解析或创建会话
+                    let session_title = make_session_title(&user_msg);
+                    let resolved_sid = if let Some(ref existing_sid) = sid {
+                        if let Ok(mut existing_session) = state.session_store.get_session(existing_sid) {
+                            // 如果会话名称是默认占位符，用用户消息自动更新
+                            if existing_session.name == "新任务" || existing_session.name == "New Session" {
+                                existing_session.name = session_title.clone();
+                                let _ = state.session_store.update_session(&existing_session);
+                            }
+                            existing_sid.clone()
+                        } else {
+                            tracing::warn!("会话 {} 不存在，创建新会话", existing_sid);
+                            match state.session_store.create_session(&session_title, Some(&model)) {
+                                Ok(s) => s.id,
+                                Err(e) => {
+                                    let _ = sender
+                                        .send(Message::Text(
+                                            serde_json::json!({
+                                                "type": "error",
+                                                "data": {"message": format!("创建会话失败: {}", e)}
+                                            })
+                                            .to_string(),
+                                        ))
+                                        .await;
+                                    return;
+                                }
+                            }
+                        }
+                    } else {
+                        match state.session_store.create_session(&session_title, Some(&model)) {
+                            Ok(s) => s.id,
+                            Err(e) => {
+                                let _ = sender
+                                    .send(Message::Text(
+                                        serde_json::json!({
+                                            "type": "error",
+                                            "data": {"message": format!("创建会话失败: {}", e)}
+                                        })
+                                        .to_string(),
+                                    ))
+                                    .await;
+                                return;
+                            }
+                        }
+                    };
+
+                    // 2. 保存所有对话消息到 SessionStore
+                    let now = chrono::Utc::now().to_rfc3339();
+                    for agent_msg in &agent_result.messages {
+                        let storage_msg = storage::Message {
+                            id: uuid::Uuid::new_v4().to_string(),
+                            session_id: resolved_sid.clone(),
+                            role: agent_msg.role.clone(),
+                            content: agent_msg.content.clone(),
+                            created_at: now.clone(),
+                            metadata: None,
+                        };
+                        if let Err(e) = state.session_store.append_message(&resolved_sid, &storage_msg) {
+                            tracing::error!("保存消息到会话失败: {} (会话: {})", e, resolved_sid);
+                        }
+                    }
+                    drop(state);
+
+                    tracing::info!("会话消息已持久化: {} ({} 条)", resolved_sid, agent_result.messages.len());
+
                     let _ = sender
                         .send(Message::Text(
                             serde_json::json!({
                                 "type": "done",
                                 "data": {
-                                    "session_id": agent_result.session_id,
+                                    "session_id": resolved_sid,
                                     "content": agent_result.content,
                                     "iterations": agent_result.iterations,
                                 }

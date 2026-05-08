@@ -20,6 +20,8 @@ import {
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
 import { useApi } from '@/hooks/useApi'
+import { useChat } from '@/contexts/ChatContext'
+import type { Session } from '@/types'
 import openaiIcon from '@/assets/OpenAI.svg'
 import lmStudioIcon from '@/assets/lm-studio.png'
 import ollamaIcon from '@/assets/ollama.png'
@@ -64,6 +66,15 @@ function genId() {
 }
 
 export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
+  const { currentSession, setCurrentSession } = useChat()
+  const sessionIdRef = useRef<string | undefined>(undefined)
+  const userContentRef = useRef('') // 保存用户消息用于标题生成
+
+  // 同步 currentSession 到 ref，避免 useCallback 依赖变化
+  useEffect(() => {
+    sessionIdRef.current = currentSession?.id
+  }, [currentSession])
+
   const [modelOpen, setModelOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [input, setInput] = useState('')
@@ -154,12 +165,25 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
     return opt ? getProviderIcon(opt.providerId) : undefined
   }, [selectedModel, modelOptions])
 
+  // 从用户消息中提取简洁标题
+  function makeTitle(text: string): string {
+    let title = text.replace(/[\r\n]+/g, ' ').trim()
+    // 移除常见问候前缀
+    title = title.replace(/^(你好|hello|hi|hey|您好)[\s,，!！\.]*/i, '')
+    // 截断到合理长度
+    if (title.length > 50) {
+      title = title.slice(0, 47) + '...'
+    }
+    return title || '新对话'
+  }
+
   // Pure WebSocket streaming – no mock fallback
   const startStreaming = useCallback((userContent: string) => {
     setIsStreaming(true)
     setStreamingContent('')
     setStreamError(null)
     streamingContentRef.current = ''
+    userContentRef.current = userContent // 保存用户消息用于标题
 
     const ws = connectChatStream(
       null,
@@ -167,13 +191,23 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
         streamingContentRef.current += chunk
         setStreamingContent(streamingContentRef.current)
       },
-      (finalContent?: string) => {
+      (result: { content?: string; sessionId?: string }) => {
         setIsStreaming(false)
-        // 始终使用 streamingContentRef.current（包含完整的思考块），
-        // 避免 finalContent 是后端返回的摘要文本（可能丢失 <think> 块）
-        const content = streamingContentRef.current || finalContent || ''
+        const content = streamingContentRef.current || result.content || ''
         if (content) {
           setMessages(prev => [...prev, { id: genId(), role: 'assistant', content }])
+        }
+        // 如果后端返回了新的 session_id（首次对话自动创建），更新 ChatContext
+        if (result.sessionId && result.sessionId !== sessionIdRef.current) {
+          const title = makeTitle(userContentRef.current)
+          setCurrentSession({
+            id: result.sessionId,
+            name: title,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            model: selectedModel === 'Auto' ? '' : selectedModel,
+          })
+          sessionIdRef.current = result.sessionId
         }
         setStreamingContent('')
         streamingContentRef.current = ''
@@ -202,12 +236,15 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
       },
     )
 
+    // 获取当前 session_id（若无则用 undefined 让后端自动创建）
+    const sessionId = sessionIdRef.current
+
     // 等待 WebSocket 连接建立后再发送消息
     if (ws.readyState === WebSocket.OPEN) {
-      sendChatMessage(userContent, selectedModel === 'Auto' ? undefined : selectedModel)
+      sendChatMessage(userContent, selectedModel === 'Auto' ? undefined : selectedModel, sessionId)
     } else if (ws.readyState === WebSocket.CONNECTING) {
       ws.addEventListener('open', () => {
-        sendChatMessage(userContent, selectedModel === 'Auto' ? undefined : selectedModel)
+        sendChatMessage(userContent, selectedModel === 'Auto' ? undefined : selectedModel, sessionId)
       }, { once: true })
     } else {
       setIsStreaming(false)

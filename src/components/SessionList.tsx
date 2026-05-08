@@ -1,6 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Plus, Trash2, MessageSquare } from 'lucide-react'
-import { Button } from '@/components/ui/Button'
 import { useChat } from '@/contexts/ChatContext'
 import { useApi } from '@/hooks/useApi'
 import type { Session } from '@/types'
@@ -10,10 +9,20 @@ export function SessionList() {
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null)
   const { currentSession, setCurrentSession, setMessages } = useChat()
   const { listSessions, createSession, deleteSession, getMessages } = useApi()
+  const initialLoadDone = useRef(false)
 
   useEffect(() => {
-    loadSessions()
+    loadSessions().then(() => { initialLoadDone.current = true })
   }, [])
+
+  // 当 currentSession 指向一个列表中不存在的会话时（如首次对话自动创建），刷新列表
+  useEffect(() => {
+    if (!initialLoadDone.current || !currentSession) return
+    if (!sessions.some(s => s.id === currentSession.id)) {
+      loadSessions()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentSession])
 
   const loadSessions = async () => {
     try {
@@ -31,7 +40,8 @@ export function SessionList() {
 
   const handleCreateSession = async () => {
     try {
-      const session = await createSession('New Session')
+      // 创建新任务，标题会在首次对话时根据用户消息自动生成
+      const session = await createSession('新任务')
       if (session && session.id) {
         setSessions(prev => [session, ...prev])
         setCurrentSession(session)
@@ -86,11 +96,14 @@ export function SessionList() {
     <div className="h-full flex flex-col">
       <div className="p-4 border-b border-border">
         <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold">会话列表</h2>
-          <Button size="sm" onClick={handleCreateSession}>
-            <Plus className="w-4 h-4 mr-1" />
-            新建
-          </Button>
+          <h2 className="text-lg font-semibold">任务列表</h2>
+          <button
+            onClick={handleCreateSession}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-foreground/5 hover:bg-foreground/10 transition-colors text-sm"
+          >
+            <Plus className="w-4 h-4 text-foreground/70" />
+            <span className="text-foreground/80 font-medium">新任务</span>
+          </button>
         </div>
       </div>
 
@@ -117,17 +130,15 @@ export function SessionList() {
                   <p className="font-medium truncate">{session.name}</p>
                   <p className="text-xs opacity-70">{formatDate(session.updated_at)}</p>
                 </div>
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="ml-2 opacity-0 group-hover:opacity-100"
+                <button
+                  className="ml-2 opacity-0 group-hover:opacity-100 p-1 rounded-md hover:bg-foreground/10 transition-colors"
                   onClick={(e) => {
                     e.stopPropagation()
                     setDeleteTarget(session)
                   }}
                 >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
+                  <Trash2 className="w-4 h-4 text-foreground/50" />
+                </button>
               </div>
             ))}
           </div>

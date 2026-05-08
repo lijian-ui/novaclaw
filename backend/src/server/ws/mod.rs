@@ -1,6 +1,7 @@
 pub mod chat;
 pub mod terminal;
 pub mod logs;
+pub mod files;
 
 use axum::Router;
 
@@ -9,5 +10,6 @@ pub fn build() -> Router {
     Router::new()
         .merge(chat::routes())
         .merge(terminal::routes())
+        .merge(files::routes())
         .merge(logs::routes())
 }

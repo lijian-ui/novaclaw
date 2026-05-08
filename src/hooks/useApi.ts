@@ -52,10 +52,12 @@ export function useApi() {
     _sessionId: string | null,
     onChunk: (text: string) => void,
     /**
-     * @param finalContent - 后端的最终响应文本（仅最后一轮迭代），
-     *                       应优先使用此内容而非 streamingContentRef.current（累积了所有轮次）
+     * @param result - 包含 content 和可选的 sessionId
+     * content: 后端的最终响应文本（仅最后一轮迭代），
+     *         应优先使用 streamingContentRef.current（累积了所有轮次）
+     * sessionId: 后端创建的会话 ID（首次对话时自动创建）
      */
-    onDone: (finalContent?: string) => void,
+    onDone: (result: { content?: string; sessionId?: string }) => void,
     onError: (err: string) => void,
     onAgentStep?: (step: { stepType: string; content: string; toolName?: string; toolResult?: string; turn: number; maxTurns: number }) => void,
   ) => {
@@ -81,8 +83,10 @@ export function useApi() {
             maxTurns: payload?.max_turns || 20,
           })
         } else if (data.type === 'done') {
-          // 传递后端返回的最终 content（仅最后一轮迭代的文本），避免使用累积了所有轮次的 streamingContentRef
-          onDone(payload?.content || '')
+          onDone({
+            content: payload?.content || '',
+            sessionId: payload?.session_id || undefined,
+          })
         } else if (data.type === 'error') {
           onError(payload?.message || data.data?.message || '未知错误')
         }
@@ -103,14 +107,14 @@ export function useApi() {
   }, [])
 
   // 后端协议：{"type":"send","data":{"message":"...","model":"...","session_id":"..."}}
-  const sendChatMessage = useCallback((message: string, model?: string) => {
+  const sendChatMessage = useCallback((message: string, model?: string, sessionId?: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
+      const data: Record<string, string> = { message }
+      if (model) data.model = model
+      if (sessionId) data.session_id = sessionId
       wsRef.current.send(JSON.stringify({
         type: 'send',
-        data: {
-          message,
-          ...(model ? { model } : {}),
-        },
+        data,
       }))
     }
   }, [])
@@ -156,7 +160,8 @@ export function useApi() {
     setError(null)
     try {
       const response = await api.get('/sessions')
-      return response.data
+      // 后端返回 { success: true, data: [...] }
+      return response.data?.data || []
     } catch (err) {
       handleError(err)
       throw err
@@ -170,7 +175,8 @@ export function useApi() {
     setError(null)
     try {
       const response = await api.post('/sessions', { name, model })
-      return response.data
+      // 后端返回 { success: true, data: { id: ..., name: ... } }
+      return response.data?.data || response.data
     } catch (err) {
       handleError(err)
       throw err
@@ -184,7 +190,7 @@ export function useApi() {
     setError(null)
     try {
       const response = await api.get(`/sessions/${id}`)
-      return response.data
+      return response.data?.data || response.data
     } catch (err) {
       handleError(err)
       throw err
@@ -211,7 +217,8 @@ export function useApi() {
     setError(null)
     try {
       const response = await api.get(`/sessions/${sessionId}/messages`)
-      return response.data
+      // 后端返回 { success: true, data: [...] }
+      return response.data?.data || []
     } catch (err) {
       handleError(err)
       throw err

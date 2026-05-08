@@ -1,5 +1,6 @@
 use axum::{routing::post, Json, Router};
 use serde::Deserialize;
+use crate::storage;
 use crate::APP_STATE;
 
 #[derive(Deserialize)]
@@ -27,13 +28,33 @@ async fn chat(Json(req): Json<ChatRequest>) -> Json<serde_json::Value> {
     let session_id = match &req.session_id {
         Some(id) => id.clone(),
         None => {
-            let session_name = &req.message[..req.message.len().min(50)];
-            match state.session_store.create_session(session_name, req.model.as_deref()) {
+            // 从用户消息提取标题
+            let session_name: String = req.message
+                .chars().take(50).collect::<String>()
+                .replace('\r', " ").replace('\n', " ")
+                .trim().to_string();
+            let session_name = if session_name.is_empty() { "新对话".to_string() } else { session_name };
+            match state.session_store.create_session(&session_name, req.model.as_deref()) {
                 Ok(session) => session.id,
                 Err(e) => return Json(serde_json::json!({ "success": false, "message": e.to_string() })),
             }
         }
     };
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    // 保存用户消息到会话
+    let _ = state.session_store.append_message(
+        &session_id,
+        &storage::Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            session_id: session_id.clone(),
+            role: "user".to_string(),
+            content: req.message.clone(),
+            created_at: now.clone(),
+            metadata: None,
+        },
+    );
 
     // 构建 Agent 运行时
     let model = req.model.as_deref().unwrap_or(&state.models_config.default_model);
@@ -72,19 +93,21 @@ async fn chat(Json(req): Json<ChatRequest>) -> Json<serde_json::Value> {
     // 执行非流式对话
     match runtime.run_turn(&req.message, None).await {
         Ok(result) => {
-            // 保存消息到会话
+            // 保存所有对话消息到会话（用户消息已在前面保存，跳过重复的 user 消息）
             let state = APP_STATE.read().await;
-            let _ = state.session_store.append_message(
-                &session_id,
-                &crate::storage::Message {
+            for agent_msg in &result.messages {
+                if agent_msg.role == "user" { continue; } // 已在前面保存
+                let storage_msg = storage::Message {
                     id: uuid::Uuid::new_v4().to_string(),
                     session_id: session_id.clone(),
-                    role: "assistant".to_string(),
-                    content: result.content.clone(),
-                    created_at: chrono::Utc::now().to_rfc3339(),
+                    role: agent_msg.role.clone(),
+                    content: agent_msg.content.clone(),
+                    created_at: now.clone(),
                     metadata: None,
-                },
-            );
+                };
+                let _ = state.session_store.append_message(&session_id, &storage_msg);
+            }
+            drop(state);
 
             Json(serde_json::json!({
                 "success": true,

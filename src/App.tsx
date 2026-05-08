@@ -5,10 +5,11 @@ import { ChatPanel } from '@/components/ChatPanel'
 import { Dashboard } from '@/pages/Dashboard'
 import { FileExplorer } from '@/components/FileExplorer'
 import { FileEditor } from '@/components/FileEditor'
+import { useFileEditor } from '@/hooks/useFileEditor'
 
-// 初始宽度比例：边栏10% / 聊天40% / 主控台40% / 文件10%
+// 初始宽度比例：边栏10% / 聊天40% / 主控台40% / 文件22%
 const INITIAL_CHAT_PERCENT = 0.40
-const INITIAL_FILE_PERCENT = 0.10
+const INITIAL_FILE_PERCENT = 0.15
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -16,16 +17,19 @@ function App() {
   const [fileWidth, setFileWidth] = useState(0)
   const [draggingTarget, setDraggingTarget] = useState<'chat' | 'file' | null>(null)
   const [activeTool, setActiveTool] = useState<string | null>(null)
-  const [openedFile, setOpenedFile] = useState<{ path: string; content: string } | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const handleFileOpen = useCallback((path: string, content: string) => {
-    setOpenedFile({ path, content })
-  }, [])
+  const {
+    tabs, activeTab, activePath, openFile, closeTab, updateContent, saveCurrent, switchTab,
+  } = useFileEditor()
+
+  const handleFileOpen = useCallback((path: string) => {
+    openFile(path)
+  }, [openFile])
 
   const handleEditorBack = useCallback(() => {
-    setOpenedFile(null)
-  }, [])
+    if (activePath) closeTab(activePath)
+  }, [activePath, closeTab])
 
   const openFilePanel = useCallback(() => {
     setFileWidth(Math.round(window.innerWidth * INITIAL_FILE_PERCENT))
@@ -83,6 +87,17 @@ function App() {
     setDraggingTarget(null)
   }, [])
 
+  // 全局阻止浏览器默认 Ctrl+S 行为
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault()
+      }
+    }
+    document.addEventListener('keydown', handler)
+    return () => document.removeEventListener('keydown', handler)
+  }, [])
+
   useEffect(() => {
     if (draggingTarget) {
       document.addEventListener('mousemove', handleMouseMove)
@@ -124,12 +139,14 @@ function App() {
 
       {/* Main Content */}
       <div className="flex-1 min-w-0">
-        {openedFile ? (
+        {activeTab ? (
           <FileEditor
-            filePath={openedFile.path}
-            content={openedFile.content}
-            language={openedFile.path.split('.').pop() || ''}
-            onBack={handleEditorBack}
+            tabs={tabs}
+            activeTab={activeTab}
+            onUpdateContent={updateContent}
+            onSave={saveCurrent}
+            onCloseTab={closeTab}
+            onSwitchTab={switchTab}
           />
         ) : (
           <Routes>

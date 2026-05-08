@@ -1,4 +1,78 @@
+use serde::Serialize;
+use std::path::Path;
+
 use novaclaw_backend::APP_STATE;
+
+/// 文件条目（用于详细目录列表）
+#[derive(Serialize)]
+pub struct FileEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified: String,
+    pub extension: String,
+}
+
+/// 读取本地文件内容
+#[tauri::command]
+pub async fn read_file(path: String) -> Result<String, String> {
+    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
+}
+
+/// 写入本地文件内容
+#[tauri::command]
+pub async fn write_file(path: String, content: String) -> Result<(), String> {
+    if let Some(parent) = Path::new(&path).parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    }
+    std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))
+}
+
+/// 创建目录
+#[tauri::command]
+pub async fn create_directory(path: String) -> Result<(), String> {
+    std::fs::create_dir_all(&path).map_err(|e| format!("创建目录失败: {}", e))
+}
+
+/// 删除文件或空目录
+#[tauri::command]
+pub async fn delete_path(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err("路径不存在".to_string());
+    }
+    if p.is_dir() {
+        std::fs::remove_dir_all(&path).map_err(|e| format!("删除目录失败: {}", e))
+    } else {
+        std::fs::remove_file(&path).map_err(|e| format!("删除文件失败: {}", e))
+    }
+}
+
+/// 重命名文件或目录
+#[tauri::command]
+pub async fn rename_path(old_path: String, new_path: String) -> Result<(), String> {
+    std::fs::rename(&old_path, &new_path).map_err(|e| format!("重命名失败: {}", e))
+}
+
+/// 读取目录列表（简略版，返回 "名称 (dir/file)" 格式）
+#[tauri::command]
+pub async fn list_directory(path: String) -> Result<Vec<String>, String> {
+    let mut entries = Vec::new();
+    match std::fs::read_dir(&path) {
+        Ok(dir) => {
+            for entry in dir.flatten() {
+                let file_type = entry.file_type().map(|ft| {
+                    if ft.is_dir() { "dir" } else { "file" }
+                }).unwrap_or("unknown");
+                let name = entry.file_name().to_string_lossy().to_string();
+                entries.push(format!("{} ({})", name, file_type));
+            }
+        }
+        Err(e) => return Err(format!("读取目录失败: {}", e)),
+    }
+    Ok(entries)
+}
 
 /// 获取应用配置（从文件重新加载后返回 JSON 字符串）
 #[tauri::command]
@@ -16,14 +90,11 @@ pub async fn get_config_json() -> Result<String, String> {
 pub async fn save_config_json(config_json: String) -> Result<(), String> {
     let config: novaclaw_backend::config::AppConfig =
         serde_json::from_str(&config_json).map_err(|e| format!("反序列化错误: {}", e))?;
-
     let mut state = APP_STATE.write().await;
     state.config = config;
     state.config.save().map_err(|e| format!("保存失败: {}", e))?;
-
     let reloaded = novaclaw_backend::config::AppConfig::reload();
     state.config = reloaded;
-
     tracing::info!("Tauri 项目配置已保存并重新加载");
     Ok(())
 }
@@ -44,54 +115,13 @@ pub async fn get_models_json() -> Result<String, String> {
 pub async fn save_models_json(models_json: String) -> Result<(), String> {
     let config: novaclaw_backend::config::ModelsConfig =
         serde_json::from_str(&models_json).map_err(|e| format!("反序列化错误: {}", e))?;
-
     let mut state = APP_STATE.write().await;
     state.models_config = config;
     state.models_config.save().map_err(|e| format!("保存失败: {}", e))?;
-
     let reloaded = novaclaw_backend::config::ModelsConfig::reload();
     state.models_config = reloaded;
-
     tracing::info!("Tauri 模型配置已保存并重新加载");
     Ok(())
-}
-
-/// 读取本地文件内容
-#[tauri::command]
-pub async fn read_file(path: String) -> Result<String, String> {
-    std::fs::read_to_string(&path).map_err(|e| format!("读取文件失败: {}", e))
-}
-
-/// 写入本地文件内容
-#[tauri::command]
-pub async fn write_file(path: String, content: String) -> Result<(), String> {
-    if let Some(parent) = std::path::Path::new(&path).parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
-    }
-    std::fs::write(&path, &content).map_err(|e| format!("写入文件失败: {}", e))
-}
-
-/// 读取目录列表
-#[tauri::command]
-pub async fn list_directory(path: String) -> Result<Vec<String>, String> {
-    let mut entries = Vec::new();
-    match std::fs::read_dir(&path) {
-        Ok(dir) => {
-            for entry in dir.flatten() {
-                let file_type = entry.file_type().map(|ft| {
-                    if ft.is_dir() {
-                        "dir"
-                    } else {
-                        "file"
-                    }
-                }).unwrap_or("unknown");
-                let name = entry.file_name().to_string_lossy().to_string();
-                entries.push(format!("{} ({})", name, file_type));
-            }
-        }
-        Err(e) => return Err(format!("读取目录失败: {}", e)),
-    }
-    Ok(entries)
 }
 
 /// 获取数据目录（基础目录）
@@ -134,20 +164,12 @@ pub async fn get_sessions_dir() -> Result<String, String> {
 #[tauri::command]
 pub fn get_system_info() -> serde_json::Value {
     serde_json::json!({
-        "os": if cfg!(target_os = "windows") {
-            "windows"
-        } else if cfg!(target_os = "macos") {
-            "macos"
-        } else {
-            "linux"
-        },
-        "arch": if cfg!(target_arch = "x86_64") {
-            "x86_64"
-        } else if cfg!(target_arch = "aarch64") {
-            "aarch64"
-        } else {
-            "unknown"
-        },
+        "os": if cfg!(target_os = "windows") { "windows" }
+              else if cfg!(target_os = "macos") { "macos" }
+              else { "linux" },
+        "arch": if cfg!(target_arch = "x86_64") { "x86_64" }
+                else if cfg!(target_arch = "aarch64") { "aarch64" }
+                else { "unknown" },
         "timestamp": chrono::Utc::now().to_rfc3339(),
     })
 }
@@ -187,4 +209,59 @@ pub async fn maximize_window(window: tauri::Window) -> Result<(), String> {
 #[tauri::command]
 pub async fn close_window(window: tauri::Window) -> Result<(), String> {
     window.hide().map_err(|e| e.to_string())
+}
+
+/// 读取目录列表（详细版，返回结构化文件条目）
+#[tauri::command]
+pub async fn list_directory_detailed(path: String) -> Result<Vec<FileEntry>, String> {
+    let dir_path = Path::new(&path);
+    let mut entries = Vec::new();
+
+    match std::fs::read_dir(dir_path) {
+        Ok(dir) => {
+            for entry in dir.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with('.') || name == "node_modules" {
+                    continue;
+                }
+                let full_path = entry.path();
+                let path_str = full_path.to_string_lossy().to_string();
+                let metadata = entry.metadata().ok();
+                let is_dir = full_path.is_dir();
+                let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                let modified = metadata
+                    .and_then(|m| m.modified().ok())
+                    .map(|t| {
+                        let dt: chrono::DateTime<chrono::Utc> = t.into();
+                        dt.to_rfc3339()
+                    })
+                    .unwrap_or_default();
+                let extension = full_path
+                    .extension()
+                    .map(|e| e.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                entries.push(FileEntry {
+                    name,
+                    path: path_str,
+                    is_dir,
+                    size,
+                    modified,
+                    extension,
+                });
+            }
+        }
+        Err(e) => return Err(format!("读取目录失败: {}", e)),
+    }
+
+    // 目录在前，文件在后
+    entries.sort_by(|a, b| {
+        if a.is_dir != b.is_dir {
+            b.is_dir.cmp(&a.is_dir)
+        } else {
+            a.name.to_lowercase().cmp(&b.name.to_lowercase())
+        }
+    });
+
+    Ok(entries)
 }
