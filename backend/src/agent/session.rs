@@ -43,7 +43,13 @@ pub struct AgentMessage {
     /// 工具名称（tool 消息用）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
-    /// 推理内容（CoT）
+    /// 第一次思考内容（CoT）- 用于前端显示为"思考过程"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_reasoning: Option<String>,
+    /// 后续思考内容数组（CoT）- 用于前端显示为"Thought"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasonings: Option<Vec<String>>,
+    /// 兼容旧字段：完整的推理内容（已废弃，请使用 first_reasoning 和 reasonings）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
 }
@@ -89,6 +95,8 @@ impl AgentSession {
             tool_calls: None,
             tool_call_id: None,
             tool_name: None,
+            first_reasoning: None,
+            reasonings: None,
             reasoning: None,
         });
     }
@@ -101,6 +109,8 @@ impl AgentSession {
             tool_calls,
             tool_call_id: None,
             tool_name: None,
+            first_reasoning: None,
+            reasonings: None,
             reasoning: None,
         });
     }
@@ -113,6 +123,8 @@ impl AgentSession {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.to_string()),
             tool_name: Some(tool_name.to_string()),
+            first_reasoning: None,
+            reasonings: None,
             reasoning: None,
         });
     }
@@ -141,6 +153,8 @@ impl AgentSession {
             tool_calls: None,
             tool_call_id: None,
             tool_name: None,
+            first_reasoning: None,
+            reasonings: None,
             reasoning: None,
         };
 

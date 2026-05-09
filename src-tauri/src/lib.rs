@@ -81,6 +81,7 @@ pub fn run() {
             cmd::create_directory,
             cmd::delete_path,
             cmd::rename_path,
+            cmd::copy_path,
             cmd::list_directory,
             cmd::list_directory_detailed,
             cmd::get_data_dir,
@@ -95,6 +96,11 @@ pub fn run() {
             cmd::minimize_window,
             cmd::maximize_window,
             cmd::close_window,
+            cmd::terminal_spawn,
+            cmd::terminal_exec,
+            cmd::terminal_write,
+            cmd::terminal_kill,
+            cmd::terminal_resize,
         ])
         .run(tauri::generate_context!())
         .expect("运行 Tauri 应用时发生错误");

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import type { FileEntry } from '@/types/fileEditor'
 import { getFileWebSocket, onFileWsMessage, sendFileWs } from '@/hooks/useFileWs'
+import { ConfirmDialog } from './ui/ConfirmDialog'
 
 interface FileExplorerProps {
   onFileOpen?: (path: string) => void
@@ -115,19 +116,13 @@ function ContextMenu({
     </button>
   )
 
+  const isDir = entry?.is_dir === true
+  const isEmpty = !entry
+
   return (
     <div ref={menuRef} style={menuStyle} className="bg-mainbg border border-border">
-      {/* On a directory */}
-      {entry?.is_dir && (
-        <>
-          {menuItem('新建文件', <FilePlus className="w-3.5 h-3.5" />, onNewFile)}
-          {menuItem('新建文件夹', <FolderPlus className="w-3.5 h-3.5" />, onNewFolder)}
-          {divider}
-        </>
-      )}
-
-      {/* On empty space (also show new options) */}
-      {!entry && (
+      {/* 新建：目录 / 空区域 / 文件上（在父目录创建） */}
+      {(isDir || isEmpty) && (
         <>
           {menuItem('新建文件', <FilePlus className="w-3.5 h-3.5" />, onNewFile)}
           {menuItem('新建文件夹', <FolderPlus className="w-3.5 h-3.5" />, onNewFolder)}
@@ -184,9 +179,14 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
 
   // ---- 右键菜单 ----
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null)
+  // 用 ref 同步记录右键点击的条目路径，避免异步 state 竞争
+  const contextEntryRef = useRef<{ path: string; isDir: boolean } | null>(null)
 
   // ---- 剪贴板 ----
   const clipboardRef = useRef<{ path: string; isCut: boolean } | null>(null)
+
+  // ---- 删除确认对话框 ----
+  const [deleteConfirm, setDeleteConfirm] = useState<{ path: string; name: string; parentDir: string } | null>(null)
 
   // ---- 共享 WebSocket 消息处理（浏览器模式） ----
   useEffect(() => {
@@ -212,10 +212,30 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
         if (pendingRootRef.current) {
           pendingRootRef.current = false
         }
+      } else if (msg.type === 'dir_changed') {
+        // 目录变更：重新加载该目录
+        const changedPath = msg.path as string
+        // 如果该目录已缓存，重新加载
+        setDirContents(prev => {
+          if (changedPath in prev || changedPath === workspacePath) {
+            setTimeout(() => sendFileWs({ type: 'list', path: changedPath }), 0)
+          }
+          return prev
+        })
       }
     })
 
-    return unsub
+    // 定时轮询：每 3 秒刷新根目录（检测外部创建的文件）
+    const pollTimer = setInterval(() => {
+      getFileWebSocket().then(s => {
+        s.send(JSON.stringify({ type: 'list', path: '' }))
+      })
+    }, 3000)
+
+    return () => {
+      unsub()
+      clearInterval(pollTimer)
+    }
   }, [])
 
   // ---- 获取选中目录的父路径（用于创建时的 parent）----
@@ -231,7 +251,9 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
         try {
           const entries = await tauriInvoke<FileEntry[]>('list_directory_detailed', { path: dirPath })
           setDirContents(prev => ({ ...prev, [dirPath]: entries || [] }))
-        } catch { /* ignore */ }
+        } catch (e) {
+          console.error('加载目录失败:', e)
+        }
         setLoading(false)
       })()
     } else {
@@ -277,7 +299,8 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
   }, [dirContents, loadDir])
 
   // ---- 点击条目 ----
-  const handleClick = useCallback((entry: FileEntry) => {
+  const handleClick = useCallback((e: React.MouseEvent, entry: FileEntry) => {
+    e.stopPropagation()
     setSelectedPath(entry.path)
     setSelectedIsDir(entry.is_dir)
     if (entry.is_dir) {
@@ -294,6 +317,9 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
     if (entry) {
       setSelectedPath(entry.path)
       setSelectedIsDir(entry.is_dir)
+      contextEntryRef.current = { path: entry.path, isDir: entry.is_dir }
+    } else {
+      contextEntryRef.current = null
     }
     setContextMenu({ x: e.clientX, y: e.clientY, entry })
   }, [])
@@ -348,18 +374,21 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
       }
       cancelCreating()
       loadDir(creatingParentPath)
-    } catch { /* ignore */ }
+    } catch (e) {
+      console.error('新建失败:', e)
+    }
   }, [creatingType, creatingName, creatingParentPath, loadDir])
 
   // ---- 重命名 ----
   const startRename = useCallback(() => {
-    if (!selectedPath) return
-    const entry = findEntryByPath(selectedPath, workspacePath, dirContents)
+    const entryPath = contextEntryRef.current?.path
+    if (!entryPath) return
+    const entry = findEntryByPath(entryPath, workspacePath, dirContents)
     if (!entry) return
-    setRenamingPath(selectedPath)
+    setRenamingPath(entryPath)
     setRenamingName(entry.name)
     closeContextMenu()
-  }, [selectedPath, workspacePath, dirContents, closeContextMenu])
+  }, [workspacePath, dirContents, closeContextMenu])
 
   const cancelRename = useCallback(() => {
     setRenamingPath(null)
@@ -382,65 +411,107 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
       }
       cancelRename()
       loadDir(parentDir)
-    } catch { /* ignore */ }
+    } catch (e) {
+      console.error('重命名失败:', e)
+    }
   }, [renamingPath, renamingName, loadDir])
 
   // ---- 删除 ----
-  const handleDelete = useCallback(async () => {
-    if (!selectedPath) return
-    const name = selectedPath.split(selectedPath.includes('\\') ? '\\' : '/').pop() || ''
-    if (!confirm(`确定删除 "${name}" 吗？此操作不可撤销。`)) return
-    const parentDir = selectedPath.substring(0, selectedPath.lastIndexOf(
-      selectedPath.includes('\\') ? '\\' : '/'
+  const handleDelete = useCallback(() => {
+    const entryPath = contextEntryRef.current?.path
+    if (!entryPath) return
+    const name = entryPath.split(entryPath.includes('\\') ? '\\' : '/').pop() || ''
+    const parentDir = entryPath.substring(0, entryPath.lastIndexOf(
+      entryPath.includes('\\') ? '\\' : '/'
     ))
+    setDeleteConfirm({ path: entryPath, name, parentDir })
+  }, [])
+
+  const confirmDeleteAction = useCallback(async () => {
+    if (!deleteConfirm) return
+    const { path: entryPath, parentDir } = deleteConfirm
+    setDeleteConfirm(null)
     try {
       if (isTauri()) {
-        await tauriInvoke('delete_path', { path: selectedPath })
+        await tauriInvoke('delete_path', { path: entryPath })
       } else {
-        await sendFileWs({ type: 'delete', path: selectedPath })
+        await sendFileWs({ type: 'delete', path: entryPath })
         await new Promise(r => setTimeout(r, 300))
       }
       setSelectedPath(null)
       setSelectedIsDir(false)
       closeContextMenu()
       loadDir(parentDir || workspacePath)
-    } catch { /* ignore */ }
-  }, [selectedPath, workspacePath, closeContextMenu, loadDir])
+    } catch (e) {
+      console.error('删除失败:', e)
+    }
+  }, [deleteConfirm, workspacePath, closeContextMenu, loadDir])
 
   // ---- 复制路径 ----
   const handleCopyPath = useCallback(() => {
-    if (!selectedPath) return
-    navigator.clipboard.writeText(selectedPath).catch(() => {})
+    const entryPath = contextEntryRef.current?.path
+    if (!entryPath) return
+    navigator.clipboard.writeText(entryPath).catch(() => {})
     closeContextMenu()
-  }, [selectedPath, closeContextMenu])
+  }, [closeContextMenu])
 
   // ---- 复制到剪贴板 ----
   const handleCopy = useCallback(() => {
-    if (!selectedPath) return
-    clipboardRef.current = { path: selectedPath, isCut: false }
+    const entryPath = contextEntryRef.current?.path
+    if (!entryPath) return
+    clipboardRef.current = { path: entryPath, isCut: false }
     closeContextMenu()
-  }, [selectedPath, closeContextMenu])
+  }, [closeContextMenu])
 
   // ---- 剪切 ----
   const handleCut = useCallback(() => {
-    if (!selectedPath) return
-    clipboardRef.current = { path: selectedPath, isCut: true }
+    const entryPath = contextEntryRef.current?.path
+    if (!entryPath) return
+    clipboardRef.current = { path: entryPath, isCut: true }
     closeContextMenu()
-  }, [selectedPath, closeContextMenu])
+  }, [closeContextMenu])
 
   // ---- 粘贴 ----
   const handlePaste = useCallback(async () => {
     const clip = clipboardRef.current
     if (!clip) return
-    // 目标目录：选中目录或工作区根
-    const targetDir = selectedPath && selectedIsDir ? selectedPath : workspacePath
+    // 目标目录：当前右键的目录 或 选中目录 或 工作区根
+    const ce = contextEntryRef.current
+    const targetDir = (ce?.isDir && ce.path) ? ce.path
+      : (selectedPath && selectedIsDir) ? selectedPath
+      : workspacePath
+    if (!targetDir) return
     const sep = targetDir.includes('\\') ? '\\' : '/'
     const srcName = clip.path.split(clip.path.includes('\\') ? '\\' : '/').pop() || ''
-    const destPath = targetDir ? `${targetDir}${sep}${srcName}` : srcName
-    if (destPath === clip.path) return // 同位置不操作
+    let destName = srcName
+    let destPath = `${targetDir}${sep}${destName}`
+
+    if (clip.isCut) {
+      // 剪切：同位置不操作
+      if (destPath === clip.path) return
+    } else {
+      // 复制：检查目标路径是否已存在，存在则加 _copy 后缀
+      const existingNames = new Set(
+        (dirContents[targetDir] || []).map(e => e.name)
+      )
+      if (existingNames.has(destName)) {
+        const dotIdx = destName.lastIndexOf('.')
+        let base: string, ext: string
+        if (dotIdx > 0) {
+          base = destName.substring(0, dotIdx)
+          ext = destName.substring(dotIdx)
+        } else {
+          base = destName
+          ext = ''
+        }
+        destName = `${base}_copy${ext}`
+        destPath = `${targetDir}${sep}${destName}`
+      }
+    }
+
     try {
       if (clip.isCut) {
-        // 剪切→移动
+        // 剪切→移动（rename）
         if (isTauri()) {
           await tauriInvoke('rename_path', { oldPath: clip.path, newPath: destPath })
         } else {
@@ -450,39 +521,19 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
       } else {
         // 复制→拷贝
         if (isTauri()) {
-          const content = await tauriInvoke<string>('read_file', { path: clip.path })
-          await tauriInvoke('write_file', { path: destPath, content })
+          await tauriInvoke('copy_path', { source: clip.path, dest: destPath })
         } else {
-          // WS 模式：先读后写
-          const content = await readWsFile(clip.path)
-          if (content !== null) {
-            await sendFileWs({ type: 'write', path: destPath, content })
-            await new Promise(r => setTimeout(r, 300))
-          }
+          await sendFileWs({ type: 'copy', path: clip.path, dest: destPath })
+          await new Promise(r => setTimeout(r, 300))
         }
       }
       clipboardRef.current = null
       closeContextMenu()
       loadDir(targetDir)
-    } catch { /* ignore */ }
-  }, [selectedPath, selectedIsDir, workspacePath, closeContextMenu, loadDir])
-
-  // WS 模式读取文件内容（Promise 封装）
-  const readWsFile = useCallback((path: string): Promise<string | null> => {
-    return new Promise((resolve) => {
-      let resolved = false
-      const timeout = setTimeout(() => { if (!resolved) resolve(null) }, 5000)
-      const unsub = onFileWsMessage((msg) => {
-        if (msg.type === 'read_result' && msg.path === path) {
-          resolved = true
-          clearTimeout(timeout)
-          unsub()
-          resolve(msg.success ? (msg.content as string) : null)
-        }
-      })
-      sendFileWs({ type: 'read', path })
-    })
-  }, [])
+    } catch (e) {
+      console.error('粘贴失败:', e)
+    }
+  }, [selectedPath, selectedIsDir, workspacePath, closeContextMenu, loadDir, dirContents])
 
   // ---- 辅助：在 dirContents 中查找 entry ----
   function findEntryByPath(
@@ -496,9 +547,12 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
   }
 
   // ---- 树形递归渲染 ----
-  const renderTree = (entries: FileEntry[], depth: number, parentPath: string) => {
+  // 注意：CreatingInput 的渲染分两部分：
+  //   - 已展开目录下的创建：通过 showCreatingHere 在条目子节点中渲染
+  //   - 根级别创建（creatingParentPath===workspacePath）：由 JSX 中额外注入
+  // 不使用 ref 做去重标记，避免跨递归/跨 re-render 的问题
+  const renderTree = (entries: FileEntry[], depth: number, _parentPath: string) => {
     const items: React.ReactNode[] = []
-    let creatingRendered = false
 
     for (const entry of entries) {
       const isExpanded = expandedDirs.has(entry.path)
@@ -506,8 +560,6 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
       const hasChildren = entry.is_dir
       const children = hasChildren && isExpanded && dirContents[entry.path]
       const showCreatingHere = creatingType && creatingParentPath === entry.path && isExpanded
-
-      if (showCreatingHere) creatingRendered = true
 
       items.push(
         <div key={entry.path}>
@@ -519,7 +571,7 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
                 : 'hover:bg-foreground/5 text-foreground/70'
             }`}
             style={{ paddingLeft: `${12 + depth * 16}px` }}
-            onClick={() => handleClick(entry)}
+            onClick={(e) => handleClick(e, entry)}
             onContextMenu={(e) => handleContextMenu(e, entry)}
           >
             {/* 展开箭头 / 占位 */}
@@ -581,7 +633,7 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
             )
           )}
 
-          {/* 新建输入（在展开的目录下） */}
+          {/* 新建输入：在匹配的展开目录下 */}
           {showCreatingHere && (
             <CreatingInput
               type={creatingType!}
@@ -597,24 +649,15 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
       )
     }
 
-    // 如果创建目标在当前层级的根部且尚未渲染输入
-    if (creatingType && creatingParentPath === parentPath && !creatingRendered) {
-      items.push(
-        <CreatingInput
-          key="creating-input"
-          type={creatingType}
-          value={creatingName}
-          onChange={setCreatingName}
-          onConfirm={confirmCreating}
-          onCancel={cancelCreating}
-          depth={depth}
-          inputRef={inputRef as React.RefObject<HTMLInputElement>}
-        />
-      )
-    }
-
     return items
   }
+
+  // ---- 点击空白区域取消选中 ----
+  const handleEmptyAreaClick = useCallback(() => {
+    setSelectedPath(null)
+    setSelectedIsDir(false)
+    closeContextMenu()
+  }, [closeContextMenu])
 
   const rootEntries = workspacePath ? dirContents[workspacePath] : undefined
 
@@ -637,11 +680,25 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
       </div>
 
       {/* 文件树 */}
-      <div className="flex-1 overflow-y-auto px-2 py-2">
+      <div className="flex-1 overflow-y-auto px-2 py-2" onClick={handleEmptyAreaClick}>
         {loading && !rootEntries ? (
           <div className="flex items-center justify-center py-8"><Loader2 className="w-4 h-4 animate-spin text-foreground/30" /></div>
         ) : rootEntries && rootEntries.length > 0 ? (
-          renderTree(rootEntries, 0, workspacePath)
+          <>
+            {renderTree(rootEntries, 0, workspacePath)}
+            {/* 根级别创建（不在任何已展开目录下） */}
+            {creatingType && creatingParentPath === workspacePath && (
+              <CreatingInput
+                type={creatingType}
+                value={creatingName}
+                onChange={setCreatingName}
+                onConfirm={confirmCreating}
+                onCancel={cancelCreating}
+                depth={0}
+                inputRef={inputRef as React.RefObject<HTMLInputElement>}
+              />
+            )}
+          </>
         ) : rootEntries && rootEntries.length === 0 && !creatingType ? (
           <div className="text-center py-8"><p className="text-xs text-foreground/30">空目录</p></div>
         ) : !rootEntries && !loading ? (
@@ -657,16 +714,25 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
           entry={contextMenu.entry}
           onClose={closeContextMenu}
           hasClipboard={!!clipboardRef.current}
-          onNewFile={contextMenu.entry?.is_dir
-            ? () => startCreating('file', contextMenu.entry!.path)
-            : !contextMenu.entry
-              ? () => startCreating('file', workspacePath)
-              : undefined}
-          onNewFolder={contextMenu.entry?.is_dir
-            ? () => startCreating('folder', contextMenu.entry!.path)
-            : !contextMenu.entry
-              ? () => startCreating('folder', workspacePath)
-              : undefined}
+          onNewFile={() => {
+            const ce = contextMenu.entry
+            if (ce?.is_dir) startCreating('file', ce.path)
+            else if (!ce) startCreating('file', workspacePath)
+            else {
+              // 在文件上右键 → 在父目录创建
+              const parent = ce.path.substring(0, ce.path.lastIndexOf(ce.path.includes('\\') ? '\\' : '/'))
+              startCreating('file', parent)
+            }
+          }}
+          onNewFolder={() => {
+            const ce = contextMenu.entry
+            if (ce?.is_dir) startCreating('folder', ce.path)
+            else if (!ce) startCreating('folder', workspacePath)
+            else {
+              const parent = ce.path.substring(0, ce.path.lastIndexOf(ce.path.includes('\\') ? '\\' : '/'))
+              startCreating('folder', parent)
+            }
+          }}
           onRename={startRename}
           onDelete={handleDelete}
           onCopyPath={handleCopyPath}
@@ -675,6 +741,18 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
           onPaste={handlePaste}
         />
       )}
+
+      {/* 删除确认对话框 */}
+      <ConfirmDialog
+        open={!!deleteConfirm}
+        title="确认删除"
+        message={deleteConfirm ? `确定要删除 "${deleteConfirm.name}" 吗？此操作不可撤销。` : ''}
+        confirmLabel="删除"
+        cancelLabel="取消"
+        variant="danger"
+        onConfirm={confirmDeleteAction}
+        onCancel={() => setDeleteConfirm(null)}
+      />
     </div>
   )
 }

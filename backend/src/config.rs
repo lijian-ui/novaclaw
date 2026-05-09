@@ -23,6 +23,10 @@ pub struct AppConfig {
     pub prompt_injection_protection: bool,
     /// 数据目录（可选，用于自定义路径）
     pub data_dir: Option<String>,
+    /// TinyFish Search API KEY（可选，用于网络搜索）
+    pub tinyfish_api_key: Option<String>,
+    /// Tavily Search API KEY（可选，用于网络搜索）
+    pub tavily_api_key: Option<String>,
 }
 
 /// 模型配置（单独存放）
@@ -62,6 +66,8 @@ impl Default for AppConfig {
             ],
             prompt_injection_protection: true,
             data_dir: None,
+            tinyfish_api_key: None,
+            tavily_api_key: None,
         }
     }
 }

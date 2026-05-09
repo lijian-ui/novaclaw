@@ -16,6 +16,22 @@ pub struct Session {
     pub metadata: Option<String>,
 }
 
+/// 工具调用参数
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallArgument {
+    pub name: String,
+    pub value: String,
+}
+
+/// 工具调用信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+}
+
 /// 消息数据结构
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -26,6 +42,24 @@ pub struct Message {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
+    /// 工具调用列表（assistant 消息可包含）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCall>>,
+    /// 工具调用ID（tool 消息用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// 工具名称（tool 消息用）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// 第一次思考内容（CoT）- 用于前端显示为"思考过程"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_reasoning: Option<String>,
+    /// 后续思考内容数组（CoT）- 用于前端显示为"Thought"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasonings: Option<Vec<String>>,
+    /// 兼容旧字段：完整的推理内容
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 /// 会话存储管理
@@ -105,6 +139,11 @@ impl SessionStore {
     }
 
     /// 删除会话及其消息
+    /// 获取消息文件路径（调试用）
+    pub fn messages_path_for_debug(&self, session_id: &str) -> PathBuf {
+        self.messages_dir.join(format!("{}.jsonl", session_id))
+    }
+
     pub fn delete_session(&self, id: &str) -> Result<(), AppError> {
         let session_path = self.session_path(id);
         if session_path.exists() {

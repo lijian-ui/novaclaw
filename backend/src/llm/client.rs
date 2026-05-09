@@ -95,11 +95,13 @@ impl LlmClient {
         Ok(chat_response)
     }
 
-    /// 流式聊天 - 返回 SSE 事件流
-    pub async fn chat_stream(
-        &self,
-        req: &ChatRequest,
-    ) -> Result<mpsc::Receiver<StreamEvent>, AppError> {
+/// 流式聊天 - 返回 SSE 事件流
+/// cancel: 可选取消信号，收到取消时立即中止 SSE 读取
+pub async fn chat_stream(
+    &self,
+    req: &ChatRequest,
+    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<mpsc::Receiver<StreamEvent>, AppError> {
         let base = self.api_base();
         let url = format!("{}/chat/completions", base);
         let (tx, rx) = mpsc::channel(256);
@@ -127,16 +129,24 @@ impl LlmClient {
         tokio::spawn(async move {
             let mut stream = response.bytes_stream();
             let mut buffer = String::new();
-            let mut tool_call_index = 0usize;
-            let mut tool_call_id = String::new();
-            let mut tool_call_name = String::new();
-            let mut tool_call_args = String::new();
+            // 使用 HashMap 支持多工具调用追踪（key: tool_call_index）
+            let mut tool_calls_acc: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
+            let mut early_sent_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
             async fn send_event(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> bool {
                 tx.send(event).await.is_ok()
             }
 
-            while let Some(chunk_result) = stream.next().await {
+            let cancel_check = cancel.clone();
+
+            'stream_loop: while let Some(chunk_result) = stream.next().await {
+                // 检查取消信号
+                if let Some(ref flag) = cancel_check {
+                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        break 'stream_loop;
+                    }
+                }
+
                 match chunk_result {
                     Ok(chunk) => {
                         let chunk_str = String::from_utf8_lossy(&chunk);
@@ -183,16 +193,29 @@ impl LlmClient {
                                                 // 工具调用增量
                                                 if let Some(ref tc_deltas) = delta.tool_calls {
                                                     for tc in tc_deltas {
+                                                        let idx = tc.index as usize;
+                                                        let entry = tool_calls_acc.entry(idx).or_insert_with(|| (String::new(), String::new(), String::new()));
                                                         if let Some(ref id) = tc.id {
-                                                            tool_call_id = id.clone();
-                                                            tool_call_index = tc.index as usize;
+                                                            entry.0 = id.clone();
                                                         }
                                                         if let Some(ref func) = tc.function {
                                                             if let Some(ref name) = func.name {
-                                                                tool_call_name = name.clone();
+                                                                entry.1 = name.clone();
+                                                                // 尽早发送：当工具名称已知时立即推送给 runtime
+                                                                if !entry.0.is_empty() && !entry.1.is_empty() && !early_sent_indices.contains(&idx) {
+                                                                    early_sent_indices.insert(idx);
+                                                                    if !send_event(&tx, StreamEvent::ToolCallDelta {
+                                                                        index: idx,
+                                                                        id: entry.0.clone(),
+                                                                        name: entry.1.clone(),
+                                                                        arguments: String::new(), // 参数可能不完整，稍后更新
+                                                                    }).await {
+                                                                        return;
+                                                                    }
+                                                                }
                                                             }
                                                             if let Some(ref args) = func.arguments {
-                                                                tool_call_args.push_str(args);
+                                                                entry.2.push_str(args);
                                                             }
                                                         }
                                                     }
@@ -201,16 +224,20 @@ impl LlmClient {
 
                                             // 检查 finish_reason
                                             if choice.finish_reason.as_deref() == Some("tool_calls") {
-                                                if !tool_call_id.is_empty() && !tool_call_name.is_empty() {
-                                                    if !send_event(&tx, StreamEvent::ToolCallDelta {
-                                                        index: tool_call_index,
-                                                        id: std::mem::take(&mut tool_call_id),
-                                                        name: std::mem::take(&mut tool_call_name),
-                                                        arguments: std::mem::take(&mut tool_call_args),
-                                                    }).await {
-                                                        return;
+                                                // 发送所有累积的完整工具调用数据
+                                                for (idx, (tid, tname, targs)) in tool_calls_acc.drain() {
+                                                    if !tid.is_empty() && !tname.is_empty() {
+                                                        if !send_event(&tx, StreamEvent::ToolCallDelta {
+                                                            index: idx,
+                                                            id: tid,
+                                                            name: tname,
+                                                            arguments: targs,
+                                                        }).await {
+                                                            return;
+                                                        }
                                                     }
                                                 }
+                                                early_sent_indices.clear();
                                             }
                                         }
                                     }

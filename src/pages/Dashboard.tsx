@@ -107,7 +107,7 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
         <h1 className="text-xl font-bold text-foreground mb-1">打开工具</h1>
         <p className="text-sm text-foreground/50 mb-10">使用工具，扩展更多能力</p>
 
-        <div className="grid grid-cols-3 gap-3">
+        <div className="grid grid-cols-3 gap-4 w-full max-w-[320px]">
           {tools.map((tool) => {
             const Icon = tool.icon
             return (
@@ -120,10 +120,10 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
                     onOpenTool?.(tool.id)
                   }
                 }}
-                className="flex flex-col items-center justify-center gap-2 w-28 h-24 rounded-xl bg-foreground/[0.04] hover:bg-foreground/[0.08] transition-colors"
+                className="flex flex-col items-center justify-center gap-3 aspect-square rounded-xl bg-foreground/[0.04] hover:bg-foreground/[0.08] transition-colors"
               >
-                <Icon className={`w-5 h-5 ${tool.iconColor}`} />
-                <span className="text-xs text-foreground/60">{tool.name}</span>
+                <Icon className={`w-6 h-6 ${tool.iconColor}`} />
+                <span className="text-sm text-foreground/60">{tool.name}</span>
               </button>
             )
           })}

@@ -7,6 +7,12 @@ export interface Session {
   metadata?: string
 }
 
+export interface ToolCall {
+  id: string
+  name: string
+  arguments?: string
+}
+
 export interface Message {
   id: string
   session_id: string
@@ -14,6 +20,18 @@ export interface Message {
   content: string
   created_at: string
   metadata?: string
+  /** 工具调用列表（assistant 消息可包含） */
+  tool_calls?: ToolCall[]
+  /** 工具调用ID（tool 消息用） */
+  tool_call_id?: string
+  /** 工具名称（tool 消息用） */
+  tool_name?: string
+  /** 第一次思考内容（CoT）- 用于前端显示为"思考过程" */
+  first_reasoning?: string
+  /** 后续思考内容数组（CoT）- 用于前端显示为"Thought" */
+  reasonings?: string[]
+  /** 兼容旧字段：完整的推理内容 */
+  reasoning?: string
 }
 
 export interface Model {

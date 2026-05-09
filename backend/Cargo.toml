@@ -68,6 +68,9 @@ urlencoding = "2"
 # 文件监视
 notify = { version = "6", optional = true }
 
+# ZIP 解压（技能上传）
+zip = "2"
+
 [features]
 default = []
 server = []

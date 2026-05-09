@@ -53,6 +53,12 @@ async fn chat(Json(req): Json<ChatRequest>) -> Json<serde_json::Value> {
             content: req.message.clone(),
             created_at: now.clone(),
             metadata: None,
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            first_reasoning: None,
+            reasonings: None,
+            reasoning: None,
         },
     );
 
@@ -81,6 +87,7 @@ async fn chat(Json(req): Json<ChatRequest>) -> Json<serde_json::Value> {
 
     let tool_registry = state.tool_registry.clone();
     let config = state.config.clone();
+    let skills = state.skills_loader.list_skills();
     drop(state);
 
     let mut runtime = crate::agent::AgentRuntime::new(
@@ -88,15 +95,25 @@ async fn chat(Json(req): Json<ChatRequest>) -> Json<serde_json::Value> {
         llm_client,
         std::sync::Arc::new(tool_registry),
         &config,
+        skills,
     );
 
     // 执行非流式对话
-    match runtime.run_turn(&req.message, None).await {
+    match runtime.run_turn(&req.message, None, None).await {
         Ok(result) => {
             // 保存所有对话消息到会话（用户消息已在前面保存，跳过重复的 user 消息）
             let state = APP_STATE.read().await;
             for agent_msg in &result.messages {
                 if agent_msg.role == "user" { continue; } // 已在前面保存
+                // 转换 tool_calls 格式
+                let tool_calls = agent_msg.tool_calls.as_ref().map(|tcs| {
+                    tcs.iter().map(|tc| storage::ToolCall {
+                        id: tc.id.clone(),
+                        name: tc.name.clone(),
+                        arguments: Some(tc.arguments.clone()),
+                    }).collect()
+                });
+
                 let storage_msg = storage::Message {
                     id: uuid::Uuid::new_v4().to_string(),
                     session_id: session_id.clone(),
@@ -104,6 +121,12 @@ async fn chat(Json(req): Json<ChatRequest>) -> Json<serde_json::Value> {
                     content: agent_msg.content.clone(),
                     created_at: now.clone(),
                     metadata: None,
+                    tool_calls,
+                    tool_call_id: agent_msg.tool_call_id.clone(),
+                    tool_name: agent_msg.tool_name.clone(),
+                    first_reasoning: agent_msg.first_reasoning.clone(),
+                    reasonings: agent_msg.reasonings.clone(),
+                    reasoning: agent_msg.reasoning.clone(),
                 };
                 let _ = state.session_store.append_message(&session_id, &storage_msg);
             }

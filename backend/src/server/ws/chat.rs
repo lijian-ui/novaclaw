@@ -67,7 +67,7 @@ async fn handle_chat_socket(socket: WebSocket) {
         return;
     }
 
-    tracing::info!("WebSocket 对话: {:?}", &user_message[..user_message.len().min(50)]);
+    tracing::info!("WebSocket 对话: {}", &user_message.chars().take(50).collect::<String>());
 
     // 从用户消息提取简洁标题
     fn make_session_title(msg: &str) -> String {
@@ -82,6 +82,7 @@ async fn handle_chat_socket(socket: WebSocket) {
     let config = state.config.clone();
     let models_config = state.models_config.clone();
     let tool_registry = Arc::new(state.tool_registry.clone());
+    let skills = state.skills_loader.list_skills();
 
     let model = model_name.unwrap_or_else(|| models_config.default_model.clone());
     let provider = match models_config.find_provider_by_model(&model) {
@@ -118,23 +119,28 @@ async fn handle_chat_socket(socket: WebSocket) {
         llm_client,
         tool_registry,
         &config,
+        skills,
     );
 
     let _max_turns = config.max_iterations;
 
+    // ---- 打断/停止信号 ----
+    let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
     // 并行处理：一个任务运行 Agent，另一个任务将结果推送到 WebSocket
     let ws_sender = Arc::new(tokio::sync::Mutex::new(ws_sender));
 
+    // Agent 任务（传递 cancel_flag）
     let agent_task = {
         let sender = Arc::clone(&ws_sender);
         let user_msg = user_message.clone();
         let sid = session_id_opt.clone();
+        let cancel = Arc::clone(&cancel_flag);
         tokio::spawn(async move {
             let mut _build_tx = None;
-            // 保存 step_tx 用于 runtime
             _build_tx = Some(step_tx);
 
-            let result = runtime.run_turn(&user_msg, _build_tx).await;
+            let result = runtime.run_turn(&user_msg, _build_tx, Some(cancel)).await;
             let model = runtime.session().model.clone();
 
             // 发送最终结果
@@ -144,18 +150,16 @@ async fn handle_chat_socket(socket: WebSocket) {
                     // ---- 持久化会话消息到 SessionStore ----
                     let state = APP_STATE.read().await;
 
-                    // 1. 解析或创建会话
+                    // 解析或创建会话
                     let session_title = make_session_title(&user_msg);
                     let resolved_sid = if let Some(ref existing_sid) = sid {
                         if let Ok(mut existing_session) = state.session_store.get_session(existing_sid) {
-                            // 如果会话名称是默认占位符，用用户消息自动更新
                             if existing_session.name == "新任务" || existing_session.name == "New Session" {
                                 existing_session.name = session_title.clone();
                                 let _ = state.session_store.update_session(&existing_session);
                             }
                             existing_sid.clone()
                         } else {
-                            tracing::warn!("会话 {} 不存在，创建新会话", existing_sid);
                             match state.session_store.create_session(&session_title, Some(&model)) {
                                 Ok(s) => s.id,
                                 Err(e) => {
@@ -190,9 +194,18 @@ async fn handle_chat_socket(socket: WebSocket) {
                         }
                     };
 
-                    // 2. 保存所有对话消息到 SessionStore
+                    // 保存所有对话消息到 SessionStore
                     let now = chrono::Utc::now().to_rfc3339();
                     for agent_msg in &agent_result.messages {
+                        // 转换 tool_calls 格式
+                        let tool_calls = agent_msg.tool_calls.as_ref().map(|tcs| {
+                            tcs.iter().map(|tc| storage::ToolCall {
+                                id: tc.id.clone(),
+                                name: tc.name.clone(),
+                                arguments: Some(tc.arguments.clone()),
+                            }).collect()
+                        });
+
                         let storage_msg = storage::Message {
                             id: uuid::Uuid::new_v4().to_string(),
                             session_id: resolved_sid.clone(),
@@ -200,6 +213,12 @@ async fn handle_chat_socket(socket: WebSocket) {
                             content: agent_msg.content.clone(),
                             created_at: now.clone(),
                             metadata: None,
+                            tool_calls,
+                            tool_call_id: agent_msg.tool_call_id.clone(),
+                            tool_name: agent_msg.tool_name.clone(),
+                            first_reasoning: agent_msg.first_reasoning.clone(),
+                            reasonings: agent_msg.reasonings.clone(),
+                            reasoning: agent_msg.reasoning.clone(),
                         };
                         if let Err(e) = state.session_store.append_message(&resolved_sid, &storage_msg) {
                             tracing::error!("保存消息到会话失败: {} (会话: {})", e, resolved_sid);
@@ -207,21 +226,37 @@ async fn handle_chat_socket(socket: WebSocket) {
                     }
                     drop(state);
 
-                    tracing::info!("会话消息已持久化: {} ({} 条)", resolved_sid, agent_result.messages.len());
-
-                    let _ = sender
-                        .send(Message::Text(
-                            serde_json::json!({
-                                "type": "done",
-                                "data": {
-                                    "session_id": resolved_sid,
-                                    "content": agent_result.content,
-                                    "iterations": agent_result.iterations,
-                                }
-                            })
-                            .to_string(),
-                        ))
-                        .await;
+                    // 判断是否被用户打断
+                    if agent_result.cancelled {
+                        // 已保存部分输出，发送 stopped
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "stopped",
+                                    "data": {
+                                        "session_id": resolved_sid,
+                                        "reason": "user_cancel",
+                                    }
+                                })
+                                .to_string(),
+                            ))
+                            .await;
+                    } else {
+                        tracing::info!("会话消息已持久化: {} ({} 条)", resolved_sid, agent_result.messages.len());
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "done",
+                                    "data": {
+                                        "session_id": resolved_sid,
+                                        "content": agent_result.content,
+                                        "iterations": agent_result.iterations,
+                                    }
+                                })
+                                .to_string(),
+                            ))
+                            .await;
+                    }
                 }
                 Err(e) => {
                     let _ = sender
@@ -282,39 +317,45 @@ async fn handle_chat_socket(socket: WebSocket) {
         })
     };
 
-    // 同时监听客户端消息（支持取消）
-    let cancel_task = {
-        let sender = Arc::clone(&ws_sender);
-        tokio::spawn(async move {
-            while let Some(msg) = ws_receiver.next().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        if text.contains("\"type\":\"cancel\"") {
-                            let mut sender = sender.lock().await;
-                            let _ = sender
-                                .send(Message::Text(
-                                    serde_json::json!({
-                                        "type": "error",
-                                        "data": {"message": "用户取消了对话"}
-                                    })
-                                    .to_string(),
-                                ))
-                                .await;
-                            break;
-                        }
+    // 监听客户端消息 — 支持打断/停止
+    let cancel_flag_clone = Arc::clone(&cancel_flag);
+    let sender_for_cancel = Arc::clone(&ws_sender);
+    let cancel_listener = tokio::spawn(async move {
+        while let Some(msg) = ws_receiver.next().await {
+            match msg {
+                Ok(Message::Text(text)) => {
+                    // 检查 stop 指令
+                    if text.contains("\"type\":\"stop\"") {
+                        tracing::info!("用户请求停止生成");
+                        cancel_flag_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+
+                        // 回复前端停止确认
+                        let mut sender = sender_for_cancel.lock().await;
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "stopped",
+                                    "data": {
+                                        "reason": "user_cancel",
+                                    }
+                                })
+                                .to_string(),
+                            ))
+                            .await;
+                        break;
                     }
-                    Ok(Message::Close(_)) => break,
-                    Err(_) => break,
-                    _ => {}
                 }
+                Ok(Message::Close(_)) => break,
+                Err(_) => break,
+                _ => {}
             }
-        })
-    };
+        }
+    });
 
     // 等待对话完成
     let _ = agent_task.await;
     step_forward.abort();
-    cancel_task.abort();
+    cancel_listener.abort();
 }
 
 pub fn routes() -> Router {

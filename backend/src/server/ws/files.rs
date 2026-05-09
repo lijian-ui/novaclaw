@@ -44,7 +44,7 @@ fn save_file_content(path: &str, content: &str, ws_str: &str) -> Result<(), Stri
         .map_err(|e| format!("写入文件失败: {}", e))
 }
 
-/// 读取文件内容（带路径穿越防护）
+/// 读取文件内容（带路径穿越防护，支持非 UTF-8 降级）
 fn read_file_content(path: &str) -> Result<String, String> {
     let target = Path::new(path);
     if !target.exists() {
@@ -53,8 +53,9 @@ fn read_file_content(path: &str) -> Result<String, String> {
     if target.is_dir() {
         return Err("路径是目录".to_string());
     }
-    std::fs::read_to_string(target)
-        .map_err(|e| format!("读取文件失败: {}", e))
+    let bytes = std::fs::read(target).map_err(|e| format!("读取文件失败: {}", e))?;
+    // 使用 lossy 转换，非 UTF-8 字节替换为 ?
+    Ok(String::from_utf8_lossy(&bytes).to_string())
 }
 
 /// 删除文件或目录
@@ -75,7 +76,35 @@ fn rename_path(old_path: &str, new_path: &str) -> Result<(), String> {
     std::fs::rename(old_path, new_path).map_err(|e| format!("重命名失败: {}", e))
 }
 
-/// 列出目录内容
+/// 复制文件或目录（递归）
+fn copy_path(source: &str, dest: &str) -> Result<(), String> {
+    let src = Path::new(source);
+    let dst = Path::new(dest);
+    if src.is_dir() {
+        copy_dir_recursive(src, dst).map_err(|e| format!("复制目录失败: {}", e))
+    } else {
+        std::fs::copy(src, dst).map_err(|e| format!("复制文件失败: {}", e))?;
+        Ok(())
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
 fn list_directory(path: &str) -> Result<Vec<serde_json::Value>, String> {
     let dir = Path::new(path);
     if !dir.exists() || !dir.is_dir() {
@@ -280,6 +309,19 @@ async fn handle_file_socket(socket: WebSocket) {
                                 .to_string(),
                             ))
                             .await;
+                        // 通知前端刷新父目录
+                        let parent = Path::new(&cmd_path).parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| ws_str.clone());
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "dir_changed",
+                                    "path": parent,
+                                })
+                                .to_string(),
+                            ))
+                            .await;
                     }
                     Err(e) => {
                         let _ = sender
@@ -397,6 +439,19 @@ async fn handle_file_socket(socket: WebSocket) {
                                 .to_string(),
                             ))
                             .await;
+                        // 通知前端刷新父目录
+                        let parent = Path::new(&cmd_path).parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| ws_str.clone());
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "dir_changed",
+                                    "path": parent,
+                                })
+                                .to_string(),
+                            ))
+                            .await;
                     }
                     Err(e) => {
                         let _ = sender
@@ -430,6 +485,33 @@ async fn handle_file_socket(socket: WebSocket) {
                                 .to_string(),
                             ))
                             .await;
+                        // 通知前端刷新源父目录和目标父目录
+                        let src_parent = Path::new(&cmd_path).parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| ws_str.clone());
+                        let dst_parent = Path::new(new_path).parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|| ws_str.clone());
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "dir_changed",
+                                    "path": src_parent,
+                                })
+                                .to_string(),
+                            ))
+                            .await;
+                        if dst_parent != src_parent {
+                            let _ = sender
+                                .send(Message::Text(
+                                    serde_json::json!({
+                                        "type": "dir_changed",
+                                        "path": dst_parent,
+                                    })
+                                    .to_string(),
+                                ))
+                                .await;
+                        }
                     }
                     Err(e) => {
                         let _ = sender
@@ -438,6 +520,40 @@ async fn handle_file_socket(socket: WebSocket) {
                                     "type": "rename_result",
                                     "path": cmd_path,
                                     "new_path": new_path,
+                                    "success": false,
+                                    "message": e,
+                                })
+                                .to_string(),
+                            ))
+                            .await;
+                    }
+                }
+            }
+            "copy" => {
+                let dest = parsed["dest"].as_str().unwrap_or("");
+                let result = copy_path(&cmd_path, dest);
+                let mut sender = ws_sender.lock().await;
+                match result {
+                    Ok(_) => {
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "copy_result",
+                                    "path": cmd_path,
+                                    "dest": dest,
+                                    "success": true,
+                                })
+                                .to_string(),
+                            ))
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = sender
+                            .send(Message::Text(
+                                serde_json::json!({
+                                    "type": "copy_result",
+                                    "path": cmd_path,
+                                    "dest": dest,
                                     "success": false,
                                     "message": e,
                                 })

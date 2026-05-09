@@ -6,7 +6,7 @@ pub mod cron;
 pub mod chat;
 pub mod files;
 
-use axum::Router;
+use axum::{response::IntoResponse, Router};
 
 /// 构建所有 HTTP 路由
 pub fn build() -> Router {
@@ -18,4 +18,8 @@ pub fn build() -> Router {
         .merge(cron::routes())
         .merge(chat::routes())
         .merge(files::routes())
+        .fallback(|req: axum::extract::Request| async move {
+            tracing::warn!("未匹配路由: {} {}", req.method(), req.uri());
+            (axum::http::StatusCode::NOT_FOUND, "route not found").into_response()
+        })
 }

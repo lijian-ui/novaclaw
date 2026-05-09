@@ -1,6 +1,28 @@
 import { useState, useMemo, useRef, useCallback, useEffect } from 'react'
-import { X, Save, Copy, Check } from 'lucide-react'
+import { X, Save, PanelRightClose } from 'lucide-react'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { vscDarkPlus, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import mermaid from 'mermaid'
 import type { EditorTab } from '@/types/fileEditor'
+
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: 'loose',
+  fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+})
+
+/** react-syntax-highlighter 语言映射 */
+const langMap: Record<string, string> = {
+  typescript: 'typescript', javascript: 'javascript', jsx: 'jsx', tsx: 'tsx',
+  html: 'markup', htm: 'markup', css: 'css', scss: 'scss', less: 'less',
+  json: 'json', markdown: 'markdown', md: 'markdown',
+  rust: 'rust', python: 'python', go: 'go', java: 'java',
+  bash: 'bash', sh: 'bash', zsh: 'bash',
+  yaml: 'yaml', yml: 'yaml', toml: 'toml', sql: 'sql',
+  xml: 'xml', svg: 'xml', php: 'php', ruby: 'ruby',
+}
 
 interface FileEditorProps {
   tabs: EditorTab[]
@@ -9,86 +31,94 @@ interface FileEditorProps {
   onSave: () => void
   onCloseTab: (path: string) => void
   onSwitchTab: (path: string) => void
+  onToggleFilePanel?: () => void
 }
 
-// ---- 语法高亮 ----
+// ---- 语法高亮（由 react-syntax-highlighter 接管） ----
 
-function highlightCode(code: string, lang: string): string {
-  const escaped = code
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-
-  let highlighted = escaped
-
-  if (['js', 'ts', 'jsx', 'tsx', 'javascript', 'typescript'].includes(lang)) {
-    highlighted = highlighted.replace(/(["'`])(?:(?!\1|\\).|\\.)*\1/g, '<span class="hl-string">$&</span>')
-    highlighted = highlighted.replace(/\b(\d+\.?\d*)\b/g, '<span class="hl-number">$1</span>')
-    const keywords = /\b(const|let|var|function|return|if|else|for|while|import|export|from|async|await|class|new|this|throw|try|catch|finally|typeof|instanceof|in|of|true|false|null|undefined)\b/g
-    highlighted = highlighted.replace(keywords, '<span class="hl-keyword">$1</span>')
-    highlighted = highlighted.replace(/(\/\/.*)/g, '<span class="hl-comment">$1</span>')
-    highlighted = highlighted.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="hl-comment">$1</span>')
-  } else if (['html', 'htm'].includes(lang)) {
-    highlighted = highlighted.replace(/(&lt;\/?[\w-]+)/g, '<span class="hl-tag">$1</span>')
-    highlighted = highlighted.replace(/(\/?&gt;)/g, '<span class="hl-tag">$1</span>')
-    highlighted = highlighted.replace(/(\s[\w-]+)(=)/g, '<span class="hl-attr">$1</span>$2')
-    highlighted = highlighted.replace(/(["'])(?:(?!\1|\\).|\\.)*\1/g, '<span class="hl-string">$&</span>')
-    highlighted = highlighted.replace(/(&lt;!--[\s\S]*?--&gt;)/g, '<span class="hl-comment">$1</span>')
-  } else if (['css', 'scss', 'less'].includes(lang)) {
-    highlighted = highlighted.replace(/([\w.#@][\w.#@\s,>:]+)\s*\{/g, '<span class="hl-selector">$1</span> {')
-    highlighted = highlighted.replace(/([\w-]+)(\s*:\s*)/g, '<span class="hl-property">$1</span>$2')
-    highlighted = highlighted.replace(/(#[\da-fA-F]{3,8})\b/g, '<span class="hl-number">$1</span>')
-    highlighted = highlighted.replace(/(\d+\.?\d*(px|rem|em|vh|vw|%|s|ms)?)\b/g, '<span class="hl-number">$1</span>')
-    highlighted = highlighted.replace(/(["'])(?:(?!\1|\\).|\\.)*\1/g, '<span class="hl-string">$&</span>')
-    highlighted = highlighted.replace(/(\/\*[\s\S]*?\*\/)/g, '<span class="hl-comment">$1</span>')
-  } else if (['json'].includes(lang)) {
-    highlighted = highlighted.replace(/"([^"]+)"\s*:/g, '<span class="hl-attr">"$1"</span>:')
-    highlighted = highlighted.replace(/(:\s*)"([^"]*)"(,?)/g, '$1<span class="hl-string">"$2"</span>$3')
-    highlighted = highlighted.replace(/(:\s*)(\d+\.?\d*)/g, '$1<span class="hl-number">$2</span>')
-    highlighted = highlighted.replace(/\b(true|false|null)\b/g, '<span class="hl-keyword">$1</span>')
-  }
-
-  // 不再嵌入行号，返回纯高亮 HTML
-  return highlighted
+/** 将语言名转为 react-syntax-highlighter 支持的语言 ID */
+function getHighlightLang(lang: string): string {
+  return langMap[lang] || lang
 }
 
-/** Markdown 实时预览 */
+/** Markdown 实时预览（使用 react-markdown + mermaid） */
 function MarkdownPreview({ content }: { content: string }) {
-  const html = useMemo(() => {
-    let h = content
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-    // 标题
-    h = h.replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    h = h.replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    h = h.replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    // 代码块
-    h = h.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre class="hl-code-block"><code>$2</code></pre>')
-    // 行内代码
-    h = h.replace(/`([^`]+)`/g, '<code class="hl-inline-code">$1</code>')
-    // 加粗
-    h = h.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    // 列表
-    h = h.replace(/^- (.+)$/gm, '<li>$1</li>')
-    // 链接
-    h = h.replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank">$1</a>')
-    // 段落
-    h = h.replace(/^(?!<[hlp]).+$/gm, '<p>$&</p>')
-    return h
-  }, [content])
+  const [isLight, setIsLight] = useState(
+    typeof document !== 'undefined' && document.documentElement.classList.contains('light')
+  )
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // 主题切换监听
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsLight(document.documentElement.classList.contains('light'))
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
+
+  // 渲染后自动渲染 Mermaid 图表（根据当前明暗主题切换主题色）
+  useEffect(() => {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: isLight ? 'default' : 'dark',
+      securityLevel: 'loose',
+      fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+    })
+    mermaid.run()
+  })
 
   return (
-    <div
-      className="p-4 text-sm text-foreground/80 leading-relaxed overflow-y-auto h-full prose prose-sm dark:prose-invert"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    <div ref={containerRef} className="markdown-preview p-4 text-sm leading-relaxed overflow-y-auto h-full">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          code({ className, children, ...props }) {
+            const match = /language-(\w+)/.exec(className || '')
+            const codeStr = String(children).replace(/\n$/, '')
+            if (match) {
+              // Mermaid 图表
+              if (match[1] === 'mermaid') {
+                return <pre className="mermaid">{codeStr}</pre>
+              }
+              return (
+                <SyntaxHighlighter
+                  language={match[1]}
+                  style={isLight ? oneLight : vscDarkPlus}
+                  customStyle={{
+                    margin: 0,
+                    padding: '12px',
+                    fontSize: 13,
+                    borderRadius: 6,
+                    fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace",
+                  }}
+                >
+                  {codeStr}
+                </SyntaxHighlighter>
+              )
+            }
+            return (
+              <code className="hl-inline-code" {...props}>
+                {children}
+              </code>
+            )
+          },
+          a({ href, children }) {
+            return (
+              <a href={href} target="_blank" rel="noopener noreferrer">
+                {children}
+              </a>
+            )
+          },
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
   )
 }
 
-export function FileEditor({ tabs, activeTab, onUpdateContent, onSave, onCloseTab, onSwitchTab }: FileEditorProps) {
-  const [copied, setCopied] = useState(false)
-
+export function FileEditor({ tabs, activeTab, onUpdateContent, onSave, onCloseTab, onSwitchTab, onToggleFilePanel }: FileEditorProps) {
   const content = activeTab?.content || ''
   const language = activeTab?.language || ''
   const fileName = activeTab?.name || ''
@@ -96,30 +126,35 @@ export function FileEditor({ tabs, activeTab, onUpdateContent, onSave, onCloseTa
   const isMarkdown = language === 'markdown'
   const [preview, setPreview] = useState(isMarkdown)
 
-  const highlighted = useMemo(() => highlightCode(content, language), [content, language])
+  // 检测当前主题（明亮/暗色），切换 SyntaxHighlighter 主题
+  const [isLight, setIsLight] = useState(
+    typeof document !== 'undefined' && document.documentElement.classList.contains('light')
+  )
+  useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsLight(document.documentElement.classList.contains('light'))
+    })
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
+    return () => observer.disconnect()
+  }, [])
+
+  const hlLang = useMemo(() => getHighlightLang(language), [language])
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const preRef = useRef<HTMLPreElement>(null)
+  const hlContainerRef = useRef<HTMLDivElement>(null)
   const gutterRef = useRef<HTMLDivElement>(null)
 
   const lineCount = content.split('\n').length
   const lineNumArr = useMemo(() => Array.from({ length: lineCount }, (_, i) => i + 1), [lineCount])
 
   const syncScroll = useCallback(() => {
-    if (textareaRef.current && preRef.current) {
-      preRef.current.scrollTop = textareaRef.current.scrollTop
-      preRef.current.scrollLeft = textareaRef.current.scrollLeft
+    if (textareaRef.current && hlContainerRef.current) {
+      hlContainerRef.current.scrollTop = textareaRef.current.scrollTop
+      hlContainerRef.current.scrollLeft = textareaRef.current.scrollLeft
     }
     if (gutterRef.current && textareaRef.current) {
       gutterRef.current.scrollTop = textareaRef.current.scrollTop
     }
   }, [])
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(content).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
-  }
 
   // 编辑内容变化时触发自动保存（防抖在 hook 中处理）
   const handleContentChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -141,6 +176,7 @@ export function FileEditor({ tabs, activeTab, onUpdateContent, onSave, onCloseTa
           <div
             key={tab.path}
             onClick={() => onSwitchTab(tab.path)}
+            onMouseDown={(e) => { if (e.button === 1) { e.preventDefault(); onCloseTab(tab.path); } }}
             className={`group flex items-center gap-1.5 px-3 py-2 cursor-pointer border-r border-border shrink-0 text-xs transition-colors ${
               tab.path === activeTab.path
                 ? 'bg-mainbg text-foreground/90 border-b-2 border-b-blue-500'
@@ -166,15 +202,21 @@ export function FileEditor({ tabs, activeTab, onUpdateContent, onSave, onCloseTa
           {dirty && <span className="text-[10px] text-amber-400/80">未保存</span>}
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <button onClick={handleCopy} className="p-1.5 rounded hover:bg-foreground/10 transition-colors" title="复制">
-            {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4 text-foreground/50" />}
-          </button>
           {isMarkdown && (
             <button
               onClick={() => setPreview(p => !p)}
-              className={`px-2 py-1 text-xs rounded transition-colors ${preview ? 'bg-blue-500/20 text-blue-400' : 'text-foreground/50 hover:text-foreground/70 hover:bg-foreground/10'}`}
+              className={`px-2 py-1 text-xs rounded transition-colors ${preview ? 'text-foreground/50 hover:text-foreground/70 hover:bg-foreground/10' : 'bg-blue-500/20 text-blue-400'}`}
             >
-              预览
+              {preview ? '编辑' : '预览'}
+            </button>
+          )}
+          {onToggleFilePanel && (
+            <button
+              onClick={onToggleFilePanel}
+              className="p-1.5 rounded hover:bg-foreground/10 transition-colors"
+              title="切换文件预览面板"
+            >
+              <PanelRightClose className="w-4 h-4 text-foreground/50" />
             </button>
           )}
           <button
@@ -188,47 +230,68 @@ export function FileEditor({ tabs, activeTab, onUpdateContent, onSave, onCloseTa
         </div>
       </div>
 
-      {/* Editor + Preview */}
-      <div className="flex-1 overflow-hidden flex">
-        {/* Editor pane */}
-        <div className={`flex flex-row ${preview ? 'w-1/2 border-r border-border' : 'w-full'}`}>
-          {/* Line number gutter */}
-          <div
-            ref={gutterRef}
-            className="overflow-hidden select-none shrink-0 border-r border-border/50"
-            style={{ width: '3.75em', minWidth: '3.75em' }}
-          >
-            <div className="py-4 font-mono text-sm leading-relaxed text-right text-foreground/30">
-              {lineNumArr.map(num => (
-                <div key={num} className="px-2 text-sm leading-relaxed">{num}</div>
-              ))}
+      {/* Editor / Preview 单栏切换 */}
+      <div className="flex-1 overflow-hidden">
+        {/* 编辑模式 */}
+        {!preview && (
+          <div className="flex flex-row h-full">
+            {/* Line number gutter */}
+            <div
+              ref={gutterRef}
+              className="overflow-hidden select-none shrink-0 border-r border-border/50"
+              style={{ width: '3.75em', minWidth: '3.75em' }}
+            >
+              <div className="py-4 font-mono text-sm leading-relaxed text-right text-foreground/30">
+                {lineNumArr.map(num => (
+                  <div key={num} className="px-2 text-sm leading-relaxed">{num}</div>
+                ))}
+              </div>
+            </div>
+
+            {/* Code area */}
+            <div className="relative flex-1 min-w-0">
+              <div ref={hlContainerRef} className="hl-container absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
+                <SyntaxHighlighter
+                  language={hlLang}
+                  style={isLight ? oneLight : vscDarkPlus}
+                  customStyle={{
+                    margin: 0,
+                    padding: '16px',
+                    fontSize: 13,
+                    lineHeight: '1.65',
+                    fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace",
+                    background: 'transparent',
+                    overflow: 'visible',
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    overflowWrap: 'break-word',
+                  }}
+                  PreTag="div"
+                  showLineNumbers={false}
+                >
+                  {content || ' '}
+                </SyntaxHighlighter>
+              </div>
+              <textarea
+                ref={textareaRef}
+                value={content}
+                onChange={handleContentChange}
+                onScroll={syncScroll}
+                className="file-editor-textarea absolute inset-0 w-full h-full px-4 py-4 font-mono bg-transparent text-transparent caret-foreground outline-none resize-none whitespace-pre-wrap overflow-auto"
+                spellCheck={false}
+                style={{
+                  fontSize: 13,
+                  lineHeight: '1.65',
+                  fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace",
+                }}
+              />
             </div>
           </div>
+        )}
 
-          {/* Code area */}
-          <div className="relative flex-1 min-w-0">
-            <pre
-              ref={preRef}
-              className="absolute inset-0 m-0 p-4 font-mono text-sm leading-relaxed pointer-events-none overflow-hidden"
-              dangerouslySetInnerHTML={{ __html: highlighted }}
-              aria-hidden="true"
-            />
-            <textarea
-              ref={textareaRef}
-              value={content}
-              onChange={handleContentChange}
-              onScroll={syncScroll}
-              className="absolute inset-0 w-full h-full p-4 font-mono text-sm leading-relaxed bg-transparent text-transparent caret-foreground outline-none resize-none whitespace-pre overflow-auto"
-              spellCheck={false}
-            />
-          </div>
-        </div>
-
-        {/* Preview pane */}
+        {/* 预览模式（仅 Markdown） */}
         {preview && isMarkdown && (
-          <div className="flex-1 w-1/2 bg-background">
-            <MarkdownPreview content={content} />
-          </div>
+          <MarkdownPreview content={content} />
         )}
       </div>
 
@@ -240,28 +303,40 @@ export function FileEditor({ tabs, activeTab, onUpdateContent, onSave, onCloseTa
         </span>
       </div>
 
-      {/* Highlight styles */}
+      {/* 文本域选中样式 + SyntaxHighlighter 自动换行 + Markdown 预览样式 */}
       <style>{`
-        .hl-keyword { color: #c678dd; }
-        .hl-string { color: #98c379; }
-        .hl-number { color: #d19a66; }
-        .hl-comment { color: #5c6370; font-style: italic; }
-        .hl-tag { color: #e06c75; }
-        .hl-attr { color: #d19a66; }
-        .hl-selector { color: #e06c75; }
-        .hl-property { color: #61afef; }
-        .hl-code-block { background: #1e2329; border-radius: 8px; padding: 12px; overflow-x: auto; margin: 8px 0; }
-        .hl-inline-code { background: #1e2329; padding: 1px 4px; border-radius: 3px; font-size: 0.9em; }
-        .light .hl-keyword { color: #8250df; }
-        .light .hl-string { color: #0a3069; }
-        .light .hl-number { color: #0550ae; }
-        .light .hl-comment { color: #6e7781; font-style: italic; }
-        .light .hl-tag { color: #cf222e; }
-        .light .hl-attr { color: #0550ae; }
-        .light .hl-selector { color: #8250df; }
-        .light .hl-property { color: #0550ae; }
-        .light .hl-code-block { background: #f3f3f3; }
-        .light .hl-inline-code { background: #f3f3f3; }
+        .file-editor-textarea::selection {
+          background: rgba(56, 139, 253, 0.3);
+        }
+        .file-editor-textarea::-moz-selection {
+          background: rgba(56, 139, 253, 0.3);
+        }
+        .hl-container code {
+          white-space: pre-wrap !important;
+          word-break: break-word !important;
+          overflow-wrap: break-word !important;
+        }
+
+        /* Markdown 预览样式 */
+        .markdown-preview h1 { font-size: 1.75rem; font-weight: 700; margin: 1.5rem 0 0.75rem; border-bottom: 1px solid hsl(var(--border)); padding-bottom: 0.3rem; }
+        .markdown-preview h2 { font-size: 1.4rem; font-weight: 600; margin: 1.25rem 0 0.6rem; border-bottom: 1px solid hsl(var(--border)); padding-bottom: 0.2rem; }
+        .markdown-preview h3 { font-size: 1.15rem; font-weight: 600; margin: 1rem 0 0.5rem; }
+        .markdown-preview h4 { font-size: 1rem; font-weight: 600; margin: 0.75rem 0 0.4rem; }
+        .markdown-preview p { margin: 0.5rem 0; line-height: 1.7; color: hsl(var(--foreground)); opacity: 0.85; }
+        .markdown-preview ul, .markdown-preview ol { margin: 0.5rem 0; padding-left: 1.5rem; }
+        .markdown-preview li { margin: 0.2rem 0; line-height: 1.6; }
+        .markdown-preview li > p { margin: 0; }
+        .markdown-preview blockquote { border-left: 3px solid #3b82f6; padding: 0.25rem 1rem; margin: 0.75rem 0; opacity: 0.8; background: rgba(59, 130, 246, 0.05); border-radius: 0 4px 4px 0; }
+        .markdown-preview table { border-collapse: collapse; width: 100%; margin: 0.75rem 0; font-size: 0.875rem; }
+        .markdown-preview th, .markdown-preview td { border: 1px solid hsl(var(--border)); padding: 0.4rem 0.75rem; text-align: left; }
+        .markdown-preview th { font-weight: 600; background: rgba(128,128,128,0.08); }
+        .markdown-preview pre { margin: 0.75rem 0; border-radius: 6px; overflow: hidden; }
+        .markdown-preview hr { border: none; border-top: 1px solid hsl(var(--border)); margin: 1.25rem 0; }
+        .markdown-preview a { color: #3b82f6; text-decoration: none; }
+        .markdown-preview a:hover { text-decoration: underline; }
+        .markdown-preview img { max-width: 100%; border-radius: 6px; margin: 0.75rem 0; }
+        .markdown-preview .hl-inline-code { background: rgba(128,128,128,0.12); padding: 0.15rem 0.4rem; border-radius: 3px; font-size: 0.875em; font-family: 'Cascadia Code','Fira Code','Consolas',monospace; }
+        .markdown-preview input[type="checkbox"] { margin-right: 0.4rem; }
       `}</style>
     </div>
   )

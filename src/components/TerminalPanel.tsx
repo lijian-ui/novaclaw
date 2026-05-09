@@ -1,212 +1,372 @@
-import { useState, useRef, useEffect, useCallback } from 'react'
-import { X, Square, Trash2 } from 'lucide-react'
-import { useTerminal } from '@/hooks/useTerminal'
-import type { TerminalLine } from '@/types/terminal'
+/**
+ * TerminalPanel — xterm.js 终端面板（VS Code 风格）
+ *
+ * 行输入模式：前端缓存用户输入，按 Enter 后发送完整命令到后端。
+ * 这种方式适配 Windows cmd.exe 管道模式，命令能够正确执行并返回输出。
+ *
+ * 未来可升级为 ConPTY 伪终端模式以支持完全交互式体验。
+ */
 
-const MIN_HEIGHT = 160
-const MAX_HEIGHT = 500
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { X, Terminal as TerminalIcon, Trash2, Maximize2, Minimize2 } from 'lucide-react'
+import { useTerminal } from '@/hooks/useTerminal'
+import { useTheme } from '@/contexts/ThemeContext'
+import '@xterm/xterm/css/xterm.css'
+
+const MIN_HEIGHT = 120
+const MAX_HEIGHT = 600
 const DEFAULT_HEIGHT = 280
+
+// 终端主题配置
+const terminalThemes = {
+  dark: {
+    background: '#1e1e1e',
+    foreground: '#cccccc',
+    cursor: '#cccccc',
+    cursorAccent: '#1e1e1e',
+    selectionBackground: '#264f78',
+    selectionInactiveBackground: '#3a3d41',
+    black: '#000000',
+    red: '#cd3131',
+    green: '#0dbc79',
+    yellow: '#e5e510',
+    blue: '#2472c8',
+    magenta: '#bc3fbc',
+    cyan: '#11a8cd',
+    white: '#e5e5e5',
+    brightBlack: '#666666',
+    brightRed: '#f14c4c',
+    brightGreen: '#23d18b',
+    brightYellow: '#f5f543',
+    brightBlue: '#3b8eea',
+    brightMagenta: '#d670d6',
+    brightCyan: '#29b8db',
+    brightWhite: '#e5e5e5',
+  },
+  light: {
+    background: '#ffffff',
+    foreground: '#333333',
+    cursor: '#333333',
+    cursorAccent: '#ffffff',
+    selectionBackground: '#add6ff',
+    selectionInactiveBackground: '#e5e5e5',
+    black: '#000000',
+    red: '#cd3131',
+    green: '#00bc00',
+    yellow: '#bcbc00',
+    blue: '#0000bc',
+    magenta: '#bc00bc',
+    cyan: '#00bcbc',
+    white: '#e5e5e5',
+    brightBlack: '#666666',
+    brightRed: '#cd3131',
+    brightGreen: '#00cd00',
+    brightYellow: '#cdcd00',
+    brightBlue: '#0000ee',
+    brightMagenta: '#cd00cd',
+    brightCyan: '#00cdcd',
+    brightWhite: '#ffffff',
+  },
+}
 
 interface TerminalPanelProps {
   visible: boolean
   onClose: () => void
 }
 
-/** 渲染单行终端输出 */
-function TerminalOutputLine({ line }: { line: TerminalLine }) {
-  const colorClass =
-    line.kind === 'error' ? 'text-red-400' :
-    line.kind === 'system' ? 'text-foreground/40' :
-    'text-green-300/90'
-  return (
-    <div className={`whitespace-pre-wrap font-mono text-xs leading-relaxed ${colorClass}`}>
-      {line.text}
-    </div>
-  )
-}
-
 export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
-  const {
-    lines, connected, running, error,
-    history, historyIndex,
-    sendCommand, killProcess, clearOutput, setHistoryIndex,
-  } = useTerminal()
+  const terminalRef = useRef<Terminal | null>(null)
+  const fitAddonRef = useRef<FitAddon | null>(null)
+  const termContainerRef = useRef<HTMLDivElement>(null)
+  const initializedRef = useRef(false)
+  const lineBufferRef = useRef('')
 
-  const [input, setInput] = useState('')
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
-  const [resizing, setResizing] = useState(false)
+  const [maximized, setMaximized] = useState(false)
+  const { theme } = useTheme()
 
-  const inputRef = useRef<HTMLInputElement>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const panelRef = useRef<HTMLDivElement>(null)
-  const startYRef = useRef(0)
-  const startHeightRef = useRef(0)
+  // 终端通信钩子（自动连接）
+  const {
+    connected,
+    error,
+    sendInput,
+    sendCommand,
+    killProcess,
+    clearOutput,
+    disconnect,
+  } = useTerminal(terminalRef)
 
-  // 自动滚动到底部
+  // ---- 初始化 xterm.js ----
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-    }
-  }, [lines])
+    if (!visible || initializedRef.current) return
+    initializedRef.current = true
 
-  // 自动聚焦
-  useEffect(() => {
-    if (visible && inputRef.current) {
-      inputRef.current.focus()
-    }
-  }, [visible])
+    const fitAddon = new FitAddon()
+    fitAddonRef.current = fitAddon
 
-  /** 回车执行 */
-  const handleSend = useCallback(() => {
-    if (!input.trim() || !connected) return
-    sendCommand(input)
-    setInput('')
-  }, [input, connected, sendCommand])
+    const term = new Terminal({
+      cursorBlink: true,
+      cursorStyle: 'bar',
+      fontSize: 13,
+      fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace",
+      lineHeight: 1.35,
+      theme: terminalThemes[theme],
+      allowTransparency: false,
+      cols: 80,
+      rows: 24,
+      scrollback: 10000,
+      allowProposedApi: true,
+    })
 
-  /** 键盘事件：上下箭头切换历史，回车执行，Ctrl+C 终止 */
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      handleSend()
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      const idx = historyIndex === -1 ? history.length - 1 : Math.max(0, historyIndex - 1)
-      setHistoryIndex(idx)
-      setInput(history[idx] || '')
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (historyIndex === -1) return
-      if (historyIndex >= history.length - 1) {
-        setHistoryIndex(-1)
-        setInput('')
-      } else {
-        const idx = historyIndex + 1
-        setHistoryIndex(idx)
-        setInput(history[idx] || '')
+    term.loadAddon(fitAddon)
+
+    // 挂载到 DOM
+    term.open(termContainerRef.current!)
+
+    // ---- 行输入模式 ----
+    // 前端缓存用户输入，按 Enter 后发送完整命令，
+    // 配合后端 cmd.exe 管道模式使用（cmd.exe 需要完整行输入）
+    const disposeOnData = term.onData((data: string) => {
+      for (const ch of data) {
+        if (ch === '\r') {
+          // 回车：执行当前行
+          const cmd = lineBufferRef.current
+          lineBufferRef.current = ''
+          term.write('\r\n')
+          if (cmd.trim()) {
+            sendCommand(cmd)
+          }
+        } else if (ch === '\x7f' || ch === '\b') {
+          // 退格
+          if (lineBufferRef.current.length > 0) {
+            lineBufferRef.current = lineBufferRef.current.slice(0, -1)
+            term.write('\b \b')
+          }
+        } else if (ch === '\x03') {
+          // Ctrl+C
+          lineBufferRef.current = ''
+          term.write('^C\r\n')
+          sendCommand('')
+        } else if (ch >= ' ') {
+          // 可打印字符
+          lineBufferRef.current += ch
+          term.write(ch)
+        }
       }
-    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'c' || e.key === 'C')) {
-      e.preventDefault()
-      killProcess()
-    } else if ((e.ctrlKey || e.metaKey) && (e.key === 'l' || e.key === 'L')) {
-      e.preventDefault()
-      clearOutput()
-    }
-  }, [handleSend, history, historyIndex, setHistoryIndex, killProcess, clearOutput])
+    })
 
-  // 调整大小拖拽
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    setResizing(true)
-    startYRef.current = e.clientY
-    startHeightRef.current = height
-    document.body.style.cursor = 'row-resize'
-    document.body.style.userSelect = 'none'
-  }, [height])
+    terminalRef.current = term
 
-  useEffect(() => {
-    if (!resizing) return
-    const handleMouseMove = (e: MouseEvent) => {
-      const diff = startYRef.current - e.clientY
-      const newHeight = Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, startHeightRef.current + diff))
-      setHeight(newHeight)
+    // 适配尺寸
+    const fitTimer = setTimeout(() => fitAddon.fit(), 100)
+
+    const handleResize = () => fitAddon.fit()
+    window.addEventListener('resize', handleResize)
+
+    const ro = new ResizeObserver(() => fitAddon.fit())
+    if (termContainerRef.current) {
+      ro.observe(termContainerRef.current)
     }
-    const handleMouseUp = () => {
-      setResizing(false)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
+
     return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
+      clearTimeout(fitTimer)
+      disposeOnData.dispose()
+      window.removeEventListener('resize', handleResize)
+      ro.disconnect()
+      term.dispose()
+      terminalRef.current = null
+      fitAddonRef.current = null
+      initializedRef.current = false
     }
-  }, [resizing])
+  }, [visible, sendCommand])
+
+  // ---- 面板高度变化后重新 fit ----
+  useEffect(() => {
+    if (!visible) return
+    const t = setTimeout(() => fitAddonRef.current?.fit(), 80)
+    return () => clearTimeout(t)
+  }, [height, maximized, visible])
+
+  // ---- 主题变化时更新终端样式 ----
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.options.theme = terminalThemes[theme]
+    }
+  }, [theme])
+
+  const handleClosePanel = useCallback(() => {
+    disconnect()
+    onClose()
+  }, [disconnect, onClose])
+
+  const toggleMaximize = useCallback(() => {
+    setMaximized((prev) => !prev)
+  }, [])
+
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault()
+      const startY = e.clientY
+      const startH = height
+      document.body.style.cursor = 'row-resize'
+      document.body.style.userSelect = 'none'
+
+      const onMove = (ev: MouseEvent) => {
+        const diff = startY - ev.clientY
+        setHeight(Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, startH + diff)))
+      }
+      const onUp = () => {
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+        setTimeout(() => fitAddonRef.current?.fit(), 50)
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    },
+    [height],
+  )
 
   if (!visible) return null
 
   return (
     <div
-      ref={panelRef}
       className="shrink-0 border-t border-border flex flex-col"
-      style={{ height, background: '#0d1117' /* 黑色终端背景 */ }}
+      style={{
+        height: maximized ? '50vh' : height,
+        background: theme === 'dark' ? '#1e1e1e' : '#ffffff',
+      }}
     >
-      {/* 拖拽手柄 */}
       <div
-        className="h-1.5 cursor-row-resize hover:bg-foreground/10 active:bg-foreground/20 transition-colors shrink-0 relative"
+        className="h-[3px] cursor-row-resize shrink-0 relative"
         onMouseDown={handleMouseDown}
-      />
+      >
+        <div className="absolute inset-x-0 top-0 h-[1px] bg-[#007acc]/30 hover:bg-[#007acc]/70 transition-colors" />
+      </div>
 
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 shrink-0">
+      {/* 标题栏 */}
+      <div 
+        className="flex items-center justify-between h-[32px] px-2 shrink-0 select-none"
+        style={{ background: theme === 'dark' ? '#252526' : '#f5f5f5' }}
+      >
         <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`} />
-          <span className="text-xs text-foreground/60 font-medium">Terminal</span>
-          {running && (
-            <span className="text-[10px] text-amber-400/70 animate-pulse">运行中...</span>
+          <TerminalIcon className="w-3.5 h-3.5" style={{ color: theme === 'dark' ? '#cccccc' : '#333333' }} />
+          <span 
+            className="text-xs font-medium tracking-wide"
+            style={{ color: theme === 'dark' ? '#cccccc' : '#333333' }}
+          >
+            TERMINAL
+          </span>
+          <div
+            className={`w-[6px] h-[6px] rounded-full ${
+              connected ? 'bg-[#89d185]' : 'bg-[#f14c4c]'
+            }`}
+          />
+          {connected && (
+            <span 
+              className="text-[10px]"
+              style={{ color: theme === 'dark' ? 'rgba(137, 209, 133, 0.6)' : 'rgba(137, 209, 133, 0.8)' }}
+            >
+              已连接
+            </span>
+          )}
+          {!connected && !error && (
+            <span 
+              className="text-[10px]"
+              style={{ color: theme === 'dark' ? 'rgba(241, 76, 76, 0.6)' : 'rgba(241, 76, 76, 0.8)' }}
+            >
+              未连接
+            </span>
           )}
           {error && (
-            <span className="text-[10px] text-red-400/70">{error}</span>
+            <span className="text-[10px] text-[#f14c4c]">{error}</span>
           )}
         </div>
-        <div className="flex items-center gap-1">
-          {/* 终止进程 */}
+        <div className="flex items-center gap-0.5">
           <button
-            title="终止进程 (Ctrl+C)"
+            title="终止当前进程 (Kill)"
             onClick={killProcess}
-            disabled={!running}
-            className="p-1 rounded hover:bg-foreground/10 transition-colors disabled:opacity-30"
+            className="w-[26px] h-[26px] flex items-center justify-center rounded transition-colors"
+            style={{ 
+              background: 'transparent',
+              color: theme === 'dark' ? '#999999' : '#666666'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+            }}
           >
-            <Square className="w-3.5 h-3.5 text-foreground/40" />
+            <Trash2 className="w-3.5 h-3.5" />
           </button>
-          {/* 清屏 */}
           <button
-            title="清屏 (Ctrl+L)"
+            title="清屏 (Clear)"
             onClick={clearOutput}
-            className="p-1 rounded hover:bg-foreground/10 transition-colors"
+            className="w-[26px] h-[26px] flex items-center justify-center rounded transition-colors"
+            style={{ 
+              background: 'transparent',
+              color: theme === 'dark' ? '#999999' : '#666666'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+            }}
           >
-            <Trash2 className="w-3.5 h-3.5 text-foreground/40" />
+            <TerminalIcon className="w-3.5 h-3.5" />
           </button>
-          {/* 关闭 */}
+          <button
+            title={maximized ? '还原' : '最大化'}
+            onClick={toggleMaximize}
+            className="w-[26px] h-[26px] flex items-center justify-center rounded transition-colors"
+            style={{ 
+              background: 'transparent',
+              color: theme === 'dark' ? '#999999' : '#666666'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+            }}
+          >
+            {maximized ? (
+              <Minimize2 className="w-3.5 h-3.5" />
+            ) : (
+              <Maximize2 className="w-3.5 h-3.5" />
+            )}
+          </button>
           <button
             title="关闭终端"
-            onClick={onClose}
-            className="p-1 rounded hover:bg-foreground/10 transition-colors"
+            onClick={handleClosePanel}
+            className="w-[26px] h-[26px] flex items-center justify-center rounded transition-colors"
+            style={{ 
+              background: 'transparent',
+              color: theme === 'dark' ? '#999999' : '#666666'
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = theme === 'dark' ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = 'transparent';
+            }}
           >
-            <X className="w-3.5 h-3.5 text-foreground/40" />
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>
 
-      {/* 输出区域 */}
+      {/* 终端容器 */}
       <div
-        ref={scrollRef}
-        className="flex-1 overflow-y-auto px-3 py-1.5 font-mono text-xs leading-relaxed"
-        style={{ background: '#0d1117' }}
-      >
-        {lines.length === 0 ? (
-          <div className="text-foreground/20 text-center pt-8">
-            <p>输入命令开始</p>
-            <p className="text-[10px] mt-1">方向键↑↓切换历史 · Ctrl+C 终止 · Ctrl+L 清屏</p>
-          </div>
-        ) : (
-          lines.map((line, i) => <TerminalOutputLine key={i} line={line} />)
-        )}
-      </div>
-
-      {/* 输入区域 */}
-      <div className="flex items-center gap-2 px-3 py-1.5 border-t border-foreground/10 shrink-0">
-        <span className="text-xs text-emerald-400 font-mono shrink-0">$</span>
-        <input
-          ref={inputRef}
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          className="flex-1 bg-transparent text-xs text-foreground/80 font-mono outline-none"
-          placeholder={connected ? (running ? '进程运行中，输入将加入下一轮...' : '输入命令...') : '连接中...'}
-          disabled={!connected}
-        />
-      </div>
+        ref={termContainerRef}
+        className="flex-1 overflow-hidden p-[4px]"
+        style={{ background: theme === 'dark' ? '#1e1e1e' : '#ffffff' }}
+      />
     </div>
   )
 }

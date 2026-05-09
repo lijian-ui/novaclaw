@@ -108,6 +108,14 @@ impl SkillsLoader {
 
     /// 解析 SKILL.md 文件内容
     fn parse_skill_md(content: &str, dir_path: &PathBuf) -> Option<SkillDef> {
+        Self::parse_skill_md_raw(content).map(|mut s| {
+            s.source_path = dir_path.display().to_string();
+            s
+        })
+    }
+
+    /// 解析 SKILL.md 内容（纯解析，不绑定路径），公开给外部使用
+    pub fn parse_skill_md_raw(content: &str) -> Option<SkillDef> {
         let mut name = String::new();
         let mut description = String::new();
         let mut version = String::from("0.1.0");
@@ -155,7 +163,7 @@ impl SkillsLoader {
             },
             version,
             content: body_content,
-            source_path: dir_path.display().to_string(),
+            source_path: String::new(), // 无路径信息
             enabled: true,
         })
     }

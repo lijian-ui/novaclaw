@@ -12,6 +12,17 @@ const INITIAL_CHAT_PERCENT = 0.40
 const INITIAL_FILE_PERCENT = 0.15
 
 function App() {
+  // 全局禁用所有输入框的拼写检查（波浪线）
+  useEffect(() => {
+    const disableSpellcheck = () => {
+      document.querySelectorAll('input, textarea').forEach(el => el.setAttribute('spellcheck', 'false'))
+    }
+    disableSpellcheck()
+    const observer = new MutationObserver(disableSpellcheck)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => observer.disconnect()
+  }, [])
+
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [chatWidth, setChatWidth] = useState(() => Math.round(window.innerWidth * INITIAL_CHAT_PERCENT))
   const [fileWidth, setFileWidth] = useState(0)
@@ -56,8 +67,8 @@ function App() {
       const x = e.clientX - rect.left
 
       if (draggingTarget === 'chat') {
-        // 估算侧边栏宽度
-        const sbWidth = sidebarCollapsed ? 50 : Math.max(120, Math.min(200, rect.width * 0.1))
+        // 侧边栏固定宽度
+        const sbWidth = sidebarCollapsed ? 50 : 220
         // 最大宽度 1300px
         const maxChatWidth = Math.min(rect.width - sbWidth - 50, 1300)
         const newChatWidth = Math.max(260, Math.min(maxChatWidth, x))
@@ -115,10 +126,10 @@ function App() {
 
   return (
     <div ref={containerRef} className="h-screen w-screen flex overflow-hidden bg-mainbg">
-      {/* Left Task Bar 10% */}
+      {/* 左侧任务列表（固定宽度，不受窗口拖动影响） */}
       <div
         className={`shrink-0 transition-all duration-200 ${
-          sidebarCollapsed ? 'w-[50px] min-w-[50px] max-w-[50px]' : 'w-[10%] min-w-[120px] max-w-[200px]'
+          sidebarCollapsed ? 'w-[50px] min-w-[50px] max-w-[50px]' : 'w-[220px] min-w-[220px] max-w-[220px]'
         }`}
       >
         <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
@@ -147,6 +158,7 @@ function App() {
             onSave={saveCurrent}
             onCloseTab={closeTab}
             onSwitchTab={switchTab}
+            onToggleFilePanel={toggleFilePanel}
           />
         ) : (
           <Routes>

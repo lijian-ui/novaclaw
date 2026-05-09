@@ -51,6 +51,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   const handleSelectSession = async (session: Session) => {
     setCurrentSession(session)
+    setMessages([]) // 先清除旧消息，避免 ChatPanel 同步到旧数据
     try {
       const messages = await getMessages(session.id)
       if (Array.isArray(messages)) {

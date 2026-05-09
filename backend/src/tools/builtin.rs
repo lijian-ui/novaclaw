@@ -465,11 +465,19 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // web_search 工具 - 使用 DuckDuckGo API
-            let web_search_client = std::sync::Arc::new(reqwest::Client::new());
+            // web_search 工具 - 多后端搜索（handler 内开新线程+独立 Runtime，不阻塞 tokio worker）
+            let web_search_client = std::sync::Arc::new(
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(10))
+                    .danger_accept_invalid_certs(true)
+                    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+                    .build()
+                    .map_err(|e| e.to_string())
+                    .unwrap_or_default()
+            );
             registry_clone.register(ToolDef {
                 name: "web_search".to_string(),
-                description: "通过 DuckDuckGo 搜索引擎搜索网络信息".to_string(),
+                description: "通过网络搜索获取最新信息，支持中文和英文搜索".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -480,76 +488,234 @@ pub fn register_all(registry: &mut ToolRegistry) {
                         "count": {
                             "type": "integer",
                             "description": "返回结果数量（默认5，最大10）"
-                        },
-                        "lang": {
-                            "type": "string",
-                            "description": "语言限制（zh/en，默认自动检测）"
                         }
                     },
                     "required": ["query"]
                 }),
                 handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
-                    let query = args["query"].as_str().ok_or("缺少 query 参数")?;
+                    let query = args["query"].as_str().ok_or("缺少 query 参数")?.to_string();
                     let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-                    let lang = args.get("lang").and_then(|v| v.as_str()).unwrap_or("");
+                    let encoded_query = urlencoding::encode(&query).to_string();
+                    let client = web_search_client.clone();
 
-                    // 查询预处理
-                    let processed_query = preprocess_query(query, None);
-                    tracing::info!("Web搜索查询（预处理后）: {}", processed_query);
+                    // 在进入异步上下文之前读取配置，避免 Tokio 运行时冲突
+                    let (tinyfish_api_key, tavily_api_key) = {
+                        let state = crate::APP_STATE.blocking_read();
+                        (
+                            state.config.tinyfish_api_key.clone(),
+                            state.config.tavily_api_key.clone(),
+                        )
+                    };
 
-                    // 构建 DuckDuckGo API 请求
-                    let mut url = format!(
-                        "https://api.duckduckgo.com/?q={}&format=json&no_redirect=1&no_html=1",
-                        urlencoding::encode(&processed_query)
-                    );
-                    
-                    // 添加语言参数
-                    if !lang.is_empty() {
-                        url.push_str(&format!("&kl={}", lang));
-                    }
+                    let result = std::thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new()
+                            .map_err(|e| format!("创建运行时失败: {}", e))?;
 
-                    // 使用 tokio 运行时执行异步请求
-                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("创建运行时失败: {}", e))?;
-                    let client_clone = web_search_client.clone();
-                    
-                    let result: Result<serde_json::Value, String> = rt.block_on(async move {
-                        let response = client_clone.get(&url)
-                            .header("User-Agent", "NovaClaw/1.0 (https://novaclaw.ai)")
-                            .send()
-                            .await
-                            .map_err(|e| format!("网络请求失败: {}", e))?;
+                        rt.block_on(async move {
+                            let mut last_error = String::new();
+                            let mut html = String::new();
+                            let mut json_result = String::new();
+                            let mut search_source = String::new();
 
-                        response.json().await.map_err(|e| format!("解析响应失败: {}", e))
-                    });
-
-                    let raw_results = result?;
-
-                    // 解析并排序结果
-                    let results = parse_and_rank(&raw_results, query);
-
-                    // 格式化输出
-                    if results.is_empty() {
-                        Ok(format!("未找到与 '{}' 相关的搜索结果", query))
-                    } else {
-                        let mut output = Vec::new();
-                        output.push(format!("🔍 搜索结果（共 {} 条）:", results.len()));
-                        output.push("---".to_string());
-                        
-                        for (idx, result) in results.iter().take(count).enumerate() {
-                            output.push(format!("{}. **{}**", idx + 1, result.title));
-                            output.push(format!("   📄 {}", result.url));
-                            if !result.snippet.is_empty() {
-                                let snippet = if result.snippet.len() > 200 {
-                                    &result.snippet[..200]
-                                } else {
-                                    &result.snippet
-                                };
-                                output.push(format!("   💡 {}", snippet));
+                            // 1. DuckDuckGo
+                            let url = format!("https://html.duckduckgo.com/html/?q={}", encoded_query);
+                            match client.post(&url)
+                                .header("Content-Type", "application/x-www-form-urlencoded")
+                                .body(format!("q={}", encoded_query))
+                                .send().await
+                            {
+                                Ok(resp) => {
+                                    let status = resp.status();
+                                    match resp.text().await {
+                                        Ok(text) => {
+                                            html = text;
+                                            search_source = "DuckDuckGo".to_string();
+                                        }
+                                        Err(e) => last_error = format!("DuckDuckGo 读取响应失败 (status={}): {}", status, e),
+                                    }
+                                }
+                                Err(e) => last_error = format!("DuckDuckGo 请求失败: {}", e),
                             }
-                            output.push("".to_string());
+
+                            // 2. TinyFish
+                            if html.is_empty() {
+                                if let Some(key) = tinyfish_api_key.filter(|k| !k.is_empty()) {
+                                    let url = format!("https://api.search.tinyfish.ai?query={}", encoded_query);
+                                    match client.get(&url).header("X-API-Key", &key).send().await {
+                                        Ok(resp) => match resp.text().await {
+                                            Ok(text) => {
+                                                json_result = text;
+                                                search_source = "TinyFish".to_string();
+                                            }
+                                            Err(e) => last_error = format!("TinyFish 读取响应失败: {}", e),
+                                        },
+                                        Err(e) => last_error = format!("TinyFish 请求失败: {}", e),
+                                    }
+                                }
+                            }
+
+                            // 3. Tavily
+                            if html.is_empty() && json_result.is_empty() {
+                                if let Some(key) = tavily_api_key.filter(|k| !k.is_empty()) {
+                                    let body = serde_json::json!({
+                                        "query": query,
+                                        "search_depth": "basic",
+                                        "include_answer": false,
+                                        "include_images": false,
+                                        "max_results": 5
+                                    });
+                                    match client.post("https://api.tavily.com/search")
+                                        .header("Authorization", format!("Bearer {}", key))
+                                        .header("Content-Type", "application/json")
+                                        .json(&body)
+                                        .send().await
+                                    {
+                                        Ok(resp) => match resp.text().await {
+                                            Ok(text) => {
+                                                json_result = text;
+                                                search_source = "Tavily".to_string();
+                                            }
+                                            Err(e) => last_error = format!("Tavily 读取响应失败: {}", e),
+                                        },
+                                        Err(e) => last_error = format!("Tavily 请求失败: {}", e),
+                                    }
+                                }
+                            }
+
+                            // 结果处理
+                            let mut results: Vec<SearchResult> = Vec::new();
+
+                            // JSON 解析（TinyFish / Tavily）
+                            if !json_result.is_empty() {
+                                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&json_result) {
+                                    if let Some(items) = json["results"].as_array() {
+                                        for item in items {
+                                            let snippet = item["snippet"].as_str()
+                                                .or_else(|| item["content"].as_str())
+                                                .unwrap_or("").to_string();
+                                            results.push(SearchResult {
+                                                title: item["title"].as_str().unwrap_or("").to_string(),
+                                                url: item["url"].as_str().unwrap_or("").to_string(),
+                                                snippet,
+                                                relevance: 1.0 - (results.len() as f64 * 0.05),
+                                            });
+                                            if results.len() >= 10 { break; }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // DuckDuckGo HTML 解析
+                            if results.is_empty() && !html.is_empty() && html.contains("result__a") {
+                                let mut pos = 0;
+                                while let Some(link_start) = html[pos..].find("class=\"result__a\"") {
+                                    let actual_start = pos + link_start;
+                                    let href_start = html[actual_start..].find("href=\"")
+                                        .map(|i| actual_start + i + 6).unwrap_or(actual_start);
+                                    let href_end = html[href_start..].find('\"')
+                                        .map(|i| href_start + i).unwrap_or(href_start);
+                                    let url = &html[href_start..href_end];
+                                    let title_start = html[href_end..].find('>')
+                                        .map(|i| href_end + i + 1).unwrap_or(href_end);
+                                    let title_end = html[title_start..].find("</a>")
+                                        .map(|i| title_start + i).unwrap_or(title_start);
+                                    let snippet_start = html[title_end..].find("class=\"result__snippet\"")
+                                        .and_then(|i| {
+                                            let after_class = title_end + i;
+                                            html[after_class..].find('>').map(|j| after_class + j + 1)
+                                        }).unwrap_or(title_end);
+                                    let snippet_end = html[snippet_start..].find("</a>")
+                                        .or_else(|| html[snippet_start..].find("</span>"))
+                                        .map(|i| snippet_start + i).unwrap_or_else(|| html.len());
+
+                                    results.push(SearchResult {
+                                        title: html_unescape(&html[title_start..title_end]).trim().to_string(),
+                                        url: html_unescape(url.trim()).to_string(),
+                                        snippet: html_unescape(&html[snippet_start..snippet_end]).trim().to_string(),
+                                        relevance: 1.0 - (results.len() as f64 * 0.05),
+                                    });
+                                    pos = snippet_end;
+                                    if results.len() >= 10 { break; }
+                                }
+                            }
+
+                            if results.is_empty() {
+                                Err(if last_error.is_empty() {
+                                    format!("未找到与 '{}' 相关的搜索结果", query)
+                                } else {
+                                    format!("搜索失败: {}", last_error)
+                                })
+                            } else {
+                                Ok(format_results(&results, count, &query, &search_source))
+                            }
+                        })
+                    }).join()
+                    .map_err(|_| "搜索线程崩溃".to_string())??;
+
+                    Ok(result)
+                }),
+            }).await;
+
+            // skills_list 工具 - 列出所有可用技能
+            registry_clone.register(ToolDef {
+                name: "skills_list".to_string(),
+                description: "列出所有可用技能。返回包含技能名称和简短描述的列表。".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }),
+                handler: std::sync::Arc::new(|_args: serde_json::Value| -> Result<String, String> {
+                    use crate::APP_STATE;
+                    let state = APP_STATE.blocking_read();
+                    let skills = state.skills_loader.list_skills();
+                    if skills.is_empty() {
+                        return Ok("{\"skills\": []}".to_string());
+                    }
+                    let result: Vec<serde_json::Value> = skills.iter().map(|s| {
+                        serde_json::json!({
+                            "name": s.name,
+                            "description": s.description,
+                            "version": s.version,
+                            "enabled": s.enabled,
+                        })
+                    }).collect();
+                    Ok(serde_json::json!({ "skills": result }).to_string())
+                }),
+            }).await;
+
+            // skill_view 工具 - 查看指定技能的完整详细内容
+            registry_clone.register(ToolDef {
+                name: "skill_view".to_string(),
+                description: "查看指定技能的完整详细内容。先用 skills_list 查看可用技能列表，然后使用此工具加载具体技能的完整指令。".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "要查看的技能名称"
                         }
-                        
-                        Ok(output.join("\n"))
+                    },
+                    "required": ["name"]
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                    use crate::APP_STATE;
+                    let name = args["name"].as_str().ok_or("缺少 name 参数")?;
+                    let state = APP_STATE.blocking_read();
+                    match state.skills_loader.get_skill(name) {
+                        Some(skill) => {
+                            Ok(serde_json::json!({
+                                "name": skill.name,
+                                "description": skill.description,
+                                "version": skill.version,
+                                "content": skill.content,
+                            }).to_string())
+                        }
+                        None => {
+                            let available: Vec<String> = state.skills_loader.list_skills()
+                                .iter().map(|s| s.name.clone()).collect();
+                            Err(format!("技能 '{}' 未找到。可用技能: {}", name, available.join(", ")))
+                        }
                     }
                 }),
             }).await;
@@ -603,4 +769,42 @@ pub fn register_all(registry: &mut ToolRegistry) {
 fn glob_match(name: &str, pattern: &str) -> bool {
     let pattern = pattern.replace("*", "");
     name.contains(&pattern)
+}
+
+/// 简单的 HTML 实体解码（只处理常见实体）
+fn html_unescape(s: &str) -> String {
+    let mut result = s.to_string();
+    result = result.replace("&amp;", "&");
+    result = result.replace("&lt;", "<");
+    result = result.replace("&gt;", ">");
+    result = result.replace("&quot;", "\"");
+    result = result.replace("&#39;", "'");
+    result = result.replace("&#x27;", "'");
+    result = result.replace("&#x2F;", "/");
+    result = result.replace("&nbsp;", " ");
+    result
+}
+
+/// 格式化搜索结果输出
+fn format_results(results: &[SearchResult], count: usize, query: &str, source: &str) -> String {
+    if results.is_empty() {
+        return format!("未找到与 '{}' 相关的搜索结果", query);
+    }
+
+    let mut output = Vec::new();
+    let source_tag = if source.is_empty() { String::new() } else { format!(" - 来源: {}", source) };
+    output.push(format!("🔍 搜索结果（共 {} 条）{}", results.len(), source_tag));
+    output.push("---".to_string());
+
+    for (idx, result) in results.iter().take(count).enumerate() {
+        output.push(format!("{}. **{}**", idx + 1, result.title));
+        output.push(format!("   📄 {}", result.url));
+        if !result.snippet.is_empty() {
+            let snippet: String = result.snippet.chars().take(200).collect();
+            output.push(format!("   💡 {}", snippet));
+        }
+        output.push("".to_string());
+    }
+
+    output.join("\n")
 }

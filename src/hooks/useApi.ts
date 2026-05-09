@@ -2,16 +2,36 @@ import { useState, useCallback, useRef } from 'react'
 import axios from 'axios'
 import type { Session, Message, Model, Skill, CronJob, Layout, ChatRequest, ChatResponse, Config, ProviderConfig } from '@/types'
 
-// In production (Tauri), Axum runs on 127.0.0.1:3000
-// In dev (Vite), the proxy forwards /api to the same address
-const API_HOST = 'http://127.0.0.1:3000'
+// 后端地址：Tauri 桌面端直连 3000 端口，浏览器开发环境用 Vite proxy
+const isTauri = (): boolean =>
+  typeof window !== 'undefined' && !!(window as any).__TAURI__?.invoke
+
+const API_HOST = isTauri() ? 'http://127.0.0.1:3000' : ''
 const API_BASE = `${API_HOST}/api`
-const WS_BASE = `ws://127.0.0.1:3000/ws`
+const WS_BASE = isTauri()
+  ? 'ws://127.0.0.1:3000/ws'
+  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
 
 const api = axios.create({
   baseURL: API_BASE,
   timeout: 30000,
 })
+
+// 调试日志：打印所有 API 请求的完整 URL 及响应状态
+api.interceptors.request.use(config => {
+  console.debug(`[API] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`)
+  return config
+})
+api.interceptors.response.use(
+  response => {
+    console.debug(`[API] ${response.config.method?.toUpperCase()} ${response.config.url} → ${response.status}`)
+    return response
+  },
+  error => {
+    console.error(`[API] ${error.config?.method?.toUpperCase()} ${error.config?.url} → ${error.response?.status || error.message}`)
+    return Promise.reject(error)
+  },
+)
 
 export function useApi() {
   const [loading, setLoading] = useState(false)
@@ -87,6 +107,12 @@ export function useApi() {
             content: payload?.content || '',
             sessionId: payload?.session_id || undefined,
           })
+        } else if (data.type === 'stopped') {
+          // 用户打断停止，保留已输出的部分内容
+          onDone({
+            content: '',
+            sessionId: payload?.session_id || undefined,
+          })
         } else if (data.type === 'error') {
           onError(payload?.message || data.data?.message || '未知错误')
         }
@@ -100,7 +126,11 @@ export function useApi() {
     }
 
     ws.onclose = () => {
-      wsRef.current = null
+      // 仅当 wsRef.current 仍然指向本 WebSocket 时才清空，
+      // 防止异步触发时覆盖已创建的新连接
+      if (wsRef.current === ws) {
+        wsRef.current = null
+      }
     }
 
     return ws
@@ -116,6 +146,14 @@ export function useApi() {
         type: 'send',
         data,
       }))
+    }
+  }, [])
+
+  // 发送停止指令：中断当前正在生成的流式响应
+  // 后端收到后会取消 LLM 请求、保存已输出部分、发送 "stopped" 响应
+  const stopChatStream = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'stop' }))
     }
   }, [])
 
@@ -189,7 +227,7 @@ export function useApi() {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get(`/sessions/${id}`)
+      const response = await api.get(`/session`, { params: { session_id: id } })
       return response.data?.data || response.data
     } catch (err) {
       handleError(err)
@@ -203,7 +241,7 @@ export function useApi() {
     setLoading(true)
     setError(null)
     try {
-      await api.delete(`/sessions/${id}`)
+      await api.delete(`/session`, { params: { session_id: id } })
     } catch (err) {
       handleError(err)
       throw err
@@ -216,7 +254,7 @@ export function useApi() {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get(`/sessions/${sessionId}/messages`)
+      const response = await api.get(`/session`, { params: { session_id: sessionId } })
       // 后端返回 { success: true, data: [...] }
       return response.data?.data || []
     } catch (err) {
@@ -247,7 +285,32 @@ export function useApi() {
     setError(null)
     try {
       const response = await api.get('/skills')
-      return response.data
+      // 后端返回 { success: true, data: [...] }
+      return response.data?.data || []
+    } catch (err) {
+      handleError(err)
+      throw err
+    } finally {
+      setLoading(false)
+    }
+  }, [handleError])
+
+  const uploadSkill = useCallback(async (file: File): Promise<{ installed: number; errors: string[] }> => {
+    setLoading(true)
+    setError(null)
+    try {
+      // 读取文件内容为二进制，直接 POST 发送
+      const arrayBuffer = await file.arrayBuffer()
+      const response = await fetch(`${API_BASE}/skills/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: arrayBuffer,
+      })
+      const result = await response.json()
+      if (!result.success) {
+        throw new Error(result.message || '上传失败')
+      }
+      return result.data || { installed: 0, errors: [] }
     } catch (err) {
       handleError(err)
       throw err
@@ -261,7 +324,8 @@ export function useApi() {
     setError(null)
     try {
       const response = await api.get(`/skills/${id}`)
-      return response.data
+      // 后端返回 { success: true, data: {...} }
+      return response.data?.data || response.data
     } catch (err) {
       handleError(err)
       throw err
@@ -488,6 +552,7 @@ export function useApi() {
     // WebSocket Chat
     connectChatStream,
     sendChatMessage,
+    stopChatStream,
     disconnectChat,
     // Models
     listModels,
@@ -503,6 +568,7 @@ export function useApi() {
     listSkills,
     getSkill,
     deleteSkill,
+    uploadSkill,
     // Cron
     listCronJobs,
     createCronJob,

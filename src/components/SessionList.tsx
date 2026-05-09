@@ -7,13 +7,21 @@ import type { Session } from '@/types'
 export function SessionList() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null)
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const { currentSession, setCurrentSession, setMessages } = useChat()
-  const { listSessions, createSession, deleteSession, getMessages } = useApi()
+  const { listSessions, createSession, deleteSession, getMessages, loading } = useApi()
   const initialLoadDone = useRef(false)
 
   useEffect(() => {
-    loadSessions().then(() => { initialLoadDone.current = true })
+    loadSessions()
   }, [])
+
+  useEffect(() => {
+    if (!initialLoadDone.current || !currentSession) return
+    if (!sessions.some(s => s.id === currentSession.id)) {
+      loadSessions()
+    }
+  }, [currentSession])
 
   // 当 currentSession 指向一个列表中不存在的会话时（如首次对话自动创建），刷新列表
   useEffect(() => {
@@ -25,16 +33,20 @@ export function SessionList() {
   }, [currentSession])
 
   const loadSessions = async () => {
+    setErrorMsg(null)
     try {
       const result = await listSessions()
       if (Array.isArray(result)) {
         setSessions(result)
+        initialLoadDone.current = true
       } else {
         setSessions([])
       }
     } catch (error) {
-      console.error('Failed to load sessions:', error)
+      console.error('加载会话失败:', error)
+      setErrorMsg(String(error))
       setSessions([])
+      initialLoadDone.current = true
     }
   }
 
@@ -54,6 +66,7 @@ export function SessionList() {
 
   const handleSelectSession = async (session: Session) => {
     setCurrentSession(session)
+    setMessages([]) // 先清除旧消息，避免 ChatPanel 同步到旧数据
     try {
       const messages = await getMessages(session.id)
       if (Array.isArray(messages)) {
@@ -108,11 +121,21 @@ export function SessionList() {
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {sessions.length === 0 ? (
+        {errorMsg ? (
+          <div className="p-4 text-center">
+            <p className="text-xs text-red-400 mb-1">加载失败</p>
+            <p className="text-[10px] text-foreground/40 break-all">{errorMsg}</p>
+            <button onClick={loadSessions} className="mt-2 text-xs text-blue-400 hover:underline">重试</button>
+          </div>
+        ) : loading && sessions.length === 0 ? (
+          <div className="p-4 text-center text-muted-foreground">
+            <p className="text-sm">加载中...</p>
+          </div>
+        ) : sessions.length === 0 ? (
           <div className="p-4 text-center text-muted-foreground">
             <MessageSquare className="w-12 h-12 mx-auto mb-2 opacity-50" />
             <p className="text-sm">暂无会话</p>
-            <p className="text-xs mt-1">点击上方按钮创建</p>
+            <p className="text-xs mt-1">发送消息自动创建，或点击上方按钮新建</p>
           </div>
         ) : (
           <div className="p-2 space-y-1">
