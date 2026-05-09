@@ -12,6 +12,7 @@ import {
   Paperclip,
   Mic,
   ArrowUp,
+  Square,
   ArrowDownToLine,
   Terminal,
   Clock,
@@ -66,7 +67,7 @@ function genId() {
 }
 
 export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
-  const { currentSession, setCurrentSession } = useChat()
+  const { currentSession, setCurrentSession, messages: contextMessages } = useChat()
   const sessionIdRef = useRef<string | undefined>(undefined)
   const userContentRef = useRef('') // 保存用户消息用于标题生成
 
@@ -79,8 +80,241 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
   const [toolsOpen, setToolsOpen] = useState(false)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<MessageData[]>([])
+  const currentSessionIdRef = useRef(currentSession?.id)
+  const lastSyncMsgCountRef = useRef(0)
+
+  // 当切换会话时：立即清空本地消息，防止显示旧会话数据
+  useEffect(() => {
+    const newId = currentSession?.id
+    if (currentSessionIdRef.current !== newId) {
+      // 只在切换已有会话时清空，首次创建 session（undefined → 有值）时不清
+      if (currentSessionIdRef.current !== undefined && newId !== undefined) {
+        currentSessionIdRef.current = newId
+        lastSyncMsgCountRef.current = 0
+        setMessages([])
+      } else {
+        currentSessionIdRef.current = newId
+      }
+    }
+  }, [currentSession])
+
+  // 当 contextMessages 实际更新时：同步到本地状态
+  useEffect(() => {
+    if (!currentSession) {
+      setMessages([])
+      return
+    }
+    if (contextMessages.length > 0 && contextMessages.length !== lastSyncMsgCountRef.current) {
+      lastSyncMsgCountRef.current = contextMessages.length
+
+      // 将历史消息转换为 MessageData[]，包括 tool_calls 展开为 agent_step
+      const converted: MessageData[] = []
+      for (const m of contextMessages) {
+        const role = m.role === 'tool' || m.role === 'system' ? 'assistant' : m.role as 'user' | 'assistant'
+
+        // 处理工具调用消息（assistant 消息携带 tool_calls，也可能同时有 first_reasoning）
+        if (m.tool_calls && m.tool_calls.length > 0) {
+          // 先处理 first_reasoning（思考内容），放在 tool_call 之前显示
+          if (m.first_reasoning && m.first_reasoning.trim()) {
+            const blocks = m.first_reasoning
+              .split(/ response/i)
+              .map(s => s.trim())
+              .filter(s => s.length > 0)
+            if (blocks.length > 0) {
+              // 第一个思考块 → first_thought
+              converted.push({
+                id: `${m.id}_first_reasoning`,
+                role: 'agent_step',
+                content: blocks[0],
+                agentStep: {
+                  stepType: 'first_thought',
+                  content: blocks[0],
+                  toolName: undefined,
+                  toolResult: undefined,
+                  turn: 0,
+                  maxTurns: 20,
+                }
+              })
+              // 后续思考块 → thought
+              for (let fi = 1; fi < blocks.length; fi++) {
+                if (blocks[fi] && blocks[fi].trim()) {
+                  converted.push({
+                    id: `${m.id}_first_reasoning_${fi}`,
+                    role: 'agent_step',
+                    content: blocks[fi],
+                    agentStep: {
+                      stepType: 'thought',
+                      content: blocks[fi],
+                      toolName: undefined,
+                      toolResult: undefined,
+                      turn: fi,
+                      maxTurns: 20,
+                    }
+                  })
+                }
+              }
+            }
+          }
+          // 再添加 assistant 消息本身（如有内容）
+          if (m.content && m.content.trim()) {
+            converted.push({
+              id: m.id,
+              role,
+              content: m.content,
+            })
+          }
+          // 展开 tool_calls 为 agent_step 消息
+          for (const tc of m.tool_calls) {
+            converted.push({
+              id: `tool_${tc.id}`,
+              role: 'agent_step',
+              content: `调用工具: ${tc.name}`,
+              agentStep: {
+                stepType: 'tool_call',
+                content: tc.arguments || '{}',
+                toolName: tc.name,
+                toolResult: undefined,
+                turn: 0,
+                maxTurns: 20,
+              }
+            })
+          }
+        }
+        // 处理推理/思考内容（first_reasoning 和 reasonings 字段，无 tool_calls）
+        else if (role === 'assistant' && (m.first_reasoning || m.reasonings || m.reasoning)) {
+          // 使用 parseAllThinkBlocks 解析 first_reasoning，分离多个思考块
+          // 第一个思考块 → first_thought（主要样式），后续思考块 → thought（次要样式）
+          const rawFirstReasoning = m.first_reasoning || m.reasoning || ''
+          // 解析多个思考块（兼容合并的思考内容）
+          const firstReasoningBlocks = rawFirstReasoning
+            .split(/<｜end▁of▁thinking｜>/i)
+            .map(s => s.trim())
+            .filter(s => s.length > 0)
+          
+          // 处理第一次思考块（first_reasoning 中的第一块 → first_thought）
+          if (firstReasoningBlocks.length > 0) {
+            // 第一个思考块 → first_thought
+            converted.push({
+              id: `${m.id}_first_reasoning`,
+              role: 'agent_step',
+              content: firstReasoningBlocks[0],
+              agentStep: {
+                stepType: 'first_thought',
+                content: firstReasoningBlocks[0],
+                toolName: undefined,
+                toolResult: undefined,
+                turn: 0,
+                maxTurns: 20,
+              }
+            })
+            
+            // 后续思考块 → thought（次要样式）
+            for (let fi = 1; fi < firstReasoningBlocks.length; fi++) {
+              const fb = firstReasoningBlocks[fi]
+              if (fb && fb.trim()) {
+                converted.push({
+                  id: `${m.id}_first_reasoning_${fi}`,
+                  role: 'agent_step',
+                  content: fb,
+                  agentStep: {
+                    stepType: 'thought',
+                    content: fb,
+                    toolName: undefined,
+                    toolResult: undefined,
+                    turn: fi,
+                    maxTurns: 20,
+                  }
+                })
+              }
+            }
+          }
+          // 处理后续思考（reasonings）
+          if (m.reasonings && m.reasonings.length > 0) {
+            for (let ri = 0; ri < m.reasonings.length; ri++) {
+              const r = m.reasonings[ri]
+              if (r && r.trim()) {
+                converted.push({
+                  id: `${m.id}_reasoning_${ri}`,
+                  role: 'agent_step',
+                  content: r,
+                  agentStep: {
+                    stepType: 'thought',
+                    content: r,
+                    toolName: undefined,
+                    toolResult: undefined,
+                    turn: ri + 1,
+                    maxTurns: 20,
+                  }
+                })
+              }
+            }
+          }
+          // 兼容旧字段 reasoning（如果 first_reasoning 和 reasonings 都为空）
+          if (!m.first_reasoning && !m.reasonings && m.reasoning && m.reasoning.trim()) {
+            converted.push({
+              id: `${m.id}_reasoning`,
+              role: 'agent_step',
+              content: m.reasoning,
+              agentStep: {
+                stepType: 'first_thought',
+                content: m.reasoning,
+                toolName: undefined,
+                toolResult: undefined,
+                turn: 0,
+                maxTurns: 20,
+              }
+            })
+          }
+          // 添加 assistant 消息本身（剥离 <think> 标签，避免在 ChatMessages 中重复渲染）
+          if (m.content && m.content.trim()) {
+            const strippedContent = m.content
+              // 移除完整的 <think>...</think> 块
+              .replace(/<think\s*>[\s\S]*?<\/think\s*>/gi, '')
+              // 移除不完整的 <think> 开头（流式垃圾数据）
+              .replace(/<think\s*>[\s\S]*$/i, '')
+              // 移除 Google Gemma 风格的 <|channel|>thought...<channel|>
+              .replace(/<\|channel\|?>thought[\s\S]*?<channel\|>/gi, '')
+              .trim()
+            if (strippedContent) {
+              converted.push({
+                id: m.id,
+                role: 'assistant',
+                content: strippedContent,
+              })
+            }
+          }
+        }
+        // 处理工具结果消息（role=tool）
+        else if (m.role === 'tool' && m.tool_call_id) {
+          converted.push({
+            id: `result_${m.tool_call_id}`,
+            role: 'agent_step',
+            content: m.content,
+            agentStep: {
+              stepType: 'tool_result',
+              content: '',
+              toolName: m.tool_name,
+              toolResult: m.content,
+              turn: 0,
+              maxTurns: 20,
+            }
+          })
+        }
+        // 普通消息
+        else {
+          converted.push({
+            id: m.id,
+            role,
+            content: m.content,
+          })
+        }
+      }
+      setMessages(converted)
+    }
+  }, [contextMessages, currentSession])
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
+  const [streamingReasoning, setStreamingReasoning] = useState('')
   const [streamError, setStreamError] = useState<string | null>(null)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [selectedModel, setSelectedModel] = useState('Auto')
@@ -92,6 +326,8 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const streamingContentRef = useRef('')
+  const streamingReasoningRef = useRef('')
+  const hasFlushedFirstReasoningRef = useRef(false) // 标记是否已刷新第一次思考
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -121,7 +357,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
     setShowScrollBtn(distFromBottom > 100)
   }, [])
 
-  const { connectChatStream, sendChatMessage, disconnectChat, listProviders, getDefaultModel, setDefaultModel } = useApi()
+  const { connectChatStream, sendChatMessage, stopChatStream, disconnectChat, listProviders, getDefaultModel, setDefaultModel } = useApi()
 
   // Load model list from backend
   const loadModels = useCallback(() => {
@@ -181,8 +417,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
   const startStreaming = useCallback((userContent: string) => {
     setIsStreaming(true)
     setStreamingContent('')
+    setStreamingReasoning('')
     setStreamError(null)
     streamingContentRef.current = ''
+    streamingReasoningRef.current = ''
+    hasFlushedFirstReasoningRef.current = false
     userContentRef.current = userContent // 保存用户消息用于标题
 
     const ws = connectChatStream(
@@ -193,6 +432,25 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
       },
       (result: { content?: string; sessionId?: string }) => {
         setIsStreaming(false)
+        // 将剩余的 streamingReasoning 刷新为一条思考消息
+        if (streamingReasoningRef.current.trim()) {
+          const stepType = hasFlushedFirstReasoningRef.current ? 'thought' : 'first_thought'
+          setMessages(prev => [...prev, {
+            id: genId(),
+            role: 'agent_step',
+            content: streamingReasoningRef.current,
+            agentStep: {
+              stepType,
+              content: streamingReasoningRef.current,
+              toolName: undefined,
+              toolResult: undefined,
+              turn: 0,
+              maxTurns: 20,
+            }
+          }])
+          streamingReasoningRef.current = ''
+          setStreamingReasoning('')
+        }
         const content = streamingContentRef.current || result.content || ''
         if (content) {
           setMessages(prev => [...prev, { id: genId(), role: 'assistant', content }])
@@ -219,20 +477,61 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
         setStreamError(err || '对话连接失败，请检查后端服务是否运行')
       },
       (step) => {
-        // Add agent step as a special message
-        setMessages(prev => [...prev, {
-          id: genId(),
-          role: 'agent_step',
-          content: step.content,
-          agentStep: {
-            stepType: step.stepType,
-            content: step.content,
-            toolName: step.toolName,
-            toolResult: step.toolResult,
-            turn: step.turn,
-            maxTurns: step.maxTurns,
+        if (step.stepType === 'reasoning') {
+          // 推理内容流式累积到 streamingReasoning，实时显示为思考块
+          streamingReasoningRef.current += step.content
+          setStreamingReasoning(streamingReasoningRef.current)
+        } else if (step.stepType === 'tool_call') {
+          // 工具调用前：把累积的推理刷新为一条思考消息
+          if (streamingReasoningRef.current.trim()) {
+            const stepType = hasFlushedFirstReasoningRef.current ? 'thought' : 'first_thought'
+            setMessages(prev => [...prev, {
+              id: genId(),
+              role: 'agent_step',
+              content: streamingReasoningRef.current,
+              agentStep: {
+                stepType,
+                content: streamingReasoningRef.current,
+                toolName: undefined,
+                toolResult: undefined,
+                turn: 0,
+                maxTurns: 20,
+              }
+            }])
+            streamingReasoningRef.current = ''
+            setStreamingReasoning('')
+            hasFlushedFirstReasoningRef.current = true
           }
-        }])
+          // 再添加 tool_call 消息
+          setMessages(prev => [...prev, {
+            id: genId(),
+            role: 'agent_step',
+            content: step.content,
+            agentStep: {
+              stepType: step.stepType,
+              content: step.content,
+              toolName: step.toolName,
+              toolResult: step.toolResult,
+              turn: step.turn,
+              maxTurns: step.maxTurns,
+            }
+          }])
+        } else {
+          // 其他步骤（tool_result 等）作为独立消息
+          setMessages(prev => [...prev, {
+            id: genId(),
+            role: 'agent_step',
+            content: step.content,
+            agentStep: {
+              stepType: step.stepType,
+              content: step.content,
+              toolName: step.toolName,
+              toolResult: step.toolResult,
+              turn: step.turn,
+              maxTurns: step.maxTurns,
+            }
+          }])
+        }
       },
     )
 
@@ -273,6 +572,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
 
     startStreaming(msg)
   }, [input, isStreaming, startStreaming])
+
+  // 打断停止：发送 stop 指令给后端 → 后端取消 LLM 请求 → 后端返回 "stopped" → onDone 处理
+  const handleStop = useCallback(() => {
+    stopChatStream()
+  }, [stopChatStream])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -408,6 +712,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
               messages={messages}
               isStreaming={isStreaming}
               streamingContent={streamingContent}
+              streamingReasoning={streamingReasoning}
               messagesEndRef={messagesEndRef}
             />
 
@@ -450,6 +755,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
               onChange={handleInput}
               onKeyDown={handleKeyDown}
               rows={1}
+              spellCheck={false}
               placeholder="输入消息..."
               className="w-full bg-transparent text-sm text-foreground/80 placeholder-foreground/30 outline-none resize-none leading-5 py-0.5 max-h-[160px]"
               style={{ height: 'auto' }}
@@ -507,16 +813,33 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
                 <Mic className="w-4 h-4 text-foreground/50" />
               </button>
               <button
-                onClick={handleSend}
-                disabled={isStreaming || !input.trim()}
-                className="p-1.5 rounded-lg bg-green-500 hover:bg-green-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                onClick={isStreaming ? handleStop : handleSend}
+                disabled={!isStreaming && !input.trim()}
+                className={`p-1.5 rounded-lg transition-colors ${
+                  isStreaming
+                    ? 'bg-red-500 hover:bg-red-400 animate-breathing'
+                    : 'bg-green-500 hover:bg-green-400 disabled:opacity-40 disabled:cursor-not-allowed'
+                }`}
               >
-                <ArrowUp className="w-4 h-4 text-black" />
+                {isStreaming ? (
+                  <Square className="w-4 h-4 text-white" />
+                ) : (
+                  <ArrowUp className="w-4 h-4 text-black" />
+                )}
               </button>
             </div>
           </div>
         </div>
       </div>
+      <style>{`
+        @keyframes breathing {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.6; transform: scale(0.92); }
+        }
+        .animate-breathing {
+          animation: breathing 2.5s ease-in-out infinite;
+        }
+      `}</style>
     </div>
   )
 }

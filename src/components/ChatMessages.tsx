@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import mermaid from 'mermaid'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneDark, vs } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import {
@@ -9,6 +10,13 @@ import {
 } from 'lucide-react'
 import type { Components } from 'react-markdown'
 import type { CSSProperties } from 'react'
+
+// 初始化 Mermaid（theme 由 useEffect 动态设置）
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: 'loose',
+  fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+})
 
 // 深色主题代码高亮
 const darkTheme: Record<string, CSSProperties> = {
@@ -230,72 +238,57 @@ function ToolCallBlock({
   content: string
   toolResult?: string
 }) {
-  const [expandedArgs, setExpandedArgs] = useState(true)
-  const [expandedResult, setExpandedResult] = useState(true)
-
   const { icon: Icon, color } = getToolMeta(toolName)
   const displayName = toolName || 'unknown'
+
+  // 尝试从 content 中提取文件路径
+  function extractFilePath(content: string): string | null {
+    // JSON 格式: {"file_path": "/path/to/file.txt"}
+    const jsonMatch = content.match(/"file_path"\s*:\s*"([^"]+)"/)
+    if (jsonMatch) return jsonMatch[1]
+
+    // JSON 格式: {"path": "/path/to/file.txt"}
+    const jsonPathMatch = content.match(/"path"\s*:\s*"([^"]+)"/)
+    if (jsonPathMatch) return jsonPathMatch[1]
+
+    // JSON 格式: {"file": "/path/to/file.txt"}
+    const jsonFileMatch = content.match(/"file"\s*:\s*"([^"]+)"/)
+    if (jsonFileMatch) return jsonFileMatch[1]
+
+    // JSON 格式: {"filepath": "/path/to/file.txt"}
+    const jsonFilepathMatch = content.match(/"filepath"\s*:\s*"([^"]+)"/)
+    if (jsonFilepathMatch) return jsonFilepathMatch[1]
+
+    // 常见参数名: directory, folder, target, source 等
+    const dirMatch = content.match(/"(directory|folder|target|source|dest|output|input)"\s*:\s*"([^"]+)"/i)
+    if (dirMatch) return dirMatch[2]
+
+    // 裸路径: /path/to/file 或 ./path/to/file 或 path/to/file
+    const barePathMatch = content.match(/["']([./]?[a-zA-Z]:[/\\])?[\w.-]+[\w./\\-]+["']/)
+    if (barePathMatch) {
+      const path = barePathMatch[1].replace(/["']/g, '')
+      // 过滤掉太短的路径（可能是参数名）
+      if (path.length > 3 && (path.includes('/') || path.includes('\\') || path.includes('.'))) {
+        return path
+      }
+    }
+
+    return null
+  }
+
+  const filePath = extractFilePath(content)
 
   return (
     <div className="my-2 rounded-lg border border-border bg-foreground/[0.02] overflow-hidden">
       <div className="flex items-center gap-2 px-3 py-2">
         <Icon className={`w-3.5 h-3.5 shrink-0 ${color}`} />
         <span className="font-medium text-foreground/80 text-xs">{displayName}</span>
-        {content && (
-          <button
-            onClick={() => setExpandedArgs(!expandedArgs)}
-            className="ml-auto flex items-center gap-1 text-foreground/40 hover:text-foreground/60 transition-colors"
-          >
-            <ChevronDown
-              className={`w-3 h-3 transition-transform duration-200 ${expandedArgs ? '' : '-rotate-90'}`}
-            />
-            <span className="text-xs">参数</span>
-          </button>
+        {filePath && (
+          <span className="text-xs text-foreground/50 font-mono truncate ml-1" title={filePath}>
+            {filePath}
+          </span>
         )}
       </div>
-
-      {content && (
-        <div
-          className="transition-all duration-300 ease-in-out overflow-hidden"
-          style={{
-            maxHeight: expandedArgs ? '200px' : '0px',
-            opacity: expandedArgs ? 1 : 0,
-          }}
-        >
-          <div className="border-t border-border px-3 py-2">
-            <div className="text-xs text-foreground/50 font-mono whitespace-pre-wrap leading-relaxed bg-foreground/[0.03] rounded px-2 py-1.5">
-              {content || '(无参数)'}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {toolResult && (
-        <div className="border-t border-border">
-          <button
-            onClick={() => setExpandedResult(!expandedResult)}
-            className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-foreground/[0.03] transition-colors"
-          >
-            <ChevronRight
-              className={`w-3 h-3 text-foreground/40 transition-transform duration-200 ${expandedResult ? 'rotate-90' : ''}`}
-            />
-            <span className="text-xs text-foreground/50">执行结果</span>
-          </button>
-          <div
-            className="transition-all duration-300 ease-in-out overflow-hidden"
-            style={{
-              maxHeight: expandedResult ? '300px' : '0px',
-              opacity: expandedResult ? 1 : 0,
-            }}
-          >
-            <div className="px-3 pb-2">
-              <div className="text-xs text-foreground/60 font-mono whitespace-pre-wrap leading-relaxed bg-foreground/[0.03] rounded px-2 py-1.5 max-h-[280px] overflow-y-auto">
-                {toolResult}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -359,6 +352,11 @@ const markdownComponents: Components = {
     const content = String(children).replace(/\n$/, '')
     if (isInline) {
       return <InlineCode>{children}</InlineCode>
+    }
+    // Mermaid 图表：渲染为 <pre class="mermaid">，后续由 mermaid.run() 转换为 SVG
+    const match = /language-(\w+)/.exec(className || '')
+    if (match && match[1] === 'mermaid') {
+      return <pre className="mermaid">{content}</pre>
     }
     return <CodeBlock className={className}>{content}</CodeBlock>
   },
@@ -479,10 +477,23 @@ interface ChatMessagesProps {
   messages: MessageData[]
   isStreaming: boolean
   streamingContent: string
+  streamingReasoning?: string
   messagesEndRef: React.Ref<HTMLDivElement>
 }
 
-export function ChatMessages({ messages, isStreaming, streamingContent, messagesEndRef }: ChatMessagesProps) {
+export function ChatMessages({ messages, isStreaming, streamingContent, streamingReasoning, messagesEndRef }: ChatMessagesProps) {
+  // 每次渲染后自动渲染 Mermaid 图表（根据当前明暗主题切换主题色）
+  useEffect(() => {
+    const isDark = document.documentElement.classList.contains('dark')
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: isDark ? 'dark' : 'default',
+      securityLevel: 'loose',
+      fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+    })
+    mermaid.run()
+  })
+
   const mergedResultMap = new Map<string, string>()
   const toolStepIds = new Set<string>()
   const resultStepIds = new Set<string>()
@@ -509,6 +520,8 @@ export function ChatMessages({ messages, isStreaming, streamingContent, messages
 
   // 预处理2：识别属于 assistant 的 thought 步骤（避免在外层循环重复渲染）
   const thoughtStepIds = new Set<string>()
+  // 预处理3：识别 first_thought 步骤（独立渲染为"思考过程"）
+  const firstThoughtStepIds = new Set<string>()
   for (let i = 0; i < messages.length; i++) {
     if (messages[i].role !== 'assistant') continue
     for (let j = i - 1; j >= 0; j--) {
@@ -516,19 +529,182 @@ export function ChatMessages({ messages, isStreaming, streamingContent, messages
       if (m.role === 'user' || m.role === 'assistant') break
       if (m.role === 'agent_step' && m.agentStep) {
         const st = m.agentStep.stepType?.toLowerCase() || ''
-        if ((st.includes('thought') || st.includes('think') || st === 'reasoning') && !toolStepIds.has(m.id)) {
+        // 区分 first_thought 和普通 thought
+        if (st === 'first_thought') {
+          firstThoughtStepIds.add(m.id)
+        } else if ((st.includes('thought') || st.includes('think') || st === 'reasoning') && !toolStepIds.has(m.id)) {
           thoughtStepIds.add(m.id)
         }
       }
     }
   }
 
+  // 预处理4：流式阶段收集尚未被任何 assistant 消息关联的 agent_step 消息
+  // 这些步骤应该按照时间顺序渲染，而不是等到 assistant 出现
+  const pendingAgentSteps: MessageData[] = []
+  const pairedToolResultIds = new Set<string>()
+  // 在 isStreaming 块外部初始化，块内部填充，用于后续跳过已渲染步骤
+  const pendingRenderedIds = new Set<string>()
+  if (isStreaming) {
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
+      if (msg.role !== 'agent_step') continue
+      // 跳过已被 assistant 向后关联的步骤
+      if (toolStepIds.has(msg.id)) continue
+      if (thoughtStepIds.has(msg.id)) continue
+      if (firstThoughtStepIds.has(msg.id)) continue
+      pendingAgentSteps.push(msg)
+      pendingRenderedIds.add(msg.id)
+    }
+
+    // 流式阶段配对 tool_call 和 tool_result
+    for (let i = 0; i < pendingAgentSteps.length; i++) {
+      const msg = pendingAgentSteps[i]
+      if (msg.agentStep?.stepType === 'tool_result') {
+        // 尝试在之前的 pendingAgentSteps 中找对应的 tool_call
+        for (let j = 0; j < i; j++) {
+          const prevMsg = pendingAgentSteps[j]
+          if (
+            (prevMsg.agentStep?.stepType === 'tool_call' || prevMsg.agentStep?.stepType === 'function_call') &&
+            prevMsg.agentStep?.toolName?.toLowerCase() === msg.agentStep?.toolName?.toLowerCase()
+          ) {
+            pairedToolResultIds.add(msg.id)
+            pendingRenderedIds.add(msg.id) // 已配对的 tool_result 也标记为已渲染
+            break
+          }
+        }
+      }
+    }
+
+    // 将 pendingAgentSteps 中的步骤标记为"已被渲染"，避免后续 assistant 扫描时重复收集
+    for (const pendingMsg of pendingAgentSteps) {
+      const st = pendingMsg.agentStep?.stepType?.toLowerCase() || ''
+      if (st === 'first_thought') {
+        firstThoughtStepIds.add(pendingMsg.id)
+      } else if (st.includes('thought') || st.includes('think') || st === 'reasoning') {
+        thoughtStepIds.add(pendingMsg.id)
+      } else if (st === 'tool_call' || st === 'function_call' || st === 'tool_result' || st === 'function_result') {
+        toolStepIds.add(pendingMsg.id)
+      }
+    }
+  }
+
   const renderList: { key: string; element: JSX.Element }[] = []
+
+  // 创建 pendingAgentSteps 的 Map，方便快速查找
+  const pendingAgentStepsMap = new Map<string, MessageData>()
+  for (const msg of pendingAgentSteps) {
+    pendingAgentStepsMap.set(msg.id, msg)
+  }
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i]
 
     if (resultStepIds.has(msg.id)) continue
+
+    // 如果是 pendingAgentSteps 中的消息，在这里渲染（保持时间顺序）
+    if (pendingAgentStepsMap.has(msg.id)) {
+      const pendingMsg = pendingAgentStepsMap.get(msg.id)!
+      const st = pendingMsg.agentStep?.stepType?.toLowerCase() || ''
+      const isFirstThought = st === 'first_thought'
+      const isThought = st.includes('thought') || st.includes('think') || st === 'reasoning'
+
+      if (isFirstThought) {
+        renderList.push({
+          key: msg.id,
+          element: (
+            <div className="flex justify-start" key={msg.id}>
+              <div className="w-full min-w-0">
+                <ThinkingBlock
+                  content={pendingMsg.agentStep!.content}
+                  streaming={isStreaming}
+                  title={isStreaming ? '正在思考...' : '思考过程'}
+                  defaultExpanded={false}
+                />
+              </div>
+            </div>
+          ),
+        })
+      } else if (isThought) {
+        renderList.push({
+          key: msg.id,
+          element: (
+            <div className="flex justify-start" key={msg.id}>
+              <div className="w-full min-w-0">
+                <ThinkingBlock
+                  content={pendingMsg.agentStep!.content}
+                  streaming={isStreaming}
+                  title={isStreaming ? '正在思考...' : 'Thought'}
+                  secondary
+                  defaultExpanded={false}
+                />
+              </div>
+            </div>
+          ),
+        })
+      } else if (st === 'tool_call' || st === 'function_call') {
+        // 查找对应的 tool_result
+        let toolResult: string | undefined
+        for (const [id, nextMsg] of pendingAgentStepsMap) {
+          if (
+            (nextMsg.agentStep?.stepType === 'tool_result' || nextMsg.agentStep?.stepType === 'function_result') &&
+            nextMsg.agentStep?.toolName?.toLowerCase() === pendingMsg.agentStep?.toolName?.toLowerCase() &&
+            pairedToolResultIds.has(id)
+          ) {
+            toolResult = nextMsg.agentStep?.toolResult || nextMsg.agentStep?.content
+            break
+          }
+        }
+        renderList.push({
+          key: msg.id,
+          element: (
+            <div className="flex justify-start" key={msg.id}>
+              <div className="w-full min-w-0">
+                <ToolCallBlock
+                  toolName={pendingMsg.agentStep!.toolName}
+                  content={pendingMsg.agentStep!.content}
+                  toolResult={toolResult}
+                />
+              </div>
+            </div>
+          ),
+        })
+      } else if (st === 'tool_result' || st === 'function_result') {
+        // 已配对的 tool_result 不单独渲染（已合并到上面的 tool_call 中）
+        if (pairedToolResultIds.has(msg.id)) continue
+        // 未配对的 tool_result 单独渲染
+        renderList.push({
+          key: msg.id,
+          element: (
+            <div className="flex justify-start" key={msg.id}>
+              <div className="w-full min-w-0">
+                <div className="rounded-xl px-4 py-2 bg-foreground/[0.04] border border-foreground/5">
+                  <p className="text-xs text-foreground/60 whitespace-pre-wrap">{pendingMsg.agentStep!.content}</p>
+                </div>
+              </div>
+            </div>
+          ),
+        })
+      } else {
+        // 其他类型的步骤
+        renderList.push({
+          key: msg.id,
+          element: (
+            <div className="flex justify-start" key={msg.id}>
+              <div className="w-full min-w-0">
+                <div className="rounded-xl px-4 py-2 bg-foreground/[0.04] border border-foreground/5">
+                  <p className="text-xs text-foreground/60 whitespace-pre-wrap">{pendingMsg.agentStep!.content}</p>
+                </div>
+              </div>
+            </div>
+          ),
+        })
+      }
+      continue // 跳过后续处理，因为已经在这里渲染了
+    }
+
+    // 跳过流式阶段已渲染的 agent_step
+    if (pendingRenderedIds.has(msg.id)) continue
 
     if (msg.role === 'assistant') {
       const assistantContent = msg.content
@@ -539,6 +715,7 @@ export function ChatMessages({ messages, isStreaming, streamingContent, messages
       type AgentStepEntry =
         | { kind: 'tool'; msg: MessageData }
         | { kind: 'thought'; msg: MessageData }
+        | { kind: 'first_thought'; msg: MessageData }
 
       const agentSteps: AgentStepEntry[] = []
       for (let j = i - 1; j >= 0; j--) {
@@ -550,7 +727,9 @@ export function ChatMessages({ messages, isStreaming, streamingContent, messages
           agentSteps.unshift({ kind: 'tool', msg: m })
         } else {
           const st = m.agentStep.stepType?.toLowerCase() || ''
-          if (st.includes('thought') || st.includes('think') || st === 'reasoning') {
+          if (st === 'first_thought') {
+            agentSteps.unshift({ kind: 'first_thought', msg: m })
+          } else if (st.includes('thought') || st.includes('think') || st === 'reasoning') {
             agentSteps.unshift({ kind: 'thought', msg: m })
           }
         }
@@ -576,10 +755,27 @@ export function ChatMessages({ messages, isStreaming, streamingContent, messages
       }
 
       // 2 & 3. agent_step 步骤按原始顺序渲染：
+      //   first_thought → "思考过程" 折叠块（主要样式）
       //   thought → "Thought" 折叠块（次要样式，完成后自动折叠）
       //   tool    → ToolCallBlock
       for (const entry of agentSteps) {
-        if (entry.kind === 'thought') {
+        if (entry.kind === 'first_thought') {
+          // 第一次思考：显示为"思考过程"（主要样式）
+          renderList.push({
+            key: entry.msg.id,
+            element: (
+              <div className="flex justify-start" key={entry.msg.id}>
+                <div className="w-full min-w-0">
+                  <ThinkingBlock
+                    content={entry.msg.agentStep!.content}
+                    title="思考过程"
+                    defaultExpanded={false}
+                  />
+                </div>
+              </div>
+            ),
+          })
+        } else if (entry.kind === 'thought') {
           renderList.push({
             key: entry.msg.id,
             element: (
@@ -669,18 +865,39 @@ export function ChatMessages({ messages, isStreaming, streamingContent, messages
       if (toolStepIds.has(msg.id)) continue
       // 跳过已被 assistant 消息向前扫描收录的 thought 步骤
       if (thoughtStepIds.has(msg.id)) continue
+      // 跳过已被 assistant 消息向前扫描收录的 first_thought 步骤
+      if (firstThoughtStepIds.has(msg.id)) continue
+      // 跳过流式阶段已渲染的步骤
+      if (pendingRenderedIds.has(msg.id)) continue
 
       const st = msg.agentStep.stepType?.toLowerCase() || ''
+      const isFirstThought = st === 'first_thought'
       const isThought = st.includes('thought') || st.includes('think') || st === 'reasoning'
 
       // 流式阶段：尚未配对到任何 assistant 消息的独立 agent_step
       // thought 步骤正确传入 streaming=true，使其显示为"正在思考..."动画
-      renderList.push({
-        key: msg.id,
-        element: (
-          <div className="flex justify-start" key={msg.id}>
-            <div className="w-full min-w-0">
-              {isThought ? (
+      if (isFirstThought) {
+        renderList.push({
+          key: msg.id,
+          element: (
+            <div className="flex justify-start" key={msg.id}>
+              <div className="w-full min-w-0">
+                <ThinkingBlock
+                  content={msg.agentStep.content}
+                  streaming={isStreaming}
+                  title={isStreaming ? '正在思考...' : '思考过程'}
+                  defaultExpanded={false}
+                />
+              </div>
+            </div>
+          ),
+        })
+      } else if (isThought) {
+        renderList.push({
+          key: msg.id,
+          element: (
+            <div className="flex justify-start" key={msg.id}>
+              <div className="w-full min-w-0">
                 <ThinkingBlock
                   content={msg.agentStep.content}
                   streaming={isStreaming}
@@ -688,21 +905,43 @@ export function ChatMessages({ messages, isStreaming, streamingContent, messages
                   secondary
                   defaultExpanded={false}
                 />
-              ) : (
+              </div>
+            </div>
+          ),
+        })
+      } else {
+        renderList.push({
+          key: msg.id,
+          element: (
+            <div className="flex justify-start" key={msg.id}>
+              <div className="w-full min-w-0">
                 <div className="rounded-xl px-4 py-2 bg-foreground/[0.04] border border-foreground/5">
                   <p className="text-xs text-foreground/60 whitespace-pre-wrap">{msg.agentStep.content}</p>
                 </div>
-              )}
+              </div>
             </div>
-          </div>
-        ),
-      })
+          ),
+        })
+      }
     }
   }
 
   return (
     <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3">
       {renderList.map(item => item.element)}
+      {/* Streaming reasoning 块 */}
+      {isStreaming && streamingReasoning && (
+        <div className="flex justify-start">
+          <div className="w-full rounded-xl px-4 py-3 bg-amber-500/5 border border-amber-500/20">
+            <div className="flex items-center gap-2 mb-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              <span className="text-[11px] font-medium text-amber-400/70 uppercase tracking-wider">思考过程</span>
+            </div>
+            <MarkdownContent content={streamingReasoning} streaming={true} />
+          </div>
+        </div>
+      )}
+      {/* Streaming assistant text */}
       {isStreaming && streamingContent && (
         <div className="flex justify-start">
           <div className="w-full rounded-xl px-4 py-3 bg-foreground/[0.04] border border-foreground/5">
