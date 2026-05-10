@@ -5,6 +5,7 @@ import { vscDarkPlus, oneLight } from 'react-syntax-highlighter/dist/esm/styles/
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import mermaid from 'mermaid'
+import { useTheme } from '@/contexts/ThemeContext'
 import type { EditorTab } from '@/types/fileEditor'
 
 mermaid.initialize({
@@ -43,19 +44,8 @@ function getHighlightLang(lang: string): string {
 
 /** Markdown 实时预览（使用 react-markdown + mermaid） */
 function MarkdownPreview({ content }: { content: string }) {
-  const [isLight, setIsLight] = useState(
-    typeof document !== 'undefined' && document.documentElement.classList.contains('light')
-  )
+  const { isLight } = useTheme()
   const containerRef = useRef<HTMLDivElement>(null)
-
-  // 主题切换监听
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsLight(document.documentElement.classList.contains('light'))
-    })
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-    return () => observer.disconnect()
-  }, [])
 
   // 渲染后自动渲染 Mermaid 图表（根据当前明暗主题切换主题色）
   useEffect(() => {
@@ -66,7 +56,7 @@ function MarkdownPreview({ content }: { content: string }) {
       fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
     })
     mermaid.run()
-  })
+  }, [isLight])
 
   return (
     <div ref={containerRef} className="markdown-preview p-4 text-sm leading-relaxed overflow-y-auto h-full">
@@ -119,24 +109,13 @@ function MarkdownPreview({ content }: { content: string }) {
 }
 
 export function FileEditor({ tabs, activeTab, onUpdateContent, onSave, onCloseTab, onSwitchTab, onToggleFilePanel }: FileEditorProps) {
+  const { isLight } = useTheme()
   const content = activeTab?.content || ''
   const language = activeTab?.language || ''
   const fileName = activeTab?.name || ''
   const dirty = activeTab?.dirty || false
   const isMarkdown = language === 'markdown'
   const [preview, setPreview] = useState(isMarkdown)
-
-  // 检测当前主题（明亮/暗色），切换 SyntaxHighlighter 主题
-  const [isLight, setIsLight] = useState(
-    typeof document !== 'undefined' && document.documentElement.classList.contains('light')
-  )
-  useEffect(() => {
-    const observer = new MutationObserver(() => {
-      setIsLight(document.documentElement.classList.contains('light'))
-    })
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] })
-    return () => observer.disconnect()
-  }, [])
 
   const hlLang = useMemo(() => getHighlightLang(language), [language])
   const textareaRef = useRef<HTMLTextAreaElement>(null)

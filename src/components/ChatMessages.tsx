@@ -8,6 +8,7 @@ import {
   Copy, Check, ChevronRight, ChevronDown, Brain, Circle, Search,
   Code2, Puzzle, Cpu, Blocks, Terminal, Clock, FileText, Settings,
 } from 'lucide-react'
+import { useTheme } from '@/contexts/ThemeContext'
 import type { Components } from 'react-markdown'
 import type { CSSProperties } from 'react'
 
@@ -294,10 +295,10 @@ function ToolCallBlock({
 }
 
 function CodeBlock({ className, children }: { className?: string; children: string }) {
+  const { isDark } = useTheme()
   const [copied, setCopied] = useState(false)
   const match = /language-(\w+)/.exec(className || '')
   const lang = match ? match[1] : 'text'
-  const isDark = document.documentElement.classList.contains('dark')
 
   const handleCopy = useCallback(() => {
     navigator.clipboard.writeText(children)
@@ -482,9 +483,10 @@ interface ChatMessagesProps {
 }
 
 export function ChatMessages({ messages, isStreaming, streamingContent, streamingReasoning, messagesEndRef }: ChatMessagesProps) {
+  const { isDark } = useTheme()
+  
   // 每次渲染后自动渲染 Mermaid 图表（根据当前明暗主题切换主题色）
   useEffect(() => {
-    const isDark = document.documentElement.classList.contains('dark')
     mermaid.initialize({
       startOnLoad: false,
       theme: isDark ? 'dark' : 'default',
@@ -492,7 +494,7 @@ export function ChatMessages({ messages, isStreaming, streamingContent, streamin
       fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
     })
     mermaid.run()
-  })
+  }, [isDark])
 
   const mergedResultMap = new Map<string, string>()
   const toolStepIds = new Set<string>()
