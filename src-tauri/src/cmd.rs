@@ -413,6 +413,24 @@ pub async fn terminal_spawn(app: tauri::AppHandle) -> Result<(), String> {
         killed,
     });
 
+    // Shell 启动后设置提示符格式并显示
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    
+    // 设置简洁的提示符格式
+    {
+        let mut guard = TERMINAL_PROCESS.lock().await;
+        if let Some(proc) = guard.as_mut() {
+            proc.stdin.send("prompt $P$G ".to_string() + "\r\n").await.ok();
+        }
+    }
+    
+    // 短暂延迟后发送空行触发提示符显示
+    let app_prompt = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+        let _ = app_prompt.emit("terminal:stdout", "\r\n".to_string());
+    });
+    
     let _ = app.emit("terminal:connected", "");
     Ok(())
 }
@@ -424,26 +442,72 @@ pub async fn terminal_exec(app: tauri::AppHandle, command: String) -> Result<(),
     
     match guard.as_mut() {
         Some(proc) => {
+            // 清屏命令特殊处理
             if command.trim() == "clear" || command.trim() == "cls" {
                 let _ = app.emit("terminal:clear", "");
+                // 清屏后发送新的提示符
+                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                let _ = app.emit("terminal:stdout", get_windows_prompt());
                 return Ok(());
             }
+            
             if !command.is_empty() {
-                proc.stdin.send(command + "\n").await.map_err(|e| format!("发送命令失败: {}", e))?;
+                proc.stdin.send(command.trim_end().to_string() + "\r\n").await.map_err(|e| format!("发送命令失败: {}", e))?;
+                
+                // 命令执行后发送新的提示符（延迟等待命令执行完成）
+                let app_clone = app.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    let _ = app_clone.emit("terminal:stdout", get_windows_prompt());
+                });
+            } else {
+                // 空命令也显示提示符
+                let _ = app.emit("terminal:stdout", get_windows_prompt());
             }
             Ok(())
         }
         None => {
             drop(guard);
-            terminal_spawn(app).await?;
+            terminal_spawn(app.clone()).await?;
+            
+            // Shell 启动后设置提示符格式并显示
             let mut guard = TERMINAL_PROCESS.lock().await;
-            if !command.is_empty() {
-                if let Some(proc) = guard.as_mut() {
-                    proc.stdin.send(command + "\n").await.map_err(|e| format!("发送命令失败: {}", e))?;
-                }
+            if let Some(proc) = guard.as_mut() {
+                // 发送设置提示符命令
+                proc.stdin.send("prompt $P$G".to_string() + "\r\n").await.ok();
+                
+                // 短暂延迟后发送空行触发提示符显示
+                drop(guard);
+                let app_clone = app.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    let _ = app_clone.emit("terminal:stdout", "\r\n".to_string());
+                });
+            }
+            
+            // 如果有命令则执行
+            if !command.trim().is_empty() {
+                let app_exec = app.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+                    let mut guard = TERMINAL_PROCESS.lock().await;
+                    if let Some(proc) = guard.as_mut() {
+                        let _ = proc.stdin.send(command.trim().to_string() + "\r\n").await;
+                    }
+                });
             }
             Ok(())
         }
+    }
+}
+
+/// 获取 Windows 提示符（当前路径格式）
+fn get_windows_prompt() -> String {
+    if let Ok(cwd) = std::env::current_dir() {
+        let path = cwd.to_string_lossy();
+        format!("\r\n{}>", path)
+    } else {
+        "\r\n>".to_string()
     }
 }
 

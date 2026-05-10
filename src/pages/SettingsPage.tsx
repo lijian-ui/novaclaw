@@ -34,7 +34,7 @@ interface SettingsSettingsProps {
 
 export function SettingsPage({ onBack }: SettingsSettingsProps) {
   const { t, i18n: i18nInstance } = useTranslation()
-  const { theme, toggle } = useTheme()
+  const { theme, toggle, setTheme, isDark } = useTheme()
   const [activeSection, setActiveSection] = useState<string | null>(null)
 
   const handleLanguageChange = useCallback((newLang: string) => {
@@ -49,7 +49,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
         <h4 className="text-sm font-medium text-foreground/90 mb-3">{t('settings.theme')}</h4>
         <div className="grid grid-cols-3 gap-3">
           <button
-            onClick={() => { if (theme !== 'light') toggle() }}
+            onClick={() => setTheme('light')}
             className={`flex flex-col items-center gap-2 px-4 py-3 rounded-lg border text-xs transition-colors ${
               theme === 'light'
                 ? 'border-blue-500/50 bg-blue-500/10 text-blue-400'
@@ -60,7 +60,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
             {t('settings.light')}
           </button>
           <button
-            onClick={() => { if (theme !== 'dark') toggle() }}
+            onClick={() => setTheme('dark')}
             className={`flex flex-col items-center gap-2 px-4 py-3 rounded-lg border text-xs transition-colors ${
               theme === 'dark'
                 ? 'border-blue-500/50 bg-blue-500/10 text-blue-400'
@@ -71,8 +71,9 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
             {t('settings.dark')}
           </button>
           <button
+            onClick={() => setTheme('system')}
             className={`flex flex-col items-center gap-2 px-4 py-3 rounded-lg border text-xs transition-colors ${
-              false
+              theme === 'system'
                 ? 'border-blue-500/50 bg-blue-500/10 text-blue-400'
                 : 'border-border bg-foreground/5 text-foreground/50 hover:bg-foreground/10'
             }`}
@@ -80,22 +81,6 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
             <Monitor className="w-5 h-5" />
             {t('settings.system')}
           </button>
-        </div>
-      </div>
-
-      {/* 字体大小 */}
-      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <h4 className="text-sm font-medium text-foreground/90 mb-3">{t('settings.fontSize')}</h4>
-        <div className="flex items-center gap-3">
-          <Type className="w-4 h-4 text-foreground/40 shrink-0" />
-          <input
-            type="range"
-            min="12"
-            max="20"
-            defaultValue="14"
-            className="flex-1 accent-blue-500 h-1.5 rounded-full appearance-none cursor-pointer bg-foreground/10 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-500"
-          />
-          <span className="text-xs text-foreground/50 w-8 text-right">14px</span>
         </div>
       </div>
     </div>
@@ -192,11 +177,20 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
           <select 
             value={i18nInstance.language}
             onChange={(e) => handleLanguageChange(e.target.value)}
-            className="px-3 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none cursor-pointer"
+            className={`px-3 py-1.5 rounded-lg border text-xs outline-none cursor-pointer appearance-none w-32 text-center relative transition-colors ${
+              isDark 
+                ? 'bg-gray-800 border-gray-600 text-gray-200 hover:bg-gray-700' 
+                : 'bg-gray-100 border-gray-300 text-gray-800 hover:bg-gray-200'
+            }`}
+            style={{
+              backgroundImage: `url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3e%3cpath stroke='%236b7280' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='M6 8l4 4 4-4'/%3e%3c/svg%3e")`,
+              backgroundPosition: 'right 0.5rem center',
+              backgroundRepeat: 'no-repeat',
+              backgroundSize: '1.5em 1.5em',
+            }}
           >
             <option value="zh-CN">简体中文</option>
             <option value="en-US">English</option>
-            <option value="ja-JP">日本語</option>
           </select>
         </div>
       </div>

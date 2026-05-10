@@ -128,8 +128,8 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
     term.open(termContainerRef.current!)
 
     // ---- 行输入模式 ----
-    // 前端缓存用户输入，按 Enter 后发送完整命令，
-    // 配合后端 cmd.exe 管道模式使用（cmd.exe 需要完整行输入）
+    // 前端缓存用户输入，按 Enter 后发送完整命令到后端。
+    // 使用 \r\n 换行（Windows cmd.exe 兼容）
     const disposeOnData = term.onData((data: string) => {
       for (const ch of data) {
         if (ch === '\r') {
@@ -139,6 +139,9 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
           term.write('\r\n')
           if (cmd.trim()) {
             sendCommand(cmd)
+          } else {
+            // 空命令也发送，后端会显示提示符
+            sendCommand('')
           }
         } else if (ch === '\x7f' || ch === '\b') {
           // 退格
@@ -151,6 +154,12 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
           lineBufferRef.current = ''
           term.write('^C\r\n')
           sendCommand('')
+        } else if (ch === '\x1b') {
+          // ESC 键 - 清除当前行
+          if (lineBufferRef.current.length > 0) {
+            term.write('\b \b'.repeat(lineBufferRef.current.length))
+            lineBufferRef.current = ''
+          }
         } else if (ch >= ' ') {
           // 可打印字符
           lineBufferRef.current += ch

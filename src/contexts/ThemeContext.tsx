@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
 
-type Theme = 'dark' | 'light'
+type Theme = 'dark' | 'light' | 'system'
 
 interface ThemeContextValue {
   theme: Theme
@@ -21,17 +21,44 @@ const ThemeContext = createContext<ThemeContextValue>({
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
     const saved = localStorage.getItem('novaclaw-theme')
-    return (saved === 'light' || saved === 'dark') ? saved : 'dark'
+    return (saved === 'light' || saved === 'dark' || saved === 'system') ? saved : 'dark'
   })
 
+  const getSystemTheme = (): Theme => {
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+      return 'dark'
+    }
+    return 'light'
+  }
+
+  const getEffectiveTheme = useCallback((): Theme => {
+    if (theme === 'system') {
+      return getSystemTheme()
+    }
+    return theme
+  }, [theme])
+
   const applyTheme = useCallback((t: Theme) => {
+    const effectiveTheme = t === 'system' ? getSystemTheme() : t
     document.documentElement.classList.remove('dark', 'light')
-    document.documentElement.classList.add(t)
+    document.documentElement.classList.add(effectiveTheme)
     localStorage.setItem('novaclaw-theme', t)
   }, [])
 
   useEffect(() => {
     applyTheme(theme)
+  }, [theme, applyTheme])
+
+  useEffect(() => {
+    if (theme !== 'system') return
+    
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+    const handleChange = () => {
+      applyTheme('system')
+    }
+    
+    mediaQuery.addEventListener('change', handleChange)
+    return () => mediaQuery.removeEventListener('change', handleChange)
   }, [theme, applyTheme])
 
   const toggle = useCallback(() => {
@@ -42,8 +69,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     setThemeState(t)
   }, [])
 
+  const effectiveTheme = getEffectiveTheme()
+
   return (
-    <ThemeContext.Provider value={{ theme, toggle, setTheme, isDark: theme === 'dark', isLight: theme === 'light' }}>
+    <ThemeContext.Provider value={{ 
+      theme, 
+      toggle, 
+      setTheme, 
+      isDark: effectiveTheme === 'dark', 
+      isLight: effectiveTheme === 'light' 
+    }}>
       {children}
     </ThemeContext.Provider>
   )
