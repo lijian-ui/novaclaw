@@ -13,6 +13,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { X, Terminal as TerminalIcon, Trash2, Maximize2, Minimize2 } from 'lucide-react'
 import { useTerminal } from '@/hooks/useTerminal'
 import { useTheme } from '@/contexts/ThemeContext'
+import { useTranslation } from 'react-i18next'
 import '@xterm/xterm/css/xterm.css'
 
 const MIN_HEIGHT = 120
@@ -82,6 +83,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
   const termContainerRef = useRef<HTMLDivElement>(null)
   const initializedRef = useRef(false)
   const lineBufferRef = useRef('')
+  const { t } = useTranslation()
 
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
   const [maximized, setMaximized] = useState(false)
@@ -258,7 +260,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
             className="text-xs font-medium tracking-wide"
             style={{ color: theme === 'dark' ? '#cccccc' : '#333333' }}
           >
-            TERMINAL
+            {t('terminal.title')}
           </span>
           <div
             className={`w-[6px] h-[6px] rounded-full ${
@@ -270,7 +272,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
               className="text-[10px]"
               style={{ color: theme === 'dark' ? 'rgba(137, 209, 133, 0.6)' : 'rgba(137, 209, 133, 0.8)' }}
             >
-              已连接
+              {t('terminal.connected')}
             </span>
           )}
           {!connected && !error && (
@@ -278,7 +280,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
               className="text-[10px]"
               style={{ color: theme === 'dark' ? 'rgba(241, 76, 76, 0.6)' : 'rgba(241, 76, 76, 0.8)' }}
             >
-              未连接
+              {t('terminal.disconnected')}
             </span>
           )}
           {error && (
@@ -287,7 +289,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
         </div>
         <div className="flex items-center gap-0.5">
           <button
-            title="终止当前进程 (Kill)"
+            title={t('terminal.kill')}
             onClick={killProcess}
             className="w-[26px] h-[26px] flex items-center justify-center rounded transition-colors"
             style={{ 
@@ -304,7 +306,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
             <Trash2 className="w-3.5 h-3.5" />
           </button>
           <button
-            title="清屏 (Clear)"
+            title={t('terminal.clear')}
             onClick={clearOutput}
             className="w-[26px] h-[26px] flex items-center justify-center rounded transition-colors"
             style={{ 
@@ -321,7 +323,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
             <TerminalIcon className="w-3.5 h-3.5" />
           </button>
           <button
-            title={maximized ? '还原' : '最大化'}
+            title={maximized ? t('terminal.minimize') : t('terminal.maximize')}
             onClick={toggleMaximize}
             className="w-[26px] h-[26px] flex items-center justify-center rounded transition-colors"
             style={{ 
@@ -342,7 +344,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
             )}
           </button>
           <button
-            title="关闭终端"
+            title={t('terminal.close')}
             onClick={handleClosePanel}
             className="w-[26px] h-[26px] flex items-center justify-center rounded transition-colors"
             style={{ 

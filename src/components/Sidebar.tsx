@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { Plus, ChevronLeft, ChevronRight, Trash2, MessageSquare, Loader2 } from 'lucide-react'
 import { useChat } from '@/contexts/ChatContext'
 import { useApi } from '@/hooks/useApi'
+import { useTranslation } from 'react-i18next'
+import i18n from '../i18n'
 import type { Session } from '@/types'
 import appIcon from '@/assets/app-icon.png'
 
@@ -11,6 +13,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+  const { t } = useTranslation()
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null)
@@ -84,11 +87,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     const now = new Date()
     const diffMs = now.getTime() - date.getTime()
     const diffMin = Math.floor(diffMs / 60000)
-    if (diffMin < 1) return '刚刚'
-    if (diffMin < 60) return `${diffMin}分钟前`
+    if (diffMin < 1) return t('sidebar.justNow')
+    if (diffMin < 60) return t('sidebar.minutesAgo', { count: diffMin })
     const diffHour = Math.floor(diffMin / 60)
-    if (diffHour < 24) return `${diffHour}小时前`
-    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    if (diffHour < 24) return t('sidebar.hoursAgo', { count: diffHour })
+    return date.toLocaleDateString(i18n.language, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   }
 
   if (collapsed) {
@@ -127,7 +130,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           className="w-full flex items-center gap-2 px-3 py-2 rounded-md bg-foreground/5 hover:bg-foreground/10 transition-colors text-sm"
         >
           <Plus className="w-4 h-4 text-foreground/70" />
-          <span className="text-foreground/80 font-medium">新任务</span>
+          <span className="text-foreground/80 font-medium">{t('sidebar.newTask')}</span>
         </button>
       </div>
 
@@ -140,8 +143,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         ) : sessions.length === 0 ? (
           <div className="text-center py-8">
             <MessageSquare className="w-8 h-8 mx-auto mb-2 text-foreground/30" />
-            <p className="text-xs text-foreground/40">暂无任务</p>
-            <p className="text-[10px] text-foreground/30 mt-1">点击上方按钮创建</p>
+            <p className="text-xs text-foreground/40">{t('sidebar.noSessions')}</p>
+            <p className="text-[10px] text-foreground/30 mt-1">{t('sidebar.createHint')}</p>
           </div>
         ) : (
           <div className="space-y-1">
@@ -182,7 +185,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {/* Bottom label */}
       <div className="px-4 py-3 border-t border-border">
-        <p className="text-[11px] text-foreground/30">任务</p>
+        <p className="text-[11px] text-foreground/30">{t('sidebar.tasks')}</p>
       </div>
 
       {/* Delete Confirmation Dialog */}
@@ -190,25 +193,25 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/50" onClick={() => setDeleteTarget(null)} />
           <div className="relative bg-card border border-border rounded-xl shadow-2xl w-[320px] p-6">
-            <h3 className="text-sm font-semibold text-foreground/90 mb-2">确认删除</h3>
+            <h3 className="text-sm font-semibold text-foreground/90 mb-2">{t('sidebar.confirmDelete')}</h3>
             <p className="text-xs text-foreground/60 mb-1">
-              确定要删除任务 "<span className="text-foreground/80 font-medium">{deleteTarget.name}</span>" 吗？
+              {t('sidebar.deleteMessage', { name: deleteTarget.name })}
             </p>
             <p className="text-xs text-red-400/80 mb-4">
-              此操作将同时删除关联的永久记忆，且无法恢复。
+              {t('sidebar.deleteWarning')}
             </p>
             <div className="flex items-center justify-end gap-2">
               <button
                 onClick={() => setDeleteTarget(null)}
                 className="px-3 py-1.5 text-xs text-foreground/60 hover:text-foreground/80 hover:bg-foreground/10 rounded-md transition-colors"
               >
-                取消
+                {t('common.cancel')}
               </button>
               <button
                 onClick={handleConfirmDelete}
                 className="px-3 py-1.5 text-xs text-white bg-red-500 hover:bg-red-600 rounded-md transition-colors"
               >
-                确认删除
+                {t('common.confirm')}
               </button>
             </div>
           </div>

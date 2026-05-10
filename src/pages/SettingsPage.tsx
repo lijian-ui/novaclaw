@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import {
   ArrowLeft,
   Sun,
@@ -12,18 +12,20 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { useTheme } from '@/contexts/ThemeContext'
+import { useTranslation } from 'react-i18next'
+import i18n from '../i18n'
 
 interface SettingsSection {
   id: string
-  title: string
+  titleKey: string
   icon: React.ElementType
   iconColor: string
 }
 
 const sections: SettingsSection[] = [
-  { id: 'appearance', title: '外观', icon: Palette, iconColor: 'text-violet-400' },
-  { id: 'chat', title: '对话', icon: MessageSquare, iconColor: 'text-blue-400' },
-  { id: 'language', title: '语言', icon: Globe, iconColor: 'text-emerald-400' },
+  { id: 'appearance', titleKey: 'settings.appearance', icon: Palette, iconColor: 'text-violet-400' },
+  { id: 'chat', titleKey: 'settings.chat', icon: MessageSquare, iconColor: 'text-blue-400' },
+  { id: 'language', titleKey: 'settings.language', icon: Globe, iconColor: 'text-emerald-400' },
 ]
 
 interface SettingsSettingsProps {
@@ -31,14 +33,20 @@ interface SettingsSettingsProps {
 }
 
 export function SettingsPage({ onBack }: SettingsSettingsProps) {
+  const { t, i18n: i18nInstance } = useTranslation()
   const { theme, toggle } = useTheme()
   const [activeSection, setActiveSection] = useState<string | null>(null)
+
+  const handleLanguageChange = useCallback((newLang: string) => {
+    i18n.changeLanguage(newLang)
+    localStorage.setItem('novaclaw-language', newLang)
+  }, [])
 
   const renderAppearance = () => (
     <div className="space-y-4">
       {/* 主题 */}
       <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <h4 className="text-sm font-medium text-foreground/90 mb-3">主题</h4>
+        <h4 className="text-sm font-medium text-foreground/90 mb-3">{t('settings.theme')}</h4>
         <div className="grid grid-cols-3 gap-3">
           <button
             onClick={() => { if (theme !== 'light') toggle() }}
@@ -49,7 +57,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
             }`}
           >
             <Sun className="w-5 h-5" />
-            明亮
+            {t('settings.light')}
           </button>
           <button
             onClick={() => { if (theme !== 'dark') toggle() }}
@@ -60,7 +68,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
             }`}
           >
             <Moon className="w-5 h-5" />
-            暗色
+            {t('settings.dark')}
           </button>
           <button
             className={`flex flex-col items-center gap-2 px-4 py-3 rounded-lg border text-xs transition-colors ${
@@ -70,14 +78,14 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
             }`}
           >
             <Monitor className="w-5 h-5" />
-            跟随系统
+            {t('settings.system')}
           </button>
         </div>
       </div>
 
       {/* 字体大小 */}
       <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <h4 className="text-sm font-medium text-foreground/90 mb-3">字体大小</h4>
+        <h4 className="text-sm font-medium text-foreground/90 mb-3">{t('settings.fontSize')}</h4>
         <div className="flex items-center gap-3">
           <Type className="w-4 h-4 text-foreground/40 shrink-0" />
           <input
@@ -103,12 +111,12 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
               <Bot className="w-4 h-4 text-blue-400" />
             </div>
             <div>
-              <p className="text-sm font-medium text-foreground/90">默认助手</p>
-              <p className="text-xs text-foreground/40 mt-0.5">选择对话使用的默认模型</p>
+              <p className="text-sm font-medium text-foreground/90">{t('settings.defaultAssistant')}</p>
+              <p className="text-xs text-foreground/40 mt-0.5">{t('settings.selectModel')}</p>
             </div>
           </div>
           <select className="px-3 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none cursor-pointer">
-            <option>自动选择</option>
+            <option>{t('settings.autoSelect')}</option>
           </select>
         </div>
       </div>
@@ -121,8 +129,8 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
               <MessageSquare className="w-4 h-4 text-foreground/50" />
             </div>
             <div>
-              <p className="text-sm font-medium text-foreground/90">Enter 发送消息</p>
-              <p className="text-xs text-foreground/40 mt-0.5">按 Enter 发送，Shift+Enter 换行</p>
+              <p className="text-sm font-medium text-foreground/90">{t('settings.enterSend')}</p>
+              <p className="text-xs text-foreground/40 mt-0.5">{t('settings.enterSendDesc')}</p>
             </div>
           </div>
           <button
@@ -147,8 +155,8 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
               <Type className="w-4 h-4 text-foreground/50" />
             </div>
             <div>
-              <p className="text-sm font-medium text-foreground/90">代码高亮</p>
-              <p className="text-xs text-foreground/40 mt-0.5">在消息中启用代码语法高亮</p>
+              <p className="text-sm font-medium text-foreground/90">{t('settings.codeHighlight')}</p>
+              <p className="text-xs text-foreground/40 mt-0.5">{t('settings.codeHighlightDesc')}</p>
             </div>
           </div>
           <button
@@ -177,14 +185,18 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
               <Globe className="w-4 h-4 text-emerald-400" />
             </div>
             <div>
-              <p className="text-sm font-medium text-foreground/90">界面语言</p>
-              <p className="text-xs text-foreground/40 mt-0.5">选择应用程序的显示语言</p>
+              <p className="text-sm font-medium text-foreground/90">{t('settings.uiLanguage')}</p>
+              <p className="text-xs text-foreground/40 mt-0.5">{t('settings.selectLanguage')}</p>
             </div>
           </div>
-          <select className="px-3 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none cursor-pointer">
-            <option>简体中文</option>
-            <option>English</option>
-            <option>日本語</option>
+          <select 
+            value={i18nInstance.language}
+            onChange={(e) => handleLanguageChange(e.target.value)}
+            className="px-3 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none cursor-pointer"
+          >
+            <option value="zh-CN">简体中文</option>
+            <option value="en-US">English</option>
+            <option value="ja-JP">日本語</option>
           </select>
         </div>
       </div>
@@ -210,8 +222,8 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
           </button>
           <span className="text-sm font-medium text-foreground/90">
             {activeSection
-              ? sections.find(s => s.id === activeSection)?.title
-              : '设置'
+              ? t(sections.find(s => s.id === activeSection)?.titleKey || '')
+              : t('settings.title')
             }
           </span>
         </div>
@@ -226,7 +238,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
               className="flex items-center gap-1 text-xs text-foreground/50 hover:text-foreground/80 transition-colors mb-4"
             >
               <ChevronRight className="w-3 h-3 rotate-180" />
-              返回设置
+              {t('settings.back')}
             </button>
             {renderSection()}
           </div>
@@ -244,7 +256,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
                     <div className="p-2 rounded-lg bg-foreground/5">
                       <Icon className={`w-4 h-4 ${section.iconColor}`} />
                     </div>
-                    <span className="text-sm font-medium text-foreground/90">{section.title}</span>
+                    <span className="text-sm font-medium text-foreground/90">{t(section.titleKey)}</span>
                   </div>
                   <ChevronRight className="w-4 h-4 text-foreground/30" />
                 </button>

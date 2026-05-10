@@ -5,8 +5,10 @@ import { Input } from '@/components/ui/Input'
 import { useApi } from '@/hooks/useApi'
 import type { Config, ServerConfig, LlmConfig, SecurityConfig } from '@/types'
 import { Settings as SettingsIcon, Save, RefreshCw } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 export function Settings() {
+  const { t } = useTranslation()
   const [config, setConfig] = useState<Config | null>(null)
   const [localConfig, setLocalConfig] = useState<Partial<Config>>({})
   const { getConfig, updateConfig } = useApi()
@@ -56,7 +58,7 @@ export function Settings() {
   if (!config) {
     return (
       <div className="flex items-center justify-center h-full">
-        <div className="text-muted-foreground">加载中...</div>
+        <div className="text-muted-foreground">{t('settingsPage.loading')}</div>
       </div>
     )
   }
@@ -66,28 +68,28 @@ export function Settings() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold flex items-center gap-2">
           <SettingsIcon className="w-6 h-6" />
-          系统设置
+          {t('settingsPage.systemSettings')}
         </h1>
         <div className="flex gap-2">
           <Button variant="outline" onClick={handleReset}>
             <RefreshCw className="w-4 h-4 mr-1" />
-            重置
+            {t('settingsPage.reset')}
           </Button>
           <Button onClick={handleSave}>
             <Save className="w-4 h-4 mr-1" />
-            保存
+            {t('settingsPage.save')}
           </Button>
         </div>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>服务器设置</CardTitle>
+          <CardTitle>{t('settingsPage.serverSettings')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-2">端口 *</label>
+              <label className="block text-sm font-medium mb-2">{t('settingsPage.port')}</label>
               <Input
                 type="number"
                 value={localConfig.server?.port ?? config.server.port}
@@ -98,7 +100,7 @@ export function Settings() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-2">主机 *</label>
+              <label className="block text-sm font-medium mb-2">{t('settingsPage.host')}</label>
               <Input
                 value={localConfig.server?.host ?? config.server.host}
                 onChange={(e) => setLocalConfig(prev => ({
@@ -113,12 +115,12 @@ export function Settings() {
 
       <Card>
         <CardHeader>
-          <CardTitle>LLM 设置</CardTitle>
+          <CardTitle>{t('settingsPage.llmSettings')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-2">超时时间（秒）</label>
+              <label className="block text-sm font-medium mb-2">{t('settingsPage.timeout')}</label>
               <Input
                 type="number"
                 value={localConfig.llm?.timeout ?? config.llm.timeout}
@@ -129,7 +131,7 @@ export function Settings() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-2">最大重试次数</label>
+              <label className="block text-sm font-medium mb-2">{t('settingsPage.maxRetries')}</label>
               <Input
                 type="number"
                 value={localConfig.llm?.max_retries ?? config.llm.max_retries}
@@ -145,7 +147,7 @@ export function Settings() {
 
       <Card>
         <CardHeader>
-          <CardTitle>安全设置</CardTitle>
+          <CardTitle>{t('settingsPage.securitySettings')}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <label className="flex items-center gap-3">
@@ -158,7 +160,7 @@ export function Settings() {
               }))}
               className="w-4 h-4 rounded"
             />
-            <span className="text-sm font-medium">启用提示词注入防护</span>
+            <span className="text-sm font-medium">{t('settingsPage.enablePromptInjectionProtection')}</span>
           </label>
         </CardContent>
       </Card>

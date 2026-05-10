@@ -22,6 +22,7 @@ import {
 import { ChatMessages, type MessageData } from './ChatMessages'
 import { useApi } from '@/hooks/useApi'
 import { useChat } from '@/contexts/ChatContext'
+import { useTranslation } from 'react-i18next'
 import type { Session } from '@/types'
 import openaiIcon from '@/assets/OpenAI.svg'
 import lmStudioIcon from '@/assets/lm-studio.png'
@@ -29,15 +30,15 @@ import ollamaIcon from '@/assets/ollama.png'
 import deepseekIcon from '@/assets/DeepSeek.png'
 
 const tools = [
-  { id: 'editor', name: '编辑器', icon: Code2, iconColor: 'text-emerald-400' },
-  { id: 'skills', name: '技能', icon: Puzzle, iconColor: 'text-violet-400' },
-  { id: 'model', name: '模型', icon: Cpu, iconColor: 'text-blue-400' },
-  { id: 'agent', name: '智能体', icon: Brain, iconColor: 'text-amber-400' },
-  { id: 'mcp', name: 'MCP', icon: Blocks, iconColor: 'text-cyan-400' },
-  { id: 'terminal', name: '终端', icon: Terminal, iconColor: 'text-green-400' },
-  { id: 'schedule', name: '定时任务', icon: Clock, iconColor: 'text-orange-400' },
-  { id: 'logs', name: '日志', icon: FileText, iconColor: 'text-foreground/50' },
-  { id: 'settings', name: '设置', icon: Settings, iconColor: 'text-foreground/50' },
+  { id: 'editor', nameKey: 'dashboard.editor', icon: Code2, iconColor: 'text-emerald-400' },
+  { id: 'skills', nameKey: 'dashboard.skills', icon: Puzzle, iconColor: 'text-violet-400' },
+  { id: 'model', nameKey: 'dashboard.model', icon: Cpu, iconColor: 'text-blue-400' },
+  { id: 'agent', nameKey: 'dashboard.agent', icon: Brain, iconColor: 'text-amber-400' },
+  { id: 'mcp', nameKey: 'dashboard.mcp', icon: Blocks, iconColor: 'text-cyan-400' },
+  { id: 'terminal', nameKey: 'dashboard.terminal', icon: Terminal, iconColor: 'text-green-400' },
+  { id: 'schedule', nameKey: 'dashboard.schedule', icon: Clock, iconColor: 'text-orange-400' },
+  { id: 'logs', nameKey: 'dashboard.logs', icon: FileText, iconColor: 'text-foreground/50' },
+  { id: 'settings', nameKey: 'dashboard.settings', icon: Settings, iconColor: 'text-foreground/50' },
 ]
 
 interface ModelOption {
@@ -67,6 +68,7 @@ function genId() {
 }
 
 export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
+  const { t } = useTranslation()
   const { currentSession, setCurrentSession, messages: contextMessages } = useChat()
   const sessionIdRef = useRef<string | undefined>(undefined)
   const userContentRef = useRef('') // 保存用户消息用于标题生成
@@ -410,7 +412,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
     if (title.length > 50) {
       title = title.slice(0, 47) + '...'
     }
-    return title || '新对话'
+    return title || t('chat.newConversation')
   }
 
   // Pure WebSocket streaming – no mock fallback
@@ -474,7 +476,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
         setIsStreaming(false)
         setStreamingContent('')
         streamingContentRef.current = ''
-        setStreamError(err || '对话连接失败，请检查后端服务是否运行')
+        setStreamError(err || t('chat.connectionFailed'))
       },
       (step) => {
         if (step.stepType === 'reasoning') {
@@ -547,7 +549,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
       }, { once: true })
     } else {
       setIsStreaming(false)
-      setStreamError('WebSocket 连接失败')
+      setStreamError(t('chat.webSocketFailed'))
     }
 
     return () => {
@@ -650,7 +652,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
                 }}
               >
                 <Folder className="w-3.5 h-3.5" />
-                打开文件夹
+                {t('chat.openFolder')}
               </button>
             </div>
           )}
@@ -686,7 +688,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
                         }}
                       >
                         <Icon className={`w-3.5 h-3.5 ${tool.iconColor || ''}`} />
-                        {tool.name}
+                        {t(tool.nameKey)}
                       </button>
                     )
                   })}
@@ -745,7 +747,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
       {/* Bottom input area */}
       <div className="px-3 pb-3 shrink-0">
         <p className="text-[11px] text-foreground/30 mb-2 leading-relaxed text-center">
-          您正在与 NovaClaw 聊天
+          {t('chat.chatWith')}
         </p>
         <div className="rounded-lg bg-foreground/5 border border-border">
           <div className="px-3 pt-2">
@@ -756,7 +758,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
               onKeyDown={handleKeyDown}
               rows={1}
               spellCheck={false}
-              placeholder="输入消息..."
+              placeholder={t('chat.inputPlaceholder')}
               className="w-full bg-transparent text-sm text-foreground/80 placeholder-foreground/30 outline-none resize-none leading-5 py-0.5 max-h-[160px]"
               style={{ height: 'auto' }}
             />

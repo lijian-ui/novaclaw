@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Trash2, X, Puzzle, ArrowLeft, Upload } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
+import { useTranslation } from 'react-i18next'
 import type { Skill } from '@/types'
 
 interface SkillsSettingsProps {
@@ -8,6 +9,7 @@ interface SkillsSettingsProps {
 }
 
 export function SkillsSettings({ onBack }: SkillsSettingsProps) {
+  const { t } = useTranslation()
   const [skills, setSkills] = useState<Skill[]>([])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -36,10 +38,10 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
       const result = await uploadSkill(file)
       loadSkills()
       if (result.errors && result.errors.length > 0) {
-        setUploadError(`${result.installed} 个技能安装成功，${result.errors.length} 个失败`)
+        setUploadError(t('settings.uploadSuccessPart', { installed: result.installed, errors: result.errors.length }))
       }
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : '上传失败')
+      setUploadError(err instanceof Error ? err.message : t('settings.uploadError'))
     } finally {
       setUploading(false)
     }
@@ -62,7 +64,7 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
           <button onClick={onBack} className="p-1 rounded hover:bg-foreground/10 transition-colors">
             <ArrowLeft className="w-4 h-4 text-foreground/60" />
           </button>
-          <span className="text-sm font-medium text-foreground/90">技能配置</span>
+          <span className="text-sm font-medium text-foreground/90">{t('settings.skillsTitle')}</span>
         </div>
         <button
           onClick={() => fileInputRef.current?.click()}
@@ -70,7 +72,7 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors disabled:opacity-50"
         >
           <Upload className="w-3.5 h-3.5" />
-          {uploading ? '上传中...' : '上传技能'}
+          {uploading ? t('settings.uploading') : t('settings.uploadSkill')}
         </button>
       </div>
 
@@ -94,14 +96,14 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {loading && skills.length === 0 ? (
           <div className="flex items-center justify-center h-full">
-            <p className="text-sm text-foreground/40">加载中...</p>
+            <p className="text-sm text-foreground/40">{t('common.loading')}</p>
           </div>
         ) : skills.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <Puzzle className="w-10 h-10 text-foreground/20 mb-3" />
-            <p className="text-sm text-foreground/40">暂无技能，点击右上角上传 .zip 文件</p>
+            <p className="text-sm text-foreground/40">{t('settings.noSkills')}</p>
             <p className="text-xs text-foreground/30 mt-2">
-              Agent 也可以通过 skill_view 工具自主加载技能
+              {t('settings.agentLoadSkill')}
             </p>
           </div>
         ) : (
@@ -129,7 +131,7 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
                   <button
                     onClick={() => setShowDeleteConfirm(skill.id)}
                     className="p-1 rounded hover:bg-red-500/10 transition-colors"
-                    title="删除"
+                    title={t('common.delete')}
                   >
                     <Trash2 className="w-3.5 h-3.5 text-foreground/40 hover:text-red-400" />
                   </button>
@@ -145,14 +147,14 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-2xl">
             <div className="px-4 py-4">
-              <p className="text-sm text-foreground/90 font-medium">确认删除</p>
-              <p className="text-xs text-foreground/50 mt-2">确定要删除此技能吗？此操作不可撤销。</p>
+              <p className="text-sm text-foreground/90 font-medium">{t('settings.confirmDelete')}</p>
+              <p className="text-xs text-foreground/50 mt-2">{t('settings.deleteSkillWarning')}</p>
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
               <button onClick={() => setShowDeleteConfirm(null)}
-                className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">取消</button>
+                className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('common.cancel')}</button>
               <button onClick={confirmDelete}
-                className="px-4 py-1.5 rounded-lg bg-red-500 hover:bg-red-400 text-xs text-white font-medium transition-colors">删除</button>
+                className="px-4 py-1.5 rounded-lg bg-red-500 hover:bg-red-400 text-xs text-white font-medium transition-colors">{t('common.delete')}</button>
             </div>
           </div>
         </div>

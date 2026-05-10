@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   Code2,
   Puzzle,
@@ -22,24 +22,25 @@ import { ScheduledTasksPage } from './ScheduledTasksPage'
 import { LogsPage } from './LogsPage'
 import { TerminalPanel } from '@/components/TerminalPanel'
 import { useTheme } from '@/contexts/ThemeContext'
+import { useTranslation } from 'react-i18next'
 
 interface Tool {
   id: string
-  name: string
+  nameKey: string
   icon: React.ElementType
   iconColor: string
 }
 
-const tools: Tool[] = [
-  { id: 'editor', name: '编辑器', icon: Code2, iconColor: 'text-emerald-400' },
-  { id: 'skills', name: '技能', icon: Puzzle, iconColor: 'text-violet-400' },
-  { id: 'model', name: '模型', icon: Cpu, iconColor: 'text-blue-400' },
-  { id: 'agent', name: '智能体', icon: Brain, iconColor: 'text-amber-400' },
-  { id: 'mcp', name: 'MCP', icon: Blocks, iconColor: 'text-cyan-400' },
-  { id: 'terminal', name: '终端', icon: Terminal, iconColor: 'text-green-400' },
-  { id: 'schedule', name: '定时任务', icon: Clock, iconColor: 'text-orange-400' },
-  { id: 'logs', name: '日志', icon: FileText, iconColor: 'text-foreground/50' },
-  { id: 'settings', name: '设置', icon: Settings, iconColor: 'text-foreground/50' },
+const toolDefs: Tool[] = [
+  { id: 'editor', nameKey: 'dashboard.editor', icon: Code2, iconColor: 'text-emerald-400' },
+  { id: 'skills', nameKey: 'dashboard.skills', icon: Puzzle, iconColor: 'text-violet-400' },
+  { id: 'model', nameKey: 'dashboard.model', icon: Cpu, iconColor: 'text-blue-400' },
+  { id: 'agent', nameKey: 'dashboard.agent', icon: Brain, iconColor: 'text-amber-400' },
+  { id: 'mcp', nameKey: 'dashboard.mcp', icon: Blocks, iconColor: 'text-cyan-400' },
+  { id: 'terminal', nameKey: 'dashboard.terminal', icon: Terminal, iconColor: 'text-green-400' },
+  { id: 'schedule', nameKey: 'dashboard.schedule', icon: Clock, iconColor: 'text-orange-400' },
+  { id: 'logs', nameKey: 'dashboard.logs', icon: FileText, iconColor: 'text-foreground/50' },
+  { id: 'settings', nameKey: 'dashboard.settings', icon: Settings, iconColor: 'text-foreground/50' },
 ]
 
 interface DashboardProps {
@@ -49,8 +50,14 @@ interface DashboardProps {
 }
 
 export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: DashboardProps) {
+  const { t } = useTranslation()
   const { theme, toggle } = useTheme()
   const [terminalOpen, setTerminalOpen] = useState(false)
+  
+  const tools = useMemo(() => toolDefs.map(tool => ({
+    ...tool,
+    name: t(tool.nameKey)
+  })), [t])
 
   if (activeTool === 'mcp') {
     return <MCPSettings onBack={() => onOpenTool?.(null)} />
@@ -78,9 +85,9 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
     <div className="h-full flex flex-col bg-mainbg">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-        <span className="text-sm font-medium text-foreground/90">主控台</span>
+        <span className="text-sm font-medium text-foreground/90">{t('dashboard.title')}</span>
         <div className="flex items-center gap-1">
-          <button onClick={toggle} className="p-1.5 rounded hover:bg-foreground/10 transition-colors" title={theme === 'dark' ? '切换亮色主题' : '切换暗色主题'}>
+          <button onClick={toggle} className="p-1.5 rounded hover:bg-foreground/10 transition-colors" title={theme === 'dark' ? t('dashboard.toggleThemeLight') : t('dashboard.toggleThemeDark')}>
             {theme === 'dark' ? <Sun className="w-4 h-4 text-foreground/60" /> : <Moon className="w-4 h-4 text-foreground/60" />}
           </button>
           <button
@@ -88,14 +95,14 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
             className={`p-1.5 rounded hover:bg-foreground/10 transition-colors ${
               terminalOpen ? 'bg-foreground/10' : ''
             }`}
-            title="终端"
+            title={t('dashboard.toggleTerminal')}
           >
             <Terminal className="w-4 h-4 text-foreground/60" />
           </button>
           <button
             onClick={onToggleFilePanel}
             className="p-1.5 rounded hover:bg-foreground/10 transition-colors"
-            title="打开/关闭文件预览"
+            title={t('dashboard.toggleFilePanel')}
           >
             <PanelRightClose className="w-4 h-4 text-foreground/60" />
           </button>
@@ -104,8 +111,8 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
 
       {/* Content */}
       <div className="flex-1 flex flex-col items-center justify-center overflow-y-auto">
-        <h1 className="text-xl font-bold text-foreground mb-1">打开工具</h1>
-        <p className="text-sm text-foreground/50 mb-10">使用工具，扩展更多能力</p>
+        <h1 className="text-xl font-bold text-foreground mb-1">{t('dashboard.openTool')}</h1>
+        <p className="text-sm text-foreground/50 mb-10">{t('dashboard.subtitle')}</p>
 
         <div className="grid grid-cols-3 gap-4 w-full max-w-[320px]">
           {tools.map((tool) => {

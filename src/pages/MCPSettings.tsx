@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, Trash2, Plug, X, ChevronRight, ChevronDown, Wrench, ArrowLeft, RefreshCw } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 const API = 'http://127.0.0.1:3000/api/mcp'
 
@@ -23,6 +24,7 @@ interface MCPSettingsProps {
 }
 
 export function MCPSettings({ onBack }: MCPSettingsProps) {
+  const { t } = useTranslation()
   const [servers, setServers] = useState<McpConnection[]>([])
   const [loading, setLoading] = useState(false)
   const [showModal, setShowModal] = useState(false)
@@ -119,23 +121,23 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
           <button onClick={onBack} className="p-1 rounded hover:bg-foreground/10 transition-colors">
             <ArrowLeft className="w-4 h-4 text-foreground/60" />
           </button>
-          <span className="text-sm font-medium text-foreground/90">MCP 配置</span>
+          <span className="text-sm font-medium text-foreground/90">{t('mcpSettings.title')}</span>
         </div>
         <button onClick={() => { setForm({ name: '', transportType: 'stdio', command: '', args: '', url: '', headers: '', description: '' }); setShowModal(true) }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors">
           <Plus className="w-3.5 h-3.5" />
-          添加 MCP
+          {t('mcpSettings.addMcp')}
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {loading && servers.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-sm text-foreground/40">加载中...</div>
+          <div className="flex items-center justify-center h-full text-sm text-foreground/40">{t('mcpSettings.loading')}</div>
         ) : servers.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <Plug className="w-10 h-10 text-foreground/20 mb-3" />
-            <p className="text-sm text-foreground/40">暂无 MCP 连接</p>
-            <p className="text-xs text-foreground/30 mt-2">添加 MCP 服务器后，其工具会自动注册到 Agent</p>
+            <p className="text-sm text-foreground/40">{t('mcpSettings.noMcpConnections')}</p>
+            <p className="text-xs text-foreground/30 mt-2">{t('mcpSettings.mcpHelp')}</p>
           </div>
         ) : (
           servers.map((server) => (
@@ -151,22 +153,22 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-foreground/90">{server.name}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50">{server.tools.length} tools</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50">{t('mcpSettings.toolsCount', { count: server.tools.length })}</span>
                     </div>
                     <p className="text-xs text-foreground/40 mt-0.5 font-mono truncate">{server.command} {server.args.join(' ')}</p>
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
                   <button onClick={() => handleDiscover(server.name)} disabled={discovering === server.name}
-                    className="p-1 rounded hover:bg-foreground/10 transition-colors" title="发现工具">
+                    className="p-1 rounded hover:bg-foreground/10 transition-colors" title={t('mcpSettings.discoverTools')}>
                     <RefreshCw className={`w-3.5 h-3.5 text-foreground/40 ${discovering === server.name ? 'animate-spin' : ''}`} />
                   </button>
                   <button onClick={() => handleToggle(server.name)}
                     className={`relative w-8 h-4 rounded-full transition-colors mx-1 ${server.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
-                    title={server.enabled ? '停用' : '启用'}>
+                    title={server.enabled ? t('mcpSettings.disable') : t('mcpSettings.enable')}>
                     <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${server.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
                   </button>
-                  <button onClick={() => setShowDeleteConfirm(server.name)} className="p-1 rounded hover:bg-red-500/10 transition-colors" title="删除">
+                  <button onClick={() => setShowDeleteConfirm(server.name)} className="p-1 rounded hover:bg-red-500/10 transition-colors" title={t('mcpSettings.delete')}>
                     <Trash2 className="w-3.5 h-3.5 text-foreground/40 hover:text-red-400" />
                   </button>
                 </div>
@@ -196,15 +198,15 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
           <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
             <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
               <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm font-medium text-foreground/90">添加 MCP 连接</span>
+                <span className="text-sm font-medium text-foreground/90">{t('mcpSettings.addMcpConnection')}</span>
                 <button onClick={() => setShowModal(false)} className="p-1 rounded hover:bg-foreground/10 transition-colors"><X className="w-4 h-4 text-foreground/50" /></button>
               </div>
               <div className="px-4 py-4 space-y-3">
                 <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">名称 *</label>
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.name')}</label>
                 </div>
                 <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">传输类型</label>
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.transportType')}</label>
                   <div className="grid grid-cols-3 gap-2">
                     {(['stdio', 'sse', 'streamable-http'] as const).map((t) => (
                       <button key={t} onClick={() => setForm(f => ({ ...f, transportType: t }))}
@@ -222,24 +224,24 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                 {form.transportType === 'stdio' ? (
                   <>
                     <div>
-                      <label className="text-xs text-foreground/50 mb-1 block">启动命令 *</label>
-                      <input value={form.command} onChange={e => setForm(f => ({ ...f, command: e.target.value }))} placeholder="例如: npx" className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono" />
+                      <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.startCommand')}</label>
+                      <input value={form.command} onChange={e => setForm(f => ({ ...f, command: e.target.value }))} placeholder={t('mcpSettings.placeholderCommand')} className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono" />
                     </div>
                     <div>
-                      <label className="text-xs text-foreground/50 mb-1 block">参数（空格分隔）</label>
-                      <input value={form.args} onChange={e => setForm(f => ({ ...f, args: e.target.value }))} placeholder="例如: -y @modelcontextprotocol/server-filesystem /workspace" className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono" />
+                      <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.args')}</label>
+                      <input value={form.args} onChange={e => setForm(f => ({ ...f, args: e.target.value }))} placeholder={t('mcpSettings.placeholderArgs')} className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono" />
                     </div>
                   </>
                 ) : (
                   <>
                     <div>
-                      <label className="text-xs text-foreground/50 mb-1 block">URL *</label>
-                      <input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} placeholder="例如: http://localhost:3001/mcp" className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono" />
+                      <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.url')}</label>
+                      <input value={form.url} onChange={e => setForm(f => ({ ...f, url: e.target.value }))} placeholder={t('mcpSettings.placeholderUrl')} className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono" />
                     </div>
                     <div>
-                      <label className="text-xs text-foreground/50 mb-1 block">请求头（每行一个: Key: Value）</label>
+                      <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.headers')}</label>
                       <textarea value={form.headers} onChange={e => setForm(f => ({ ...f, headers: e.target.value }))}
-                        placeholder="Authorization: Bearer token&#10;X-Custom-Header: value"
+                        placeholder={t('mcpSettings.placeholderHeaders')}
                         rows={3}
                         className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono resize-none" />
                     </div>
@@ -247,15 +249,15 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                 )}
 
                 <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">描述</label>
-                  <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder="连接描述" className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors" />
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.mcpDescription')}</label>
+                  <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder={t('mcpSettings.placeholderDescription')} className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors" />
                 </div>
               </div>
               <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-                <button onClick={() => setShowModal(false)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">取消</button>
+                <button onClick={() => setShowModal(false)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('mcpSettings.cancel')}</button>
                 <button onClick={handleCreate}
                   disabled={!form.name.trim() || (form.transportType === 'stdio' && !form.command.trim()) || (form.transportType !== 'stdio' && !form.url.trim())}
-                  className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium transition-colors">添加</button>
+                  className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium transition-colors">{t('mcpSettings.add')}</button>
               </div>
             </div>
           </div>
@@ -266,12 +268,12 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-2xl">
             <div className="px-4 py-4">
-              <p className="text-sm text-foreground/90 font-medium">确认删除</p>
-              <p className="text-xs text-foreground/50 mt-2">确定要删除此 MCP 连接吗？</p>
+              <p className="text-sm text-foreground/90 font-medium">{t('mcpSettings.confirmDelete')}</p>
+              <p className="text-xs text-foreground/50 mt-2">{t('mcpSettings.deleteMcpWarning')}</p>
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-              <button onClick={() => setShowDeleteConfirm(null)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">取消</button>
-              <button onClick={confirmDelete} className="px-4 py-1.5 rounded-lg bg-red-500 hover:bg-red-400 text-xs text-white font-medium transition-colors">删除</button>
+              <button onClick={() => setShowDeleteConfirm(null)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('mcpSettings.cancel')}</button>
+              <button onClick={confirmDelete} className="px-4 py-1.5 rounded-lg bg-red-500 hover:bg-red-400 text-xs text-white font-medium transition-colors">{t('mcpSettings.delete')}</button>
             </div>
           </div>
         </div>

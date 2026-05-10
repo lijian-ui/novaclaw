@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { ArrowLeft, Info, AlertTriangle, XCircle, Bug, Terminal, Loader2 } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 type LogLevel = 'all' | 'info' | 'warn' | 'error' | 'debug'
 
@@ -35,6 +36,7 @@ interface LogsPageProps {
 }
 
 export function LogsPage({ onBack }: LogsPageProps) {
+  const { t } = useTranslation()
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [filter, setFilter] = useState<LogLevel>('all')
   const [loading, setLoading] = useState(true)
@@ -95,8 +97,8 @@ export function LogsPage({ onBack }: LogsPageProps) {
           <button onClick={onBack} className="p-1 rounded hover:bg-foreground/10 transition-colors">
             <ArrowLeft className="w-4 h-4 text-foreground/60" />
           </button>
-          <span className="text-sm font-medium text-foreground/90">系统日志</span>
-          <span className="text-[10px] text-foreground/30">{logs.length} 条</span>
+          <span className="text-sm font-medium text-foreground/90">{t('logsPage.title')}</span>
+          <span className="text-[10px] text-foreground/30">{t('logsPage.logsCount', { count: logs.length })}</span>
         </div>
       </div>
 
@@ -111,7 +113,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
                 isActive ? 'bg-blue-500/20 text-blue-400' : 'bg-foreground/5 text-foreground/50 hover:bg-foreground/10'
               }`}>
               {lv !== 'all' && <Icon className={`w-3.5 h-3.5 ${cfg.color}`} />}
-              {cfg.label}
+              {t(`logsPage.${lv}` as any)}
             </button>
           )
         })}
@@ -125,7 +127,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
         ) : filteredLogs.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <Terminal className="w-10 h-10 text-foreground/20 mb-3" />
-            <p className="text-sm text-foreground/40">暂无匹配的日志</p>
+            <p className="text-sm text-foreground/40">{t('logsPage.noMatchingLogs')}</p>
           </div>
         ) : (
           <div className="divide-y divide-border">
@@ -137,7 +139,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
                   <span className="text-[11px] text-foreground/30 font-mono shrink-0 w-[130px]">{log.timestamp}</span>
                   <span className="text-[11px] text-foreground/40 font-mono shrink-0 w-[70px]">{log.module}</span>
                   <span className={`text-[11px] font-medium shrink-0 w-[40px] ${lvColor.split(' ')[0]}`}>
-                    {levelConfig[log.level]?.label || log.level.toUpperCase()}
+                    {t(`logsPage.${log.level}` as any)}
                   </span>
                   <span className="text-xs text-foreground/70 break-all">{log.message}</span>
                 </div>

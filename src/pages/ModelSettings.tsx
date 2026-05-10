@@ -3,6 +3,7 @@ import { Plus, Play, Trash2, Pencil, Star, ChevronRight, ChevronDown, X, Check, 
 import { useApi } from '@/hooks/useApi'
 import { useTauriCommands } from '@/hooks/useTauriCommands'
 import type { ProviderConfig } from '@/types'
+import { useTranslation } from 'react-i18next'
 
 interface ModelConfig {
   id: string
@@ -77,6 +78,7 @@ interface ModelSettingsProps {
 }
 
 export function ModelSettings({ onBack }: ModelSettingsProps) {
+  const { t } = useTranslation()
   const { isTauri, getModelsConfig, saveModelsConfig } = useTauriCommands()
   const { listProviders, saveProvider, testConnection, setDefaultModel, getDefaultModel } = useApi()
 
@@ -100,13 +102,11 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
         apiProviders = config.providers || []
         defaultModelName = config.default_model || ''
       } else {
-        // 通过 listProviders 获取 providers，通过 getDefaultModel 获取默认模型
         apiProviders = await listProviders()
         defaultModelName = await getDefaultModel()
       }
       if (apiProviders.length > 0) {
         const localProviders = apiProvidersToLocal(apiProviders)
-        // 标记默认模型
         if (defaultModelName) {
           for (const provider of localProviders) {
             for (const model of provider.models) {
@@ -117,9 +117,9 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
         setProviders(localProviders)
       }
     } catch (err) {
-      console.error('[ModelSettings] 加载提供商失败:', err)
+      console.error('[ModelSettings]', t('modelSettings.loadingProviders'), err)
     }
-  }, [isTauri, getModelsConfig, listProviders, getDefaultModel])
+  }, [isTauri, getModelsConfig, listProviders, getDefaultModel, t])
 
   useEffect(() => {
     loadProviders()
@@ -130,7 +130,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
     setSaveError(null)
     const apiData = localToApiProviders(newProviders)
     
-    // 获取当前的默认模型名称
     let defaultModelName = ''
     for (const provider of newProviders) {
       for (const model of provider.models) {
@@ -142,7 +141,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       if (defaultModelName) break
     }
     
-    console.log('[ModelSettings] 保存提供商:', JSON.stringify(apiData), '默认模型:', defaultModelName)
+    console.log('[ModelSettings]', t('modelSettings.savingProviders'), JSON.stringify(apiData), t('settings.modelTitle') + ':', defaultModelName)
     try {
       if (isTauri) {
         await saveModelsConfig({ 
@@ -152,14 +151,14 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       } else {
         await saveProvider(apiData)
       }
-      console.log('[ModelSettings] 保存成功')
+      console.log('[ModelSettings]', t('modelSettings.saveSuccessLog'))
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '保存失败，请检查后端服务'
-      console.error('[ModelSettings] 保存失败:', err)
+      const msg = err instanceof Error ? err.message : t('modelSettings.saveFailed')
+      console.error('[ModelSettings]', t('modelSettings.saveFailedLog'), err)
       setSaveError(msg)
       throw err
     }
-  }, [isTauri, saveModelsConfig, saveProvider])
+  }, [isTauri, saveModelsConfig, saveProvider, t])
 
   const toggleExpanded = (id: string) => {
     setExpandedIds(prev => {
@@ -189,17 +188,17 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
   const handleTest = () => {
     if (!form.apiKey.trim()) {
       setTestStatus('fail')
-      setTestMessage('请先填写 API Key')
+      setTestMessage(t('modelSettings.pleaseFillApiKey'))
       return
     }
     if (!form.baseUrl.trim() || form.baseUrl === 'https://') {
       setTestStatus('fail')
-      setTestMessage('请先填写 Base URL')
+      setTestMessage(t('modelSettings.pleaseFillBaseUrl'))
       return
     }
     if (!form.name.trim()) {
       setTestStatus('fail')
-      setTestMessage('请先填写模型名称')
+      setTestMessage(t('modelSettings.pleaseFillModelName'))
       return
     }
     setTestStatus('testing')
@@ -210,10 +209,10 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       model: form.name,
     }).then((result) => {
       setTestStatus(result.success ? 'success' : 'fail')
-      setTestMessage(result.message || (result.success ? '连接成功' : '连接失败'))
+      setTestMessage(result.message || (result.success ? t('modelSettings.connectionSuccess') : t('modelSettings.connectionFailed')))
     }).catch(() => {
       setTestStatus('fail')
-      setTestMessage('后端服务未运行或网络错误')
+      setTestMessage(t('modelSettings.backendNotRunning'))
     })
   }
 
@@ -223,7 +222,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
     const updated = [...providers]
     let providerIdx = updated.findIndex(p => p.id === form.provider)
 
-    // 如果供应商不存在，先创建
     if (providerIdx === -1) {
       const supplier = supplierOptions.find(s => s.id === form.provider)
       if (!supplier) return
@@ -269,7 +267,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
   }
 
   const setDefault = (modelId: string) => {
-    // 找到被设为默认的模型名称
     let defaultModelName = ''
     for (const p of providers) {
       for (const m of p.models) {
@@ -280,7 +277,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       }
       if (defaultModelName) break
     }
-    // 保存到本地状态和后端配置
     persist(providers.map(p => ({
       ...p,
       models: p.models.map(m => ({ ...m, isDefault: m.id === modelId })),
@@ -310,24 +306,22 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
 
   return (
     <div className="h-full flex flex-col bg-mainbg">
-      {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
         <div className="flex items-center gap-3">
           <button onClick={onBack} className="p-1 rounded hover:bg-foreground/10 transition-colors">
             <ArrowLeft className="w-4 h-4 text-foreground/60" />
           </button>
-          <span className="text-sm font-medium text-foreground/90">模型配置</span>
+          <span className="text-sm font-medium text-foreground/90">{t('modelSettings.title')}</span>
         </div>
         <button
           onClick={() => openAddModal()}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
-          添加模型
+          {t('modelSettings.addModel')}
         </button>
       </div>
 
-      {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
         {providers.filter(p => p.models.length > 0).map((provider) => {
           const isExpanded = expandedIds.has(provider.id)
@@ -338,7 +332,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
               key={provider.id}
               className="rounded-xl border border-border bg-foreground/[0.02] hover:bg-foreground/[0.04] transition-colors"
             >
-              {/* Provider header */}
               <div className="flex items-center justify-between px-4 py-3">
                 <div className="flex items-center gap-2">
                   <button
@@ -356,12 +349,12 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                   </span>
                   {defaultModel && (
                     <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">
-                      默认: {defaultModel.name}
+                      {t('modelSettings.default', { model: defaultModel.name })}
                     </span>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] text-foreground/30">{provider.models.length} 模型</span>
+                  <span className="text-[10px] text-foreground/30">{t('modelSettings.modelsCount', { count: provider.models.length })}</span>
                   <button
                     onClick={() => openAddModal(provider.id)}
                     className="p-1 rounded hover:bg-foreground/10 transition-colors"
@@ -371,12 +364,11 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                 </div>
               </div>
 
-              {/* Model list */}
               {isExpanded && (
                 <div className="px-3 pb-3 space-y-1.5">
                   {provider.models.length === 0 ? (
                     <div className="px-3 py-4 text-center">
-                      <p className="text-xs text-foreground/30">暂无模型，点击 + 添加</p>
+                      <p className="text-xs text-foreground/30">{t('modelSettings.noModels')}</p>
                     </div>
                   ) : (
                     provider.models.map((model) => (
@@ -406,7 +398,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                             <button
                               onClick={() => setDefault(model.id)}
                               className="p-1 rounded hover:bg-blue-500/10 transition-colors"
-                              title="设为默认"
+                              title={t('modelSettings.setDefault')}
                             >
                               <Star className="w-3 h-3 text-foreground/30 hover:text-yellow-400" />
                             </button>
@@ -414,7 +406,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                           <button
                             onClick={() => openEditModal(model)}
                             className="p-1 rounded hover:bg-foreground/10 transition-colors"
-                            title="编辑"
+                            title={t('modelSettings.edit')}
                           >
                             <Pencil className="w-3 h-3 text-foreground/40" />
                           </button>
@@ -423,7 +415,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                             className={`relative w-7 h-3.5 rounded-full transition-colors mx-1 ${
                               model.enabled ? 'bg-green-500' : 'bg-foreground/20'
                             }`}
-                            title={model.enabled ? '禁用' : '启用'}
+                            title={model.enabled ? t('modelSettings.disable') : t('modelSettings.enable')}
                           >
                             <div
                               className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-foreground transition-transform ${
@@ -434,7 +426,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                           <button
                             onClick={() => setShowDeleteConfirm(model.id)}
                             className="p-1 rounded hover:bg-red-500/10 transition-colors"
-                            title="删除"
+                            title={t('modelSettings.delete')}
                           >
                             <Trash2 className="w-3 h-3 text-foreground/40 hover:text-red-400" />
                           </button>
@@ -449,7 +441,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
         })}
       </div>
 
-      {/* Add/Edit Modal */}
       {showModal && (
         <>
           <div className="fixed inset-0 bg-black/50 z-30" onClick={() => setShowModal(false)} />
@@ -457,7 +448,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
             <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
               <div className="flex items-center justify-between px-4 py-3 border-b border-border">
                 <span className="text-sm font-medium text-foreground/90">
-                  {editingModel ? '编辑模型' : '添加模型'}
+                  {editingModel ? t('modelSettings.editModel') : t('modelSettings.addModel')}
                 </span>
                 <button onClick={() => setShowModal(false)} className="p-1 rounded hover:bg-foreground/10 transition-colors">
                   <X className="w-4 h-4 text-foreground/50" />
@@ -465,9 +456,8 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
               </div>
 
               <div className="px-4 py-4 space-y-3">
-                {/* Provider */}
                 <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">供应商 *</label>
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('modelSettings.provider')}</label>
                   <div className="relative">
                     <select
                       value={form.provider}
@@ -484,9 +474,8 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                   </div>
                 </div>
 
-                {/* Model name */}
                 <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">模型名称 *</label>
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('modelSettings.modelName')}</label>
                   <input
                     value={form.name}
                     onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
@@ -495,9 +484,8 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                   />
                 </div>
 
-                {/* API Key */}
                 <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">API Key *</label>
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('modelSettings.apiKey')}</label>
                   <input
                     value={form.apiKey}
                     onChange={e => setForm(f => ({ ...f, apiKey: e.target.value }))}
@@ -507,9 +495,8 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                   />
                 </div>
 
-                {/* Base URL */}
                 <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">Base URL *</label>
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('modelSettings.baseUrl')}</label>
                   <input
                     value={form.baseUrl}
                     onChange={e => setForm(f => ({ ...f, baseUrl: e.target.value }))}
@@ -519,7 +506,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                 </div>
               </div>
 
-              {/* Error message */}
               {saveError && (
                 <div className="px-4 pb-2">
                   <div className="px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/20 text-xs text-red-400">
@@ -528,7 +514,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                 </div>
               )}
 
-              {/* 测试结果消息 */}
               {testMessage && (
                 <div className={`px-4 pb-0 ${testStatus === 'success' ? '' : ''}`}>
                   <div className={`px-3 py-1.5 rounded-lg text-xs ${
@@ -541,7 +526,6 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                 </div>
               )}
 
-              {/* Modal footer */}
               <div className="flex items-center justify-between px-4 py-3 border-t border-border">
                 <button
                   onClick={handleTest}
@@ -557,17 +541,17 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                   {testStatus === 'testing' ? (
                     <>
                       <div className="w-3 h-3 border-2 border-foreground/30 border-t-foreground rounded-full animate-spin" />
-                      测试中...
+                      {t('modelSettings.testing')}
                     </>
                   ) : testStatus === 'success' ? (
                     <>
                       <Check className="w-3 h-3" />
-                      连接成功
+                      {t('modelSettings.connectionSuccess')}
                     </>
                   ) : (
                     <>
                       <Play className="w-3 h-3" />
-                      测试连接
+                      {t('modelSettings.testConnection')}
                     </>
                   )}
                 </button>
@@ -577,14 +561,14 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                     onClick={() => setShowModal(false)}
                     className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors"
                   >
-                    取消
+                    {t('modelSettings.cancel')}
                   </button>
                   <button
                     onClick={handleSave}
                     disabled={testStatus === 'testing'}
                     className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium transition-colors"
                   >
-                    保存
+                    {t('modelSettings.save')}
                   </button>
                 </div>
               </div>
@@ -593,26 +577,25 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
         </>
       )}
 
-      {/* Delete confirmation */}
       {showDeleteConfirm && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-2xl">
             <div className="px-4 py-4">
-              <p className="text-sm text-foreground/90 font-medium">确认删除</p>
-              <p className="text-xs text-foreground/50 mt-2">确定要删除此模型吗？此操作不可撤销。</p>
+              <p className="text-sm text-foreground/90 font-medium">{t('modelSettings.confirmDelete')}</p>
+              <p className="text-xs text-foreground/50 mt-2">{t('modelSettings.deleteModelWarning')}</p>
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
               <button
                 onClick={() => setShowDeleteConfirm(null)}
                 className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors"
               >
-                取消
+                {t('modelSettings.cancel')}
               </button>
               <button
                 onClick={confirmDelete}
                 className="px-4 py-1.5 rounded-lg bg-red-500 hover:bg-red-400 text-xs text-white font-medium transition-colors"
               >
-                删除
+                {t('modelSettings.delete')}
               </button>
             </div>
           </div>
