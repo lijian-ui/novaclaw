@@ -254,7 +254,8 @@ export function useApi() {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get(`/session`, { params: { session_id: sessionId } })
+      // limit=100：只取最新 100 条，后端会返回最近的消息
+      const response = await api.get(`/session`, { params: { session_id: sessionId, limit: 100 } })
       // 后端返回 { success: true, data: [...] }
       return response.data?.data || []
     } catch (err) {

@@ -146,6 +146,11 @@ pub enum StreamEvent {
         name: String,
         arguments: String,
     },
+    /// Token 用量（流结束时由 client 发送，用于写回 session 计数）
+    Usage {
+        prompt_tokens: u64,
+        completion_tokens: u64,
+    },
     Done(String),
     Error(String),
 }

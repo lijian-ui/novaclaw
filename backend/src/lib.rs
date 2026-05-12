@@ -46,18 +46,42 @@ impl AppState {
 
 /// 初始化应用状态并注册内置工具
 pub async fn initialize() {
-    let mut state = APP_STATE.write().await;
-    tools::builtin::register_all(&mut state.tool_registry);
-    tracing::info!(
-        "NovaClaw backend initialized\n  - 配置目录: {:?}\n  - 工作目录: {:?}\n  - 技能目录: {:?}\n  - 记忆目录: {:?}\n  - 会话目录: {:?}\n  - 项目配置: {:?}\n  - 模型配置: {:?}",
-        config::get_config_dir(),
-        state.config.workspace_dir(),
-        state.config.skills_dir(),
-        state.config.memories_dir(),
-        state.config.sessions_dir(),
-        config::AppConfig::config_path(),
-        config::ModelsConfig::models_path()
+    // 先读取需要的配置值，然后释放写锁，再注册工具（避免 register_all 内部死锁）
+    let (tinyfish_api_key, tavily_api_key, mut tool_registry, memory_store, skills_loader) = {
+        let state = APP_STATE.read().await;
+        (
+            state.config.tinyfish_api_key.clone(),
+            state.config.tavily_api_key.clone(),
+            state.tool_registry.clone(),
+            state.memory_store.clone(),
+            state.skills_loader.clone(),
+        )
+    };
+
+    // 在锁外注册工具，彻底避免死锁
+    tools::builtin::register_all(
+        &mut tool_registry,
+        tinyfish_api_key,
+        tavily_api_key,
+        memory_store,
+        skills_loader,
     );
+
+    // 把注册好的 registry 写回 state
+    {
+        let mut state = APP_STATE.write().await;
+        state.tool_registry = tool_registry;
+        tracing::info!(
+            "NovaClaw backend initialized\n  - 配置目录: {:?}\n  - 工作目录: {:?}\n  - 技能目录: {:?}\n  - 记忆目录: {:?}\n  - 会话目录: {:?}\n  - 项目配置: {:?}\n  - 模型配置: {:?}",
+            config::get_config_dir(),
+            state.config.workspace_dir(),
+            state.config.skills_dir(),
+            state.config.memories_dir(),
+            state.config.sessions_dir(),
+            config::AppConfig::config_path(),
+            config::ModelsConfig::models_path()
+        );
+    }
 }
 
 /// 启动 Axum HTTP/WebSocket 服务器（供桌面版调用）

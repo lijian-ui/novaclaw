@@ -31,16 +31,14 @@ function App() {
   const containerRef = useRef<HTMLDivElement>(null)
 
   const {
-    tabs, activeTab, activePath, openFile, closeTab, updateContent, saveCurrent, switchTab,
+    tabs, activeTab, openFile, closeTab, updateContent, saveCurrent, switchTab,
   } = useFileEditor()
 
   const handleFileOpen = useCallback((path: string) => {
     openFile(path)
   }, [openFile])
 
-  const handleEditorBack = useCallback(() => {
-    if (activePath) closeTab(activePath)
-  }, [activePath, closeTab])
+
 
   const openFilePanel = useCallback(() => {
     setFileWidth(Math.round(window.innerWidth * INITIAL_FILE_PERCENT))

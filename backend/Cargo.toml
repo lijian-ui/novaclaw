@@ -62,6 +62,15 @@ glob = "0.3"
 walkdir = "2"
 regex = "1"
 
+# 字符编码转换（Windows GBK/GB2312）
+encoding_rs = "0.8"
+
+# Unix 系统信号处理
+nix = { version = "0.28", features = ["signal"] }
+
+# Windows 系统 API
+windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation"] }
+
 # URL 编码
 urlencoding = "2"
 
@@ -70,10 +79,6 @@ notify = { version = "6", optional = true }
 
 # ZIP 解压（技能上传）
 zip = "2"
-
-[features]
-default = []
-server = []
 
 [profile.release]
 opt-level = 3

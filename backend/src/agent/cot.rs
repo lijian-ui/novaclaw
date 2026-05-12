@@ -7,7 +7,7 @@ impl CotExtractor {
     /// 支持多提供商格式的统一抽象：
     /// 1. reasoning_content 字段 (DeepSeek/OpenRouter)
     /// 2. reasoning 字段 (Qwen)
-    /// 3. 内联  thinking 标签 (fallback)
+    /// 3. 内联 <think>...</think> 标签 (fallback)
     pub fn extract(content: &str, reasoning_field: Option<&str>) -> Option<String> {
         let parts = Self::extract_multiple(content, reasoning_field);
         if parts.is_empty() {
@@ -23,16 +23,16 @@ impl CotExtractor {
     pub fn extract_multiple(content: &str, reasoning_field: Option<&str>) -> Vec<String> {
         let mut parts: Vec<String> = Vec::new();
 
-        // Level 1: reasoning_content (DeepSeek / OpenRouter) - 可能有多个思考内容
+        // Level 1: reasoning_content 字段 (DeepSeek / OpenRouter / Qwen)
         if let Some(r) = reasoning_field {
             if !r.is_empty() {
-                // 尝试按 <｜end▁of▁thinking｜> 分隔多个思考内容
+                // 尝试按 <｜end▁of▁thinking｜> 分隔多个思考内容（DeepSeek R1 格式）
                 let chunks: Vec<String> = r
                     .split("<｜end▁of▁thinking｜>")
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                
+
                 if chunks.is_empty() {
                     parts.push(r.to_string());
                 } else {
@@ -41,17 +41,16 @@ impl CotExtractor {
             }
         }
 
-        // Level 2: 内联  thinking 标签 (兜底)
-        // 尝试提取多个 <think>...</think> 块
+        // Level 2: 内联 <think>...</think> 标签（支持多个块）
         if parts.is_empty() {
             if let Some(thinking_blocks) = Self::extract_inline_thinking_blocks(content) {
                 parts.extend(thinking_blocks);
             }
         }
 
-        // Level 3: 单个  thinking 标签 (兜底)
+        // Level 3: <｜end▁of▁thinking｜> 分隔符（DeepSeek R1 内联格式，无 reasoning_content 字段时）
         if parts.is_empty() {
-            if let Some(thinking) = Self::extract_inline_thinking(content) {
+            if let Some(thinking) = Self::extract_end_of_thinking_marker(content) {
                 parts.push(thinking);
             }
         }
@@ -59,33 +58,11 @@ impl CotExtractor {
         parts
     }
 
-    /// 提取内联  thinking 标签内容
-    fn extract_inline_thinking(content: &str) -> Option<String> {
-        let start_marker = "<｜end▁of▁thinking｜>";
-        let _end_marker = "";
-
-        if let Some(start_pos) = content.find(start_marker) {
-            let before = &content[..start_pos];
-            // 简单提取：保留 response前的最后 2000 字符作为 reasoning
-            let start = if before.len() > 2000 {
-                before.len() - 2000
-            } else {
-                0
-            };
-            let reasoning = &before[start..];
-            if !reasoning.trim().is_empty() {
-                return Some(reasoning.trim().to_string());
-            }
-        }
-        None
-    }
-
-    /// 提取多个内联  thinking 标签内容
+    /// 提取多个内联 <think>...</think> 标签内容
     fn extract_inline_thinking_blocks(content: &str) -> Option<Vec<String>> {
-        // 匹配 <think>...</think> 标签对
         let think_start = "<think";
         let think_end = "</think>";
-        
+
         if !content.contains(think_start) {
             return None;
         }
@@ -95,7 +72,7 @@ impl CotExtractor {
 
         while let Some(start_tag_pos) = content[search_pos..].find(think_start) {
             let actual_start = search_pos + start_tag_pos;
-            // 找到开始标签的结束位置
+            // 找到开始标签的结束 '>'
             if let Some(tag_end_pos) = content[actual_start..].find('>') {
                 let content_start = actual_start + tag_end_pos + 1;
                 // 查找对应的结束标签
@@ -107,6 +84,12 @@ impl CotExtractor {
                     }
                     search_pos = content_start + end_pos + think_end.len();
                 } else {
+                    // 未找到结束标签，提取从开始到末尾的内容（流式未完成的情况）
+                    let block_content = &content[content_start..];
+                    let trimmed = block_content.trim();
+                    if !trimmed.is_empty() {
+                        blocks.push(trimmed.to_string());
+                    }
                     break;
                 }
             } else {
@@ -121,9 +104,20 @@ impl CotExtractor {
         }
     }
 
-    /// 截断推理内容到指定 Token 数
+    /// 提取 <｜end▁of▁thinking｜> 标记之前的全部内容作为推理（修复：不再截断）
+    fn extract_end_of_thinking_marker(content: &str) -> Option<String> {
+        let marker = "<｜end▁of▁thinking｜>";
+        if let Some(pos) = content.find(marker) {
+            let reasoning = content[..pos].trim();
+            if !reasoning.is_empty() {
+                return Some(reasoning.to_string());
+            }
+        }
+        None
+    }
+
+    /// 截断推理内容到指定 Token 数（粗略估算：1 token ≈ 4 字符）
     pub fn truncate(reasoning: &str, max_tokens: usize) -> String {
-        // 粗略估算: 1 token ≈ 4 字符
         let max_chars = max_tokens * 4;
         if reasoning.len() <= max_chars {
             reasoning.to_string()

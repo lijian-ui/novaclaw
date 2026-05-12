@@ -127,32 +127,43 @@ fn parse_and_rank(raw_results: &serde_json::Value, query: &str) -> Vec<SearchRes
 }
 
 /// 注册所有内置工具
-pub fn register_all(registry: &mut ToolRegistry) {
+/// 所有需要访问全局状态的数据（api key、memory_store、skills_loader）均从外部传入，
+/// 避免在 handler 内部调用 APP_STATE.blocking_read()（在 tokio worker 上会 panic）
+pub fn register_all(
+    registry: &mut ToolRegistry,
+    tinyfish_api_key: Option<String>,
+    tavily_api_key: Option<String>,
+    memory_store: crate::memory::store::MemoryStore,
+    skills_loader: crate::skills::loader::SkillsLoader,
+) {
     let rt = tokio::runtime::Handle::current();
     let registry_clone = registry.clone();
+    // 将 memory_store 和 skills_loader 包装为 Arc，安全地传入多个 handler 闭包
+    let memory_store = std::sync::Arc::new(memory_store);
+    let skills_loader = std::sync::Arc::new(skills_loader);
 
     // 注册时不需要阻塞等待，使用 spawn_blocking 方式
     // 由于初始化在 tokio 上下文中，可以直接 block_on
     std::thread::spawn(move || {
         rt.block_on(async move {
-            // read_file 工具
+            // read_file tool
             registry_clone.register(ToolDef {
                 name: "read_file".to_string(),
-                description: "读取文件内容".to_string(),
+                description: "Read file content from the filesystem".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "文件路径（相对路径会被解析到工作目录，绝对路径直接使用）"
+                            "description": "File path (relative paths resolve to workspace, absolute paths used directly)"
                         },
                         "offset": {
                             "type": "integer",
-                            "description": "起始行号"
+                            "description": "Starting line number"
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "读取行数上限"
+                            "description": "Maximum number of lines to read"
                         }
                     },
                     "required": ["path"]
@@ -171,20 +182,20 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // write_file 工具
+            // write_file tool
             registry_clone.register(ToolDef {
                 name: "write_file".to_string(),
-                description: "写入文件内容".to_string(),
+                description: "Write content to a file (auto-creates directories)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "文件路径（相对路径会被解析到工作目录，绝对路径直接使用）"
+                            "description": "File path (relative paths resolve to workspace, absolute paths used directly)"
                         },
                         "content": {
                             "type": "string",
-                            "description": "要写入的内容"
+                            "description": "Content to write to the file"
                         }
                     },
                     "required": ["path", "content"]
@@ -206,24 +217,24 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // edit_file 工具
+            // edit_file tool
             registry_clone.register(ToolDef {
                 name: "edit_file".to_string(),
-                description: "编辑文件（查找替换）".to_string(),
+                description: "Edit a file by finding and replacing text".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "path": {
                             "type": "string",
-                            "description": "文件路径（相对路径会被解析到工作目录，绝对路径直接使用）"
+                            "description": "File path (relative paths resolve to workspace, absolute paths used directly)"
                         },
                         "old_string": {
                             "type": "string",
-                            "description": "要替换的旧内容"
+                            "description": "Text to search for and replace"
                         },
                         "new_string": {
                             "type": "string",
-                            "description": "替换后的新内容"
+                            "description": "New text to replace with"
                         }
                     },
                     "required": ["path", "old_string", "new_string"]
@@ -250,20 +261,20 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // glob 文件搜索工具
+            // glob file search tool
             registry_clone.register(ToolDef {
                 name: "glob".to_string(),
-                description: "按 glob 模式搜索文件".to_string(),
+                description: "Search files using glob patterns".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "glob 模式，如 **/*.rs"
+                            "description": "Glob pattern, e.g. **/*.rs"
                         },
                         "path": {
                             "type": "string",
-                            "description": "搜索根目录（相对路径会被解析到工作目录，绝对路径直接使用），默认工作目录"
+                            "description": "Root directory to search (relative paths resolve to workspace, absolute paths used directly); defaults to workspace"
                         }
                     },
                     "required": ["pattern"]
@@ -301,24 +312,24 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // grep 内容搜索工具
+            // grep content search tool
             registry_clone.register(ToolDef {
                 name: "grep".to_string(),
-                description: "在文件中搜索指定文本模式".to_string(),
+                description: "Search for text patterns in files".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "pattern": {
                             "type": "string",
-                            "description": "正则表达式模式"
+                            "description": "Regex pattern to search for"
                         },
                         "path": {
                             "type": "string",
-                            "description": "搜索目录（相对路径会被解析到工作目录，绝对路径直接使用），默认工作目录"
+                            "description": "Directory to search (relative paths resolve to workspace, absolute paths used directly); defaults to workspace"
                         },
                         "include": {
                             "type": "string",
-                            "description": "包含的文件模式，如 *.rs"
+                            "description": "File filter pattern, e.g. *.rs"
                         }
                     },
                     "required": ["pattern"]
@@ -380,46 +391,43 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // memory 工具
+            // memory tool
+            let memory_store_for_memory = memory_store.clone();
             registry_clone.register(ToolDef {
                 name: "memory".to_string(),
-                description: "持久化记忆管理：add(添加) / query(查询) / remove(删除)".to_string(),
+                description: "Persistent memory management: add / query / remove".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
                             "enum": ["add", "query", "remove"],
-                            "description": "操作类型"
+                            "description": "Action type"
                         },
                         "content": {
                             "type": "string",
-                            "description": "记忆内容（add/remove 时使用）"
+                            "description": "Memory content (used for add/remove)"
                         },
                         "query": {
                             "type": "string",
-                            "description": "查询关键字（query 时使用）"
+                            "description": "Search keyword (used for query)"
                         }
                     },
                     "required": ["action"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    use crate::APP_STATE;
-
-                    let state = APP_STATE.blocking_read();
+                handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
                     let action = args["action"].as_str().ok_or("缺少 action 参数")?;
-
                     match action {
                         "add" => {
                             let content = args["content"].as_str().ok_or("缺少 content 参数")?;
                             let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("general");
-                            state.memory_store.add_memory(content, category)
+                            memory_store_for_memory.add_memory(content, category)
                                 .map_err(|e| format!("记忆添加失败: {}", e))?;
                             Ok("记忆已保存".to_string())
                         }
                         "query" => {
                             let query = args["query"].as_str().unwrap_or("");
-                            let memories = state.memory_store.query_memories(query)
+                            let memories = memory_store_for_memory.query_memories(query)
                                 .map_err(|e| format!("记忆查询失败: {}", e))?;
                             if memories.is_empty() {
                                 Ok("未找到相关记忆".to_string())
@@ -429,7 +437,7 @@ pub fn register_all(registry: &mut ToolRegistry) {
                         }
                         "remove" => {
                             let content = args["content"].as_str().ok_or("缺少 content 参数")?;
-                            state.memory_store.remove_memory(content)
+                            memory_store_for_memory.remove_memory(content)
                                 .map_err(|e| format!("记忆删除失败: {}", e))?;
                             Ok("记忆已删除".to_string())
                         }
@@ -438,20 +446,20 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // session_search 工具
+            // session_search tool
             registry_clone.register(ToolDef {
                 name: "session_search".to_string(),
-                description: "搜索历史会话消息".to_string(),
+                description: "Search historical session messages".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "搜索关键字"
+                            "description": "Search keyword"
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "返回数量上限"
+                            "description": "Maximum number of results"
                         }
                     },
                     "required": ["query"]
@@ -475,19 +483,24 @@ pub fn register_all(registry: &mut ToolRegistry) {
                     .map_err(|e| e.to_string())
                     .unwrap_or_default()
             );
+            // 直接使用外部传入的配置参数，完全避免在此处访问 APP_STATE（防止死锁）
+            let web_search_tinyfish_key: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(tinyfish_api_key.clone()));
+            let web_search_tavily_key: std::sync::Arc<std::sync::Mutex<Option<String>>> =
+                std::sync::Arc::new(std::sync::Mutex::new(tavily_api_key.clone()));
             registry_clone.register(ToolDef {
                 name: "web_search".to_string(),
-                description: "通过网络搜索获取最新信息，支持中文和英文搜索".to_string(),
+                description: "Search the web for up-to-date information".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "搜索查询词"
+                            "description": "Search query"
                         },
                         "count": {
                             "type": "integer",
-                            "description": "返回结果数量（默认5，最大10）"
+                            "description": "Number of results (default 5, max 10)"
                         }
                     },
                     "required": ["query"]
@@ -498,14 +511,13 @@ pub fn register_all(registry: &mut ToolRegistry) {
                     let encoded_query = urlencoding::encode(&query).to_string();
                     let client = web_search_client.clone();
 
-                    // 在进入异步上下文之前读取配置，避免 Tokio 运行时冲突
-                    let (tinyfish_api_key, tavily_api_key) = {
-                        let state = crate::APP_STATE.blocking_read();
-                        (
-                            state.config.tinyfish_api_key.clone(),
-                            state.config.tavily_api_key.clone(),
-                        )
-                    };
+                    // 从 Arc<Mutex<>> 中读取配置，完全避免访问 tokio RwLock
+                    let tinyfish_api_key = web_search_tinyfish_key.lock()
+                        .map(|g| g.clone())
+                        .unwrap_or(None);
+                    let tavily_api_key = web_search_tavily_key.lock()
+                        .map(|g| g.clone())
+                        .unwrap_or(None);
 
                     let result = std::thread::spawn(move || {
                         let rt = tokio::runtime::Runtime::new()
@@ -656,19 +668,18 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // skills_list 工具 - 列出所有可用技能
+            // skills_list tool - list all available skills
+            let skills_loader_for_list = skills_loader.clone();
             registry_clone.register(ToolDef {
                 name: "skills_list".to_string(),
-                description: "列出所有可用技能。返回包含技能名称和简短描述的列表。".to_string(),
+                description: "List all available skills with name and description".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {},
                     "required": []
                 }),
-                handler: std::sync::Arc::new(|_args: serde_json::Value| -> Result<String, String> {
-                    use crate::APP_STATE;
-                    let state = APP_STATE.blocking_read();
-                    let skills = state.skills_loader.list_skills();
+                handler: std::sync::Arc::new(move |_args: serde_json::Value| -> Result<String, String> {
+                    let skills = skills_loader_for_list.list_skills();
                     if skills.is_empty() {
                         return Ok("{\"skills\": []}".to_string());
                     }
@@ -684,25 +695,24 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // skill_view 工具 - 查看指定技能的完整详细内容
+            // skill_view tool - view full details of a specific skill
+            let skills_loader_for_view = skills_loader.clone();
             registry_clone.register(ToolDef {
                 name: "skill_view".to_string(),
-                description: "查看指定技能的完整详细内容。先用 skills_list 查看可用技能列表，然后使用此工具加载具体技能的完整指令。".to_string(),
+                description: "View the full content of a specific skill. Use skills_list first to see available skills".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "name": {
                             "type": "string",
-                            "description": "要查看的技能名称"
+                            "description": "Name of the skill to view"
                         }
                     },
                     "required": ["name"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    use crate::APP_STATE;
+                handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
                     let name = args["name"].as_str().ok_or("缺少 name 参数")?;
-                    let state = APP_STATE.blocking_read();
-                    match state.skills_loader.get_skill(name) {
+                    match skills_loader_for_view.get_skill(name) {
                         Some(skill) => {
                             Ok(serde_json::json!({
                                 "name": skill.name,
@@ -712,7 +722,7 @@ pub fn register_all(registry: &mut ToolRegistry) {
                             }).to_string())
                         }
                         None => {
-                            let available: Vec<String> = state.skills_loader.list_skills()
+                            let available: Vec<String> = skills_loader_for_view.list_skills()
                                 .iter().map(|s| s.name.clone()).collect();
                             Err(format!("技能 '{}' 未找到。可用技能: {}", name, available.join(", ")))
                         }
@@ -720,25 +730,25 @@ pub fn register_all(registry: &mut ToolRegistry) {
                 }),
             }).await;
 
-            // todo 工具
+            // todo tool
             registry_clone.register(ToolDef {
                 name: "todo".to_string(),
-                description: "任务管理：add(添加) / list(列表) / done(完成) / remove(删除)".to_string(),
+                description: "Task management: add / list / done / remove".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
                             "enum": ["add", "list", "done", "remove"],
-                            "description": "操作类型"
+                            "description": "Action type"
                         },
                         "title": {
                             "type": "string",
-                            "description": "任务标题"
+                            "description": "Task title"
                         },
                         "id": {
                             "type": "string",
-                            "description": "任务ID（done/remove 时使用）"
+                            "description": "Task ID (used for done/remove)"
                         }
                     },
                     "required": ["action"]

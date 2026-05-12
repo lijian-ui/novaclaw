@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import {
-  Code2,
+  MessageSquare,
   Puzzle,
   Brain,
   Cpu,
@@ -17,6 +17,7 @@ import { MCPSettings } from './MCPSettings'
 import { ModelSettings } from './ModelSettings'
 import { SkillsSettings } from './SkillsSettings'
 import { AgentSettings } from './AgentSettings'
+import { IMSettings } from './IMSettings'
 import { SettingsPage } from './SettingsPage'
 import { ScheduledTasksPage } from './ScheduledTasksPage'
 import { LogsPage } from './LogsPage'
@@ -32,7 +33,7 @@ interface Tool {
 }
 
 const toolDefs: Tool[] = [
-  { id: 'editor', nameKey: 'dashboard.editor', icon: Code2, iconColor: 'text-emerald-400' },
+  { id: 'im', nameKey: 'dashboard.im', icon: MessageSquare, iconColor: 'text-emerald-400' },
   { id: 'skills', nameKey: 'dashboard.skills', icon: Puzzle, iconColor: 'text-violet-400' },
   { id: 'model', nameKey: 'dashboard.model', icon: Cpu, iconColor: 'text-blue-400' },
   { id: 'agent', nameKey: 'dashboard.agent', icon: Brain, iconColor: 'text-amber-400' },
@@ -70,6 +71,9 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
   }
   if (activeTool === 'agent') {
     return <AgentSettings onBack={() => onOpenTool?.(null)} />
+  }
+  if (activeTool === 'im') {
+    return <IMSettings onBack={() => onOpenTool?.(null)} />
   }
   if (activeTool === 'settings') {
     return <SettingsPage onBack={() => onOpenTool?.(null)} />

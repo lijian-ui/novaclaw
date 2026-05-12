@@ -250,8 +250,14 @@ impl ModelsConfig {
         tracing::info!("重新加载模型配置: {:?}", models_path);
 
         if !models_path.exists() {
-            tracing::warn!("模型配置文件不存在，返回默认配置");
-            return Self::default();
+            tracing::warn!("模型配置文件不存在，创建默认配置");
+            let config = Self::default();
+            if let Err(e) = config.save() {
+                tracing::warn!("创建默认模型配置失败: {}", e);
+            } else {
+                tracing::info!("已创建默认模型配置文件");
+            }
+            return config;
         }
 
         match fs::read_to_string(&models_path) {
@@ -370,9 +376,34 @@ pub fn get_base_dir() -> PathBuf {
 /// |--------|-------------------------------------------|
 /// | Win    | %LOCALAPPDATA%\novaclaw\config\            |
 /// | macOS  | ~/Library/Application Support/novaclaw/config/ |
-/// | Linux  | ~/.local/share/novaclaw/config/            |
+/// | Linux  | ~/.config/novaclaw/                        |
 pub fn get_config_dir() -> PathBuf {
-    get_base_dir().join("config")
+    #[cfg(target_os = "windows")]
+    {
+        get_base_dir().join("config")
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        get_base_dir().join("config")
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let config_home = std::env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| {
+            dirs::home_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(".config")
+                .display()
+                .to_string()
+        });
+        PathBuf::from(config_home).join("novaclaw")
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        get_base_dir().join("config")
+    }
 }
 
 /// 获取工作目录（内容产出、文件读写）
@@ -454,13 +485,21 @@ mod tests {
     #[test]
     fn test_default_models_config() {
         let config = ModelsConfig::default();
-        assert!(!config.providers.is_empty());
-        assert_eq!(config.providers[0].name, "openai");
+        assert!(config.providers.is_empty());
+        assert!(config.default_model.is_empty());
     }
 
     #[test]
     fn test_find_provider_by_model() {
-        let config = ModelsConfig::default();
+        let config = ModelsConfig {
+            default_model: "gpt-4".to_string(),
+            providers: vec![ProviderConfig {
+                name: "openai".to_string(),
+                api_key: "test-key".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                models: vec!["gpt-4".to_string(), "gpt-3.5-turbo".to_string()],
+            }],
+        };
         let provider = config.find_provider_by_model("gpt-4");
         assert!(provider.is_some());
         assert_eq!(provider.unwrap().name, "openai");

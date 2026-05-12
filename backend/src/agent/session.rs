@@ -149,7 +149,7 @@ impl AgentSession {
 
         let summary = AgentMessage {
             role: "system".to_string(),
-            content: format!("[上下文已压缩: 移除了 {} 条历史消息，以下是最近的对话内容]", to_remove),
+            content: format!("[Context compressed: removed {} historical messages, showing recent conversation content]", to_remove),
             tool_calls: None,
             tool_call_id: None,
             tool_name: None,

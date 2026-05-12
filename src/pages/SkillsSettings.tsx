@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Trash2, X, Puzzle, ArrowLeft, Upload } from 'lucide-react'
+import { Trash2, Puzzle, ArrowLeft, Upload } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
 import { useTranslation } from 'react-i18next'
 import type { Skill } from '@/types'

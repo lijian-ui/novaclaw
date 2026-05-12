@@ -222,7 +222,7 @@ pub async fn chat_stream(
                                                 }
                                             }
 
-                                            // 检查 finish_reason
+                            // 检查 finish_reason
                                             if choice.finish_reason.as_deref() == Some("tool_calls") {
                                                 // 发送所有累积的完整工具调用数据
                                                 for (idx, (tid, tname, targs)) in tool_calls_acc.drain() {
@@ -238,6 +238,20 @@ pub async fn chat_stream(
                                                     }
                                                 }
                                                 early_sent_indices.clear();
+                                            }
+                                        }
+
+                                        // 提取 usage（部分提供商在流式响应中携带）
+                                        if let Some(ref usage) = resp.usage {
+                                            let pt = usage.prompt_tokens.unwrap_or(0) as u64;
+                                            let ct = usage.completion_tokens.unwrap_or(0) as u64;
+                                            if pt > 0 || ct > 0 {
+                                                if !send_event(&tx, StreamEvent::Usage {
+                                                    prompt_tokens: pt,
+                                                    completion_tokens: ct,
+                                                }).await {
+                                                    return;
+                                                }
                                             }
                                         }
                                     }

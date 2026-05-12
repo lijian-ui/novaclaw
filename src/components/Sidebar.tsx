@@ -25,7 +25,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     try {
       const result = await listSessions()
       if (Array.isArray(result)) {
-        setSessions(result)
+        // 去重：根据会话 ID 过滤重复会话
+        const seen = new Set<string>()
+        const uniqueSessions = result.filter(session => {
+          if (seen.has(session.id)) return false
+          seen.add(session.id)
+          return true
+        })
+        setSessions(uniqueSessions)
       } else {
         setSessions([])
       }

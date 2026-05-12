@@ -87,7 +87,7 @@ export function useFileEditor(): UseFileEditorReturn {
           const msg = JSON.parse(event.data)
           if (msg.type === 'read_result' && msg.path === path) {
             clearTimeout(timeout)
-            event.target?.removeEventListener?.('message', handler)
+            ;(event.target as EventTarget)?.removeEventListener?.('message', handler as EventListener)
             if (msg.success) resolve(msg.content)
             else reject(new Error(msg.message || '读取失败'))
           }

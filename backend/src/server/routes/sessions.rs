@@ -56,26 +56,17 @@ async fn get_session_messages(Query(params): Query<HashMap<String, String>>) -> 
         Some(id) => id,
         None => return Json(serde_json::json!({"success": false, "message": "缺少 session_id 参数"})),
     };
-    let limit: usize = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50);
-    tracing::info!("get_session_messages: session_id={}", session_id);
+    let limit: usize = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
+    tracing::info!("get_session_messages: session_id={}, limit={}", session_id, limit);
     let state = APP_STATE.read().await;
-    // 检查消息文件路径
-    let msg_path = state.session_store.messages_path_for_debug(session_id);
-    tracing::info!("消息文件路径: {:?}", msg_path);
-    tracing::info!("消息文件是否存在: {}", msg_path.exists());
-    if msg_path.exists() {
-        match std::fs::read_to_string(&msg_path) {
-            Ok(content) => tracing::info!("消息文件内容(前200字符): {}", &content.chars().take(200).collect::<String>()),
-            Err(e) => tracing::error!("读取消息文件失败: {}", e),
-        }
-    }
     match state.session_store.get_messages(session_id) {
         Ok(mut messages) => {
-            tracing::info!("get_session_messages: {} 条消息", messages.len());
-            for (i, m) in messages.iter().enumerate() {
-                tracing::info!("  消息[{}]: role={}, content_prev30={}", i, m.role, &m.content.chars().take(30).collect::<String>());
+            tracing::info!("get_session_messages: {} 条消息，limit={}", messages.len(), limit);
+            // 取最新的 limit 条（从末尾截取），保证展示最近的对话
+            if messages.len() > limit {
+                let skip = messages.len() - limit;
+                messages = messages.into_iter().skip(skip).collect();
             }
-            messages.truncate(limit);
             Json(serde_json::json!({ "success": true, "data": messages }))
         }
         Err(e) => {

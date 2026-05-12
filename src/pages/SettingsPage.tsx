@@ -34,7 +34,7 @@ interface SettingsSettingsProps {
 
 export function SettingsPage({ onBack }: SettingsSettingsProps) {
   const { t, i18n: i18nInstance } = useTranslation()
-  const { theme, toggle, setTheme, isDark } = useTheme()
+  const { theme, setTheme, isDark } = useTheme()
   const [activeSection, setActiveSection] = useState<string | null>(null)
 
   const handleLanguageChange = useCallback((newLang: string) => {

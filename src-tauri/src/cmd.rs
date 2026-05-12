@@ -3,9 +3,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
-use tokio::io::AsyncWriteExt;
-use tokio::process::{Child, Command};
-use tokio::sync::Mutex;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::process::Child;
 
 use novaclaw_backend::APP_STATE;
 

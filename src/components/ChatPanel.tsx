@@ -18,12 +18,14 @@ import {
   Clock,
   FileText,
   Folder,
+  ListTodo,
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
+import { TaskList, type TaskProgress, type TaskProgressItem } from './TaskList'
 import { useApi } from '@/hooks/useApi'
 import { useChat } from '@/contexts/ChatContext'
 import { useTranslation } from 'react-i18next'
-import type { Session } from '@/types'
+
 import openaiIcon from '@/assets/OpenAI.svg'
 import lmStudioIcon from '@/assets/lm-studio.png'
 import ollamaIcon from '@/assets/ollama.png'
@@ -323,6 +325,8 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([{ name: 'Auto', providerId: '' }])
   const [workspaceName, setWorkspaceName] = useState('workspace')
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null)
+  const [taskDetected, setTaskDetected] = useState<boolean | null>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
@@ -417,6 +421,8 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
 
   // Pure WebSocket streaming – no mock fallback
   const startStreaming = useCallback((userContent: string) => {
+    setTaskDetected(null)
+    setTaskProgress(null)
     setIsStreaming(true)
     setStreamingContent('')
     setStreamingReasoning('')
@@ -424,17 +430,29 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
     streamingContentRef.current = ''
     streamingReasoningRef.current = ''
     hasFlushedFirstReasoningRef.current = false
-    userContentRef.current = userContent // 保存用户消息用于标题
+    userContentRef.current = userContent
 
     const ws = connectChatStream(
       null,
       (chunk) => {
         streamingContentRef.current += chunk
         setStreamingContent(streamingContentRef.current)
+
+        // 从流式内容中提取 <think> 标签内容，实时显示思考过程
+        // 某些模型（如 DeepSeek）将思考内容放在 <think> 标签中，没有独立的 reasoning_content 字段
+        const thinkMatch = streamingContentRef.current.match(/<think\s*>([\s\S]*?)(?:<\/think\s*>|$)/)
+        if (thinkMatch) {
+          const extractedReasoning = thinkMatch[1].trim()
+          if (extractedReasoning && extractedReasoning !== streamingReasoningRef.current) {
+            streamingReasoningRef.current = extractedReasoning
+            setStreamingReasoning(extractedReasoning)
+          }
+        }
       },
       (result: { content?: string; sessionId?: string }) => {
         setIsStreaming(false)
-        // 将剩余的 streamingReasoning 刷新为一条思考消息
+
+        // 流式结束：把剩余的推理内容固化为 agent_step 消息
         if (streamingReasoningRef.current.trim()) {
           const stepType = hasFlushedFirstReasoningRef.current ? 'thought' : 'first_thought'
           setMessages(prev => [...prev, {
@@ -453,11 +471,16 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
           streamingReasoningRef.current = ''
           setStreamingReasoning('')
         }
+
+        // 固化最终文本输出为 assistant 消息
         const content = streamingContentRef.current || result.content || ''
         if (content) {
           setMessages(prev => [...prev, { id: genId(), role: 'assistant', content }])
         }
-        // 如果后端返回了新的 session_id（首次对话自动创建），更新 ChatContext
+        setStreamingContent('')
+        streamingContentRef.current = ''
+
+        // 首次对话：后端返回新 session_id，更新 ChatContext
         if (result.sessionId && result.sessionId !== sessionIdRef.current) {
           const title = makeTitle(userContentRef.current)
           setCurrentSession({
@@ -469,8 +492,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
           })
           sessionIdRef.current = result.sessionId
         }
-        setStreamingContent('')
-        streamingContentRef.current = ''
       },
       (err) => {
         setIsStreaming(false)
@@ -480,11 +501,57 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
       },
       (step) => {
         if (step.stepType === 'reasoning') {
-          // 推理内容流式累积到 streamingReasoning，实时显示为思考块
+          // reasoning 类型：流式累积，实时显示在 ThinkingBlock 里（打字机效果）
           streamingReasoningRef.current += step.content
           setStreamingReasoning(streamingReasoningRef.current)
+
+        } else if (step.stepType === 'first_thought' || step.stepType === 'thought') {
+          // first_thought/thought 类型：直接作为 agent_step 消息固化显示
+          // 固化之前的流式推理内容
+          if (streamingReasoningRef.current.trim()) {
+            setMessages(prev => [...prev, {
+              id: genId(),
+              role: 'agent_step',
+              content: streamingReasoningRef.current,
+              agentStep: {
+                stepType: hasFlushedFirstReasoningRef.current ? 'thought' : 'first_thought',
+                content: streamingReasoningRef.current,
+                toolName: undefined,
+                toolResult: undefined,
+                turn: step.turn,
+                maxTurns: step.maxTurns,
+              }
+            }])
+            streamingReasoningRef.current = ''
+            setStreamingReasoning('')
+          }
+          // 固化流式文本
+          if (streamingContentRef.current.trim()) {
+            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content: streamingContentRef.current }])
+            streamingContentRef.current = ''
+            setStreamingContent('')
+          }
+          // 固化当前思考消息
+          setMessages(prev => [...prev, {
+            id: genId(),
+            role: 'agent_step',
+            content: step.content,
+            agentStep: {
+              stepType: step.stepType,
+              content: step.content,
+              toolName: step.toolName,
+              toolResult: undefined,
+              turn: step.turn,
+              maxTurns: step.maxTurns,
+            }
+          }])
+          // 标记首次思考已刷新
+          if (step.stepType === 'first_thought') {
+            hasFlushedFirstReasoningRef.current = true
+          }
+
         } else if (step.stepType === 'tool_call') {
-          // 工具调用前：把累积的推理刷新为一条思考消息
+          // 工具调用开始：先把当前推理内容固化为 agent_step 消息
           if (streamingReasoningRef.current.trim()) {
             const stepType = hasFlushedFirstReasoningRef.current ? 'thought' : 'first_thought'
             setMessages(prev => [...prev, {
@@ -504,36 +571,90 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
             setStreamingReasoning('')
             hasFlushedFirstReasoningRef.current = true
           }
-          // 再添加 tool_call 消息
+          // 同时清空流式文本（工具调用前的文本已固化）
+          if (streamingContentRef.current.trim()) {
+            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content: streamingContentRef.current }])
+            streamingContentRef.current = ''
+            setStreamingContent('')
+          }
+          // 追加 tool_call 消息（显示为工具调用卡片，done=false 表示执行中）
           setMessages(prev => [...prev, {
             id: genId(),
             role: 'agent_step',
             content: step.content,
             agentStep: {
-              stepType: step.stepType,
+              stepType: 'tool_call',
               content: step.content,
               toolName: step.toolName,
-              toolResult: step.toolResult,
+              toolResult: undefined,
               turn: step.turn,
               maxTurns: step.maxTurns,
             }
           }])
-        } else {
-          // 其他步骤（tool_result 等）作为独立消息
+
+        } else if (step.stepType === 'tool_result') {
+          // 工具执行完成：把最后一个同名 tool_call 标记为 done
+          setMessages(prev => {
+            const updated = [...prev]
+            // 从后往前找最近的同名 tool_call，更新为 done 状态
+            for (let i = updated.length - 1; i >= 0; i--) {
+              const m = updated[i]
+              if (
+                m.role === 'agent_step' &&
+                m.agentStep?.stepType === 'tool_call' &&
+                m.agentStep?.toolName === step.toolName
+              ) {
+                updated[i] = {
+                  ...m,
+                  agentStep: { ...m.agentStep!, stepType: 'tool_call_done' }
+                }
+                break
+              }
+            }
+            return updated
+          })
+
+        } else if (step.stepType === 'retry') {
+          // 重试提示
           setMessages(prev => [...prev, {
             id: genId(),
             role: 'agent_step',
             content: step.content,
             agentStep: {
-              stepType: step.stepType,
+              stepType: 'retry',
               content: step.content,
-              toolName: step.toolName,
-              toolResult: step.toolResult,
+              toolName: undefined,
+              toolResult: undefined,
               turn: step.turn,
               maxTurns: step.maxTurns,
             }
           }])
+        } else if (step.stepType === 'task_detection') {
+          // 复杂任务检测结果
+          try {
+            const detection = JSON.parse(step.content)
+            setTaskDetected(detection.is_complex)
+          } catch {
+            console.error('Failed to parse task detection:', step.content)
+          }
+        } else if (step.stepType === 'task_plan') {
+          // 任务计划解析
+          try {
+            const plan = JSON.parse(step.content) as TaskProgress
+            setTaskProgress(plan)
+          } catch {
+            console.error('Failed to parse task plan:', step.content)
+          }
+        } else if (step.stepType === 'task_progress') {
+          // 任务进度更新
+          try {
+            const progress = JSON.parse(step.content) as TaskProgress
+            setTaskProgress(progress)
+          } catch {
+            console.error('Failed to parse task progress:', step.content)
+          }
         }
+        // tool_error 等其他类型忽略（不影响主流程）
       },
     )
 
@@ -626,6 +747,8 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
                 const dirName = relPath.split('/')[0]
                 setWorkspaceName(dirName)
                 setWorkspaceOpen(false)
+                // 打开文件预览面板
+                onOpenFilePanel?.()
               }
             }}
           />
@@ -642,7 +765,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground/70 hover:bg-foreground/10 transition-colors"
                 onClick={(e) => {
                   e.stopPropagation()
-                  // 通过 DOM 设置 directory 属性，避免 React 忽略非标准属性
                   const input = folderInputRef.current
                   if (input) {
                     input.setAttribute('webkitdirectory', '')
@@ -710,6 +832,20 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
             onScroll={handleScroll}
             className="flex-1 overflow-y-auto"
           >
+            <TaskList 
+              taskProgress={taskProgress} 
+              onClose={() => setTaskProgress(null)}
+              onTaskClick={(task: TaskProgressItem) => {
+                console.log('Task clicked:', task)
+              }}
+            />
+            {/* 复杂任务检测指示器 */}
+            {taskDetected === true && !taskProgress && (
+              <div className="mx-3 mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-500/20">
+                <ListTodo className="w-4 h-4 text-green-400" />
+                <span className="text-sm text-green-400/90">检测到复杂任务，正在生成任务清单...</span>
+              </div>
+            )}
             <ChatMessages
               messages={messages}
               isStreaming={isStreaming}

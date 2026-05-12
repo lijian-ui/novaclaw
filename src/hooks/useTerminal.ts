@@ -1,25 +1,21 @@
-/**
- * useTerminal — 终端钩子（持久化 Shell 模式）
- *
- * 管理 WebSocket 连接，将 Shell 进程的 stdout/stderr 输出实时写入 xterm.js。
- * 用户通过 xterm.onData 发送输入，经由 WebSocket 的 stdin 消息写入 Shell 进程。
- * 启动时自动建立连接，无需手动点击"重连"。
- */
-
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { TerminalMessage, UseTerminalReturn } from '@/types/terminal'
 
-const WS_URL = 'ws://127.0.0.1:3000/ws/terminal'
+/** 终端 WebSocket URL 生成 */
+function getTerminalWsUrl(): string {
+  if (typeof window === 'undefined') {
+    return 'ws://127.0.0.1:3000/ws/terminal'
+  }
+  if (import.meta.env.DEV) {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${proto}//${window.location.host}/ws/terminal`
+  }
+  return 'ws://127.0.0.1:3000/ws/terminal'
+}
 
-/** 检测 Tauri 环境 */
 const isTauri = (): boolean =>
   typeof window !== 'undefined' && !!(window as any).__TAURI__?.invoke
-
-/** 将 stderr 包装为 ANSI 红色（xterm.js 自动渲染） */
-function wrapStderr(data: string): string {
-  return `\x1b[31m${data}\x1b[0m`
-}
 
 export function useTerminal(
   terminalRef: React.MutableRefObject<Terminal | null>,
@@ -30,14 +26,6 @@ export function useTerminal(
   const runningRef = useRef(false)
   const [, forceUpdate] = useState(0)
 
-  /** 写入终端 */
-  const write = useCallback(
-    (data: string) => {
-      terminalRef.current?.write(data)
-    },
-    [terminalRef],
-  )
-
   /** 处理后端消息 */
   const handleMessage = useCallback(
     (msg: TerminalMessage) => {
@@ -47,76 +35,65 @@ export function useTerminal(
           term?.write(msg.data || '')
           break
         case 'stderr':
-          term?.write(wrapStderr(msg.data || ''))
+          term?.write(msg.data || '')
           break
         case 'exit':
           runningRef.current = false
-          term?.write(`\r\n\x1b[33m[进程退出] 代码: ${msg.code ?? '?'}\x1b[0m\r\n`)
+          term?.write(`\r\n\x1b[33m[Process exited] code: ${msg.code ?? '?'}\x1b[0m\r\n`)
           forceUpdate((n) => n + 1)
-          break
-        case 'clear':
-          term?.clear()
           break
         case 'error':
-          term?.write(`\r\n\x1b[31m[错误] ${msg.data}\x1b[0m\r\n`)
+          term?.write(`\r\n\x1b[31m[Error] ${msg.data}\x1b[0m\r\n`)
           runningRef.current = false
           forceUpdate((n) => n + 1)
+          break
+        case 'session_restarted':
+          term?.write(`\r\n\x1b[32m[Session restarted]\x1b[0m\r\n`)
           break
       }
     },
     [terminalRef],
   )
 
-  // ---- 建立连接 ----
+  /** 建立 WebSocket 连接 */
   const connect = useCallback(() => {
-    // 关闭旧连接
-    wsRef.current?.close()
-
-    // Shell 进程一启动就是"运行中"状态（持久化）
-    runningRef.current = true
-    forceUpdate((n) => n + 1)
+    const existing = wsRef.current
+    if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+      return
+    }
+    if (existing) {
+      existing.close()
+    }
 
     if (isTauri()) {
-      // Tauri 模式：监听 Tauri 事件
       setConnected(true)
       setError(null)
-      
       const { listen, invoke } = (window as any).__TAURI__
       if (listen) {
         const unlisteners: Array<() => void> = []
-        
         listen('terminal:stdout', (event: any) => {
           terminalRef.current?.write(event.payload || '')
-        }).then((unlisten: () => void) => unlisteners.push(unlisten))
-
+        }).then((fn: () => void) => unlisteners.push(fn))
         listen('terminal:stderr', (event: any) => {
-          terminalRef.current?.write(wrapStderr(event.payload || ''))
-        }).then((unlisten: () => void) => unlisteners.push(unlisten))
-
+          terminalRef.current?.write(event.payload || '')
+        }).then((fn: () => void) => unlisteners.push(fn))
         listen('terminal:exit', (event: any) => {
           runningRef.current = false
-          terminalRef.current?.write(`\r\n\x1b[33m[进程退出] 代码: ${event.payload ?? '?'}\x1b[0m\r\n`)
+          terminalRef.current?.write(`\r\n\x1b[33m[Process exited] code: ${event.payload ?? '?'}\x1b[0m\r\n`)
           forceUpdate((n) => n + 1)
-        }).then((unlisten: () => void) => unlisteners.push(unlisten))
-
-        listen('terminal:clear', () => {
-          terminalRef.current?.clear()
-        }).then((unlisten: () => void) => unlisteners.push(unlisten))
-
+        }).then((fn: () => void) => unlisteners.push(fn))
         listen('terminal:connected', () => {
           setConnected(true)
-        }).then((unlisten: () => void) => unlisteners.push(unlisten))
+        }).then((fn: () => void) => unlisteners.push(fn))
       }
-      
-      // 自动启动终端进程
       invoke('terminal_spawn').catch((e: unknown) => {
-        terminalRef.current?.write(`\r\n\x1b[31m启动终端失败: ${e}\x1b[0m\r\n`)
+        terminalRef.current?.write(`\r\n\x1b[31mFailed to start terminal: ${e}\x1b[0m\r\n`)
       })
       return
     }
 
-    // WebSocket 模式
-    const ws = new WebSocket(WS_URL)
+    const wsUrl = getTerminalWsUrl()
+    const ws = new WebSocket(wsUrl)
     wsRef.current = ws
 
     ws.onopen = () => {
@@ -134,92 +111,110 @@ export function useTerminal(
     }
 
     ws.onclose = () => {
-      setConnected(false)
-      runningRef.current = false
-      forceUpdate((n) => n + 1)
-      wsRef.current = null
+      if (wsRef.current === ws) {
+        setConnected(false)
+        runningRef.current = false
+        wsRef.current = null
+        forceUpdate((n) => n + 1)
+      }
     }
 
     ws.onerror = () => {
-      setError('WebSocket 连接失败')
+      setError('WebSocket connection failed')
     }
   }, [handleMessage, terminalRef])
 
-  // ---- 自动连接（仅挂载时一次） ----
   useEffect(() => {
     connect()
     return () => {
-      wsRef.current?.close()
+      const ws = wsRef.current
       wsRef.current = null
+      setConnected(false)
+      runningRef.current = false
+      if (ws) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'kill' }))
+          ws.close()
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          // 连接中时不能 send，等 open 后再关闭
+          const onOpen = () => {
+            ws.send(JSON.stringify({ type: 'kill' }))
+            ws.close()
+          }
+          ws.addEventListener('open', onOpen, { once: true })
+        }
+      }
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [connect])
 
-  // ---- 断开 ----
   const disconnect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      try { wsRef.current.send(JSON.stringify({ type: 'kill' })) } catch {}
+    }
     wsRef.current?.close()
     setConnected(false)
     runningRef.current = false
     forceUpdate((n) => n + 1)
   }, [])
 
-  // ---- 发送输入（xterm onData → 后端 Shell stdin） ----
+  /** 发送输入（xterm onData 触发 → 写入 shell stdin） */
   const sendInput = useCallback((data: string) => {
     if (isTauri()) {
       const { invoke } = (window as any).__TAURI__
       invoke('terminal_write', { data }).catch(() => {})
-    } else {
-      const ws = wsRef.current
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'stdin', data }))
-      }
+      return
+    }
+    const ws = wsRef.current
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'stdin', data }))
     }
   }, [])
 
-  // ---- 执行命令（向后兼容：将命令写入 stdin + 换行） ----
+  /** 执行命令（向后兼容） */
   const sendCommand = useCallback((cmd: string) => {
     if (isTauri()) {
       const { invoke } = (window as any).__TAURI__
       invoke('terminal_exec', { command: cmd }).catch((e: unknown) => {
-        terminalRef.current?.write(`\r\n\x1b[31m执行失败: ${e}\x1b[0m\r\n`)
+        terminalRef.current?.write(`\r\n\x1b[31mExecution failed: ${e}\x1b[0m\r\n`)
       })
-    } else {
-      const ws = wsRef.current
-      if (!ws || ws.readyState !== WebSocket.OPEN) return
-      ws.send(JSON.stringify({ type: 'exec', command: cmd }))
+      return
     }
+    const ws = wsRef.current
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      if (ws?.readyState === WebSocket.CONNECTING) {
+        ws.addEventListener('open', () => {
+          ws.send(JSON.stringify({ type: 'exec', command: cmd, data: cmd }))
+        }, { once: true })
+      }
+      return
+    }
+    ws.send(JSON.stringify({ type: 'exec', command: cmd, data: cmd }))
   }, [terminalRef])
 
-  // ---- 终止 ----
   const killProcess = useCallback(() => {
     if (isTauri()) {
       const { invoke } = (window as any).__TAURI__
       invoke('terminal_kill').catch(() => {})
-    } else {
-      wsRef.current?.send(JSON.stringify({ type: 'kill' }))
+      return
     }
-    runningRef.current = true // 后续连接会重新 spawn shell
+    wsRef.current?.send(JSON.stringify({ type: 'kill' }))
+    runningRef.current = true
     forceUpdate((n) => n + 1)
   }, [])
 
-  // ---- 清屏 ----
   const clearOutput = useCallback(() => {
     terminalRef.current?.clear()
   }, [terminalRef])
 
-  // ---- 尺寸调整 ----
-  const resize = useCallback((_cols: number, _rows: number) => {
+  const resize = useCallback((cols: number, rows: number) => {
     if (isTauri()) {
       const { invoke } = (window as any).__TAURI__
-      invoke('terminal_resize', { cols: _cols, rows: _rows }).catch(() => {})
-    } else {
-      wsRef.current?.send(
-        JSON.stringify({ type: 'resize', cols: _cols, rows: _rows }),
-      )
+      invoke('terminal_resize', { cols, rows }).catch(() => {})
+      return
     }
+    wsRef.current?.send(JSON.stringify({ type: 'resize', cols, rows }))
   }, [])
 
-  // ---- 重连 ----
   const reconnect = useCallback(() => {
     setError(null)
     connect()
