@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { ArrowLeft, Info, AlertTriangle, XCircle, Bug, Terminal, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -10,10 +10,11 @@ interface LogEntry {
   level: string
   module: string
   message: string
+  task_id?: string | null
 }
 
-const WS_LOGS = 'ws://127.0.0.1:3000/ws/logs'
-const API_LOGS = 'http://127.0.0.1:3000/api/logs'
+const WS_URL = 'ws://127.0.0.1:3000/ws/logs'
+const API_BASE = 'http://127.0.0.1:3000/api/logs'
 
 const levelConfig: Record<string, { label: string; icon: React.ElementType; color: string }> = {
   all: { label: '全部', icon: Terminal, color: '' },
@@ -24,11 +25,26 @@ const levelConfig: Record<string, { label: string; icon: React.ElementType; colo
 }
 
 const levelColors: Record<string, string> = {
-  all: '',
   info: 'text-blue-400 before:bg-blue-400',
   warn: 'text-amber-400 before:bg-amber-400',
   error: 'text-red-400 before:bg-red-400',
   debug: 'text-foreground/50 before:bg-foreground/30',
+}
+
+/// 将后端日志级别映射为前端过滤级别 (INFO -> info)
+function normalizeLevel(level: string): string {
+  const l = level.toLowerCase()
+  if (l === 'trace') return 'debug'
+  return l
+}
+
+/// 后端 API 可接受的日志级别值
+const backendLevels = {
+  all: 'trace',
+  debug: 'debug',
+  info: 'info',
+  warn: 'warn',
+  error: 'error',
 }
 
 interface LogsPageProps {
@@ -40,44 +56,95 @@ export function LogsPage({ onBack }: LogsPageProps) {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [filter, setFilter] = useState<LogLevel>('all')
   const [loading, setLoading] = useState(true)
+  const [connected, setConnected] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
+  const idCounterRef = useRef(0)
 
-  // Load initial logs from API
+  // 加载历史日志（根据 filter 变化重新加载）
+  const loadHistory = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await fetch(`${API_BASE}?level=${filter === 'all' ? '' : filter}`)
+      const data = await res.json()
+      if (data.success && Array.isArray(data.data)) {
+        setLogs(data.data.map((entry: any) => {
+          idCounterRef.current += 1
+          return {
+            id: idCounterRef.current,
+            timestamp: entry.timestamp || '',
+            level: normalizeLevel(entry.level),
+            module: entry.module || 'System',
+            message: entry.message || '',
+            task_id: entry.task_id || null,
+          }
+        }))
+      }
+    } catch { /* ignore */ }
+    setLoading(false)
+  }, [filter])
+
+  // 首次挂载和 filter 变化时加载历史
   useEffect(() => {
-    fetch(API_LOGS)
-      .then(r => r.json())
-      .then(data => {
-        if (data.entries) {
-          setLogs(data.entries)
-          setLoading(false)
-        }
-      })
-      .catch(() => setLoading(false))
+    loadHistory()
+  }, [loadHistory])
 
-    // Connect to WebSocket for real-time logs
-    const ws = new WebSocket(WS_LOGS)
+  // 连接到 WebSocket（独立于历史加载，避免闭包过期）
+  useEffect(() => {
+    const ws = new WebSocket(WS_URL)
     wsRef.current = ws
+
+    ws.onopen = () => setConnected(true)
+    ws.onclose = () => setConnected(false)
+    ws.onerror = () => setConnected(false)
+
     ws.onmessage = (event) => {
       try {
-        const entry = JSON.parse(event.data)
-        if (entry.level && entry.message) {
-          setLogs(prev => {
-            const newEntry: LogEntry = {
-              id: Date.now(),
-              timestamp: entry.timestamp || new Date().toISOString().replace('T', ' ').slice(0, 19),
-              level: (entry.level || 'INFO').toLowerCase(),
-              module: entry.module || 'System',
-              message: entry.message,
-            }
-            const updated = [...prev, newEntry]
-            return updated.length > 500 ? updated.slice(-500) : updated
-          })
+        const msg = JSON.parse(event.data)
+        if (msg.type === 'heartbeat' || msg.type === 'connected') return
+
+        if (msg.type === 'log' && msg.data) {
+          const entry = msg.data as {
+            timestamp?: string
+            level?: string
+            module?: string
+            message?: string
+            task_id?: string | null
+          }
+          if (entry.level && entry.message) {
+            idCounterRef.current += 1
+            const id = idCounterRef.current
+            setLogs(prev => {
+              const newEntry: LogEntry = {
+                id,
+                timestamp: entry.timestamp || new Date().toISOString().replace('T', ' ').slice(0, 19),
+                level: normalizeLevel(entry.level),
+                module: entry.module || 'System',
+                message: entry.message,
+                task_id: entry.task_id || null,
+              }
+              const updated = [...prev, newEntry]
+              return updated.length > 1000 ? updated.slice(-1000) : updated
+            })
+          }
         }
-      } catch {}
+      } catch { /* ignore */ }
     }
 
-    return () => { ws.close() }
+    return () => { ws.close(); wsRef.current = null }
+  }, [])
+
+  // 切换到新的日志级别
+  const handleLevelChange = useCallback(async (lv: LogLevel) => {
+    setFilter(lv)
+    const backendLevel = backendLevels[lv]
+    try {
+      await fetch(`${API_BASE}/level`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: backendLevel }),
+      })
+    } catch { /* ignore */ }
   }, [])
 
   // Auto scroll
@@ -92,6 +159,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
 
   return (
     <div className="h-full flex flex-col bg-mainbg">
+      {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
         <div className="flex items-center gap-3">
           <button onClick={onBack} className="p-1 rounded hover:bg-foreground/10 transition-colors">
@@ -100,15 +168,25 @@ export function LogsPage({ onBack }: LogsPageProps) {
           <span className="text-sm font-medium text-foreground/90">{t('logsPage.title')}</span>
           <span className="text-[10px] text-foreground/30">{t('logsPage.logsCount', { count: logs.length })}</span>
         </div>
+        <div className="flex items-center gap-2">
+          {/* 连接状态 */}
+          <span className={`text-[10px] px-1.5 py-0.5 rounded flex items-center gap-1 ${
+            connected ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-green-400' : 'bg-red-400'}`} />
+            {connected ? '已连接' : '未连接'}
+          </span>
+        </div>
       </div>
 
+      {/* 日志级别过滤按钮（点击时同步调整后端日志级别） */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0 overflow-x-auto">
         {levels.map(lv => {
           const isActive = filter === lv
           const cfg = levelConfig[lv]
           const Icon = cfg.icon
           return (
-            <button key={lv} onClick={() => setFilter(lv)}
+            <button key={lv} onClick={() => handleLevelChange(lv)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition-colors ${
                 isActive ? 'bg-blue-500/20 text-blue-400' : 'bg-foreground/5 text-foreground/50 hover:bg-foreground/10'
               }`}>
@@ -119,6 +197,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
         })}
       </div>
 
+      {/* 日志内容 */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {loading ? (
           <div className="flex items-center justify-center h-full">
@@ -137,11 +216,15 @@ export function LogsPage({ onBack }: LogsPageProps) {
                 <div key={log.id} className="flex items-start gap-3 px-4 py-2 hover:bg-foreground/[0.02] transition-colors">
                   <div className={`shrink-0 w-2 h-2 rounded-full mt-1.5 ${lvColor.split(' ')[1] || 'bg-foreground/20'}`} />
                   <span className="text-[11px] text-foreground/30 font-mono shrink-0 w-[130px]">{log.timestamp}</span>
-                  <span className="text-[11px] text-foreground/40 font-mono shrink-0 w-[70px]">{log.module}</span>
                   <span className={`text-[11px] font-medium shrink-0 w-[40px] ${lvColor.split(' ')[0]}`}>
                     {t(`logsPage.${log.level}` as any)}
                   </span>
                   <span className="text-xs text-foreground/70 break-all">{log.message}</span>
+                  {log.task_id && (
+                    <span className="text-[10px] text-foreground/30 font-mono shrink-0 ml-auto" title={log.task_id}>
+                      #{log.task_id.slice(0, 8)}
+                    </span>
+                  )}
                 </div>
               )
             })}

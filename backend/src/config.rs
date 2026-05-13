@@ -55,7 +55,7 @@ impl Default for AppConfig {
         Self {
             port: 3000,
             host: "127.0.0.1".to_string(),
-            llm_timeout: 60,
+            llm_timeout: 180,
             max_retries: 3,
             max_iterations: 30,
             temperature: 0.7,
@@ -450,6 +450,17 @@ pub fn get_sessions_dir() -> PathBuf {
     get_base_dir().join("sessions")
 }
 
+/// 获取日志存放目录
+/// 
+/// | 平台   | 路径示例                                  |
+/// |--------|-------------------------------------------|
+/// | Win    | %LOCALAPPDATA%\novaclaw\logs\              |
+/// | macOS  | ~/Library/Application Support/novaclaw/logs/ |
+/// | Linux  | ~/.local/share/novaclaw/logs/              |
+pub fn get_logs_dir() -> PathBuf {
+    get_base_dir().join("logs")
+}
+
 /// 确保所有必要目录存在，不存在则创建
 pub fn ensure_directories_exists() {
     let dirs = [
@@ -459,6 +470,7 @@ pub fn ensure_directories_exists() {
         get_skills_dir(),
         get_memories_dir(),
         get_sessions_dir(),
+        get_logs_dir(),
     ];
 
     for dir in dirs {

@@ -240,6 +240,7 @@ async fn get_paths() -> Json<serde_json::Value> {
             "sessions_dir": state.config.sessions_dir().to_string_lossy(),
             "memories_dir": state.config.memories_dir().to_string_lossy(),
             "skills_dir": state.config.skills_dir().to_string_lossy(),
+            "logs_dir": crate::config::get_logs_dir().to_string_lossy(),
         }
     }))
 }

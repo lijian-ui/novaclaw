@@ -35,7 +35,8 @@ serde_json = "1"
 
 # 日志
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "registry"] }
+tracing-appender = "0.2"
 
 # UUID
 uuid = { version = "1", features = ["v4"] }
@@ -74,6 +75,11 @@ windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Fou
 
 # URL 编码
 urlencoding = "2"
+
+# PTY 伪终端（命令执行工具）
+portable-pty = "0.8"
+
+
 
 # 文件监视
 notify = { version = "6", optional = true }

@@ -55,9 +55,12 @@ async fn update_cron(
     Json(serde_json::json!({ "success": true, "message": "定时任务已更新" }))
 }
 
-/// 删除定时任务
-async fn delete_cron(Path(_id): Path<String>) -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "success": true }))
+/// 删除定时任务（同时清理对应的日志文件）
+async fn delete_cron(Path(id): Path<String>) -> Json<serde_json::Value> {
+    // 尝试清理关联的任务日志
+    let _ = crate::logging::delete_task_log(&id);
+    tracing::info!("定时任务已删除: {}, 关联日志已清理", id);
+    Json(serde_json::json!({ "success": true, "message": "定时任务已删除" }))
 }
 
 pub fn routes() -> Router {
