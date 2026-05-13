@@ -14,9 +14,6 @@ function getTerminalWsUrl(): string {
   return 'ws://127.0.0.1:3000/ws/terminal'
 }
 
-const isTauri = (): boolean =>
-  typeof window !== 'undefined' && !!(window as any).__TAURI__?.invoke
-
 export function useTerminal(
   terminalRef: React.MutableRefObject<Terminal | null>,
 ): UseTerminalReturn {
@@ -63,33 +60,6 @@ export function useTerminal(
     }
     if (existing) {
       existing.close()
-    }
-
-    if (isTauri()) {
-      setConnected(true)
-      setError(null)
-      const { listen, invoke } = (window as any).__TAURI__
-      if (listen) {
-        const unlisteners: Array<() => void> = []
-        listen('terminal:stdout', (event: any) => {
-          terminalRef.current?.write(event.payload || '')
-        }).then((fn: () => void) => unlisteners.push(fn))
-        listen('terminal:stderr', (event: any) => {
-          terminalRef.current?.write(event.payload || '')
-        }).then((fn: () => void) => unlisteners.push(fn))
-        listen('terminal:exit', (event: any) => {
-          runningRef.current = false
-          terminalRef.current?.write(`\r\n\x1b[33m[Process exited] code: ${event.payload ?? '?'}\x1b[0m\r\n`)
-          forceUpdate((n) => n + 1)
-        }).then((fn: () => void) => unlisteners.push(fn))
-        listen('terminal:connected', () => {
-          setConnected(true)
-        }).then((fn: () => void) => unlisteners.push(fn))
-      }
-      invoke('terminal_spawn').catch((e: unknown) => {
-        terminalRef.current?.write(`\r\n\x1b[31mFailed to start terminal: ${e}\x1b[0m\r\n`)
-      })
-      return
     }
 
     const wsUrl = getTerminalWsUrl()
@@ -159,11 +129,6 @@ export function useTerminal(
 
   /** 发送输入（xterm onData 触发 → 写入 shell stdin） */
   const sendInput = useCallback((data: string) => {
-    if (isTauri()) {
-      const { invoke } = (window as any).__TAURI__
-      invoke('terminal_write', { data }).catch(() => {})
-      return
-    }
     const ws = wsRef.current
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'stdin', data }))
@@ -172,13 +137,6 @@ export function useTerminal(
 
   /** 执行命令（向后兼容） */
   const sendCommand = useCallback((cmd: string) => {
-    if (isTauri()) {
-      const { invoke } = (window as any).__TAURI__
-      invoke('terminal_exec', { command: cmd }).catch((e: unknown) => {
-        terminalRef.current?.write(`\r\n\x1b[31mExecution failed: ${e}\x1b[0m\r\n`)
-      })
-      return
-    }
     const ws = wsRef.current
     if (!ws || ws.readyState !== WebSocket.OPEN) {
       if (ws?.readyState === WebSocket.CONNECTING) {
@@ -192,11 +150,6 @@ export function useTerminal(
   }, [terminalRef])
 
   const killProcess = useCallback(() => {
-    if (isTauri()) {
-      const { invoke } = (window as any).__TAURI__
-      invoke('terminal_kill').catch(() => {})
-      return
-    }
     wsRef.current?.send(JSON.stringify({ type: 'kill' }))
     runningRef.current = true
     forceUpdate((n) => n + 1)
@@ -207,11 +160,6 @@ export function useTerminal(
   }, [terminalRef])
 
   const resize = useCallback((cols: number, rows: number) => {
-    if (isTauri()) {
-      const { invoke } = (window as any).__TAURI__
-      invoke('terminal_resize', { cols, rows }).catch(() => {})
-      return
-    }
     wsRef.current?.send(JSON.stringify({ type: 'resize', cols, rows }))
   }, [])
 

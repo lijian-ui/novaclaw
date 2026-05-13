@@ -6,10 +6,13 @@ import {
 } from 'lucide-react'
 import type { FileEntry } from '@/types/fileEditor'
 import { getFileWebSocket, onFileWsMessage, sendFileWs } from '@/hooks/useFileWs'
+import { API_BASE } from '@/hooks/useApi'
 import { ConfirmDialog } from './ui/ConfirmDialog'
 
 interface FileExplorerProps {
   onFileOpen?: (path: string) => void
+  /** 自定义工作目录路径（来自于 ChatPanel 的文件夹选择） */
+  customPath?: string
 }
 
 interface ContextMenuState {
@@ -18,11 +21,47 @@ interface ContextMenuState {
   entry: FileEntry | null // null = on empty space
 }
 
-const isTauri = (): boolean =>
-  typeof window !== 'undefined' && !!(window as any).__TAURI__?.invoke
+/** REST API 文件操作（统一走 Axum 后端，三平台通用） */
+async function apiPost<T>(endpoint: string, body: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const json = await res.json()
+  if (!json.success) throw new Error(json.message || '操作失败')
+  return json.data as T
+}
 
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  return (window as any).__TAURI__.invoke(cmd, args || {}) as Promise<T>
+async function apiListDir(path: string): Promise<FileEntry[]> {
+  return apiPost<FileEntry[]>('/files/list', { path })
+}
+
+async function apiWriteFile(path: string, content: string): Promise<void> {
+  return apiPost('/files/write', { path, content })
+}
+
+async function apiMkdir(path: string): Promise<void> {
+  return apiPost('/files/mkdir', { path })
+}
+
+async function apiRename(oldPath: string, newPath: string): Promise<void> {
+  return apiPost('/files/rename', { old_path: oldPath, new_path: newPath })
+}
+
+async function apiDelete(path: string): Promise<void> {
+  return apiPost('/files/delete', { path })
+}
+
+async function apiCopy(source: string, dest: string): Promise<void> {
+  return apiPost('/files/copy', { source, dest })
+}
+
+async function apiGetPaths(): Promise<Record<string, string>> {
+  const res = await fetch(`${API_BASE}/paths`)
+  const json = await res.json()
+  if (!json.success) throw new Error(json.message || '获取路径失败')
+  return json.data
 }
 
 function getFileExtColor(entry: FileEntry): string {
@@ -155,7 +194,7 @@ function ContextMenu({
 /**=============================================================
  * 主组件
  *=============================================================*/
-export function FileExplorer({ onFileOpen }: FileExplorerProps) {
+export function FileExplorer({ onFileOpen, customPath }: FileExplorerProps) {
   const [workspacePath, setWorkspacePath] = useState('')
   const [dirContents, setDirContents] = useState<Record<string, FileEntry[]>>({})
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set())
@@ -188,10 +227,32 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
   // ---- 删除确认对话框 ----
   const [deleteConfirm, setDeleteConfirm] = useState<{ path: string; name: string; parentDir: string } | null>(null)
 
-  // ---- 共享 WebSocket 消息处理（浏览器模式） ----
+  // ---- 初始加载工作目录路径 ----
+  // customPath 来自父组件（ChatPanel 的文件夹选择），优先级高于 API 返回的默认路径
   useEffect(() => {
-    if (isTauri()) return
+    if (customPath) {
+      setWorkspacePath(customPath)
+      return
+    }
+    apiGetPaths().then(paths => {
+      if (paths.workspace_dir) {
+        setWorkspacePath(paths.workspace_dir)
+      }
+    }).catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
+  // 响应父组件传递的 customPath 变化，同步刷新目录列表
+  useEffect(() => {
+    if (customPath && customPath !== workspacePath) {
+      setWorkspacePath(customPath)
+      loadDir(customPath)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customPath])
+
+  // ---- 通过 WebSocket 接收文件变更和自动刷新 ----
+  useEffect(() => {
     getFileWebSocket().then(ws => {
       ws.send(JSON.stringify({ type: 'get_workspace', path: '' }))
     })
@@ -213,9 +274,7 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
           pendingRootRef.current = false
         }
       } else if (msg.type === 'dir_changed') {
-        // 目录变更：重新加载该目录
         const changedPath = msg.path as string
-        // 如果该目录已缓存，重新加载
         setDirContents(prev => {
           if (changedPath in prev || changedPath === workspacePath) {
             setTimeout(() => sendFileWs({ type: 'list', path: changedPath }), 0)
@@ -225,17 +284,18 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
       }
     })
 
-    // 定时轮询：每 3 秒刷新根目录（检测外部创建的文件）
+    // 定时轮询：每 15 秒刷新根目录（检测外部创建的文件）
     const pollTimer = setInterval(() => {
       getFileWebSocket().then(s => {
         s.send(JSON.stringify({ type: 'list', path: '' }))
       })
-    }, 3000)
+    }, 15000)
 
     return () => {
       unsub()
       clearInterval(pollTimer)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ---- 获取选中目录的父路径（用于创建时的 parent）----
@@ -246,34 +306,21 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
   // ---- 加载目录 ----
   const loadDir = useCallback((dirPath: string) => {
     setLoading(true)
-    if (isTauri()) {
-      ;(async () => {
-        try {
-          const entries = await tauriInvoke<FileEntry[]>('list_directory_detailed', { path: dirPath })
-          setDirContents(prev => ({ ...prev, [dirPath]: entries || [] }))
-        } catch (e) {
-          console.error('加载目录失败:', e)
-        }
-        setLoading(false)
-      })()
-    } else {
-      sendFileWs({ type: 'list', path: dirPath })
-    }
+    apiListDir(dirPath).then(entries => {
+      setDirContents(prev => ({ ...prev, [dirPath]: entries || [] }))
+    }).catch(e => {
+      console.error('加载目录失败:', e)
+    }).finally(() => {
+      setLoading(false)
+    })
   }, [])
 
-  // ---- Tauri 初始加载 ----
+  // ---- 初始加载工作目录（REST API 兜底，WS 连接后也会加载） ----
   useEffect(() => {
-    if (!isTauri()) return
-    ;(async () => {
-      try {
-        const ws = await tauriInvoke<string>('get_workspace_dir')
-        setWorkspacePath(ws)
-        const entries = await tauriInvoke<FileEntry[]>('list_directory_detailed', { path: ws })
-        setDirContents({ [ws]: entries || [] })
-      } catch { /* ignore */ }
-      setLoading(false)
-    })()
-  }, [])
+    if (!workspacePath) return
+    loadDir(workspacePath)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspacePath])
 
   // ---- 自动聚焦创建/重命名输入 ----
   useEffect(() => {
@@ -357,20 +404,9 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
     const fullPath = creatingParentPath ? `${creatingParentPath}${sep}${name}` : name
     try {
       if (creatingType === 'file') {
-        if (isTauri()) {
-          await tauriInvoke('write_file', { path: fullPath, content: '' })
-        } else {
-          await sendFileWs({ type: 'write', path: fullPath, content: '' })
-          await new Promise(r => setTimeout(r, 300))
-        }
+        await apiWriteFile(fullPath, '')
       } else {
-        if (isTauri()) {
-          await tauriInvoke('create_directory', { path: fullPath })
-        } else {
-          const sep2 = creatingParentPath.includes('\\') ? '\\' : '/'
-          await sendFileWs({ type: 'write', path: `${fullPath}${sep2}.gitkeep`, content: '' })
-          await new Promise(r => setTimeout(r, 300))
-        }
+        await apiMkdir(fullPath)
       }
       cancelCreating()
       loadDir(creatingParentPath)
@@ -403,12 +439,7 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
     const sep = parentDir.includes('\\') ? '\\' : '/'
     const newPath = parentDir ? `${parentDir}${sep}${renamingName.trim()}` : renamingName.trim()
     try {
-      if (isTauri()) {
-        await tauriInvoke('rename_path', { oldPath: renamingPath, newPath })
-      } else {
-        await sendFileWs({ type: 'rename', path: renamingPath, new_path: newPath })
-        await new Promise(r => setTimeout(r, 300))
-      }
+      await apiRename(renamingPath, newPath)
       cancelRename()
       loadDir(parentDir)
     } catch (e) {
@@ -432,12 +463,7 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
     const { path: entryPath, parentDir } = deleteConfirm
     setDeleteConfirm(null)
     try {
-      if (isTauri()) {
-        await tauriInvoke('delete_path', { path: entryPath })
-      } else {
-        await sendFileWs({ type: 'delete', path: entryPath })
-        await new Promise(r => setTimeout(r, 300))
-      }
+      await apiDelete(entryPath)
       setSelectedPath(null)
       setSelectedIsDir(false)
       closeContextMenu()
@@ -511,21 +537,9 @@ export function FileExplorer({ onFileOpen }: FileExplorerProps) {
 
     try {
       if (clip.isCut) {
-        // 剪切→移动（rename）
-        if (isTauri()) {
-          await tauriInvoke('rename_path', { oldPath: clip.path, newPath: destPath })
-        } else {
-          await sendFileWs({ type: 'rename', path: clip.path, new_path: destPath })
-          await new Promise(r => setTimeout(r, 300))
-        }
+        await apiRename(clip.path, destPath)
       } else {
-        // 复制→拷贝
-        if (isTauri()) {
-          await tauriInvoke('copy_path', { source: clip.path, dest: destPath })
-        } else {
-          await sendFileWs({ type: 'copy', path: clip.path, dest: destPath })
-          await new Promise(r => setTimeout(r, 300))
-        }
+        await apiCopy(clip.path, destPath)
       }
       clipboardRef.current = null
       closeContextMenu()

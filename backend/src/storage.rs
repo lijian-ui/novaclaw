@@ -56,7 +56,7 @@ pub struct Message {
     pub first_reasoning: Option<String>,
     /// 后续思考内容数组（CoT）- 用于前端显示为"Thought"
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasonings: Option<Vec<String>>,
+    pub again_reasonings: Option<Vec<String>>,
     /// 兼容旧字段：完整的推理内容
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,

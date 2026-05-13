@@ -283,7 +283,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
                         let data = parsed["data"].as_str().unwrap_or("");
                         if data == "\x03" {
                             if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
-                                let mut session_lock = session.lock().await;
+                                let session_lock = session.lock().await;
                                 let _ = session_lock.send_ctrl_c().await;
                             }
                         } else {

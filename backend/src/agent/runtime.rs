@@ -21,6 +21,7 @@ const COMPACT_KEEP_LAST: usize = 20;
 
 /// 格式化工具调用显示信息
 /// 将 JSON 参数转换为易读的格式，特别是文件类工具显示相对路径和文件名
+#[allow(dead_code)]
 fn format_tool_call_display(tool_name: &str, arguments: &str) -> String {
     // 尝试解析 JSON 参数
     if let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) {
@@ -96,7 +97,7 @@ pub struct AgentResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_reasoning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasonings: Option<Vec<String>>,
+    pub again_reasonings: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
     pub cancelled: bool,
@@ -117,7 +118,7 @@ pub struct AgentRuntime {
     max_iterations: usize,
     max_retries: u32,
     has_first_reasoning: bool,
-    accumulated_reasonings: Vec<String>,
+    accumulated_again_reasonings: Vec<String>,
     skills: Vec<SkillDef>,
     task_plan: Option<TaskPlan>,
     completed_tasks: HashSet<String>,
@@ -143,7 +144,7 @@ impl AgentRuntime {
             max_iterations,
             max_retries,
             has_first_reasoning: false,
-            accumulated_reasonings: Vec::new(),
+            accumulated_again_reasonings: Vec::new(),
             skills,
             task_plan: None,
             completed_tasks: HashSet::new(),
@@ -247,68 +248,12 @@ impl AgentRuntime {
                 is_first_iteration = false;
             }
 
-            let mut msg_for_session = assistant_message.clone();
-            msg_for_session.first_reasoning = None;
-            msg_for_session.reasonings = None;
-            msg_for_session.reasoning = None;
+            let msg_for_session = assistant_message.clone();
 
+            // first_thought/thought 步骤已在 call_llm_with_tools 中按正确顺序发送
+            // 此处仅累积推理内容用于最终结果返回
             if !reasoning_blocks.is_empty() {
-                // 向前端发送区分类型的思考消息
-                if let Some(ref tx) = step_tx {
-                    if !self.has_first_reasoning {
-                        // 首次思考：发送 first_thought 类型
-                        for (idx, block) in reasoning_blocks.iter().enumerate() {
-                            let step_type = if idx == 0 { "first_thought" } else { "thought" };
-                            let _ = tx
-                                .send(AgentStep {
-                                    step_type: step_type.to_string(),
-                                    content: block.clone(),
-                                    tool_name: None,
-                                    tool_result: None,
-                                    turn: iterations,
-                                    max_turns: self.max_iterations,
-                                })
-                                .await;
-                        }
-                        self.has_first_reasoning = true;
-                    } else {
-                        // 后续思考：发送 thought 类型
-                        for block in &reasoning_blocks {
-                            let _ = tx
-                                .send(AgentStep {
-                                    step_type: "thought".to_string(),
-                                    content: block.clone(),
-                                    tool_name: None,
-                                    tool_result: None,
-                                    turn: iterations,
-                                    max_turns: self.max_iterations,
-                                })
-                                .await;
-                        }
-                        // 累积所有思考内容
-                        self.accumulated_reasonings.extend(reasoning_blocks.clone());
-                    }
-                } else {
-                    // 不发送时，仅内部累积
-                    if !self.has_first_reasoning {
-                        self.has_first_reasoning = true;
-                    }
-                    self.accumulated_reasonings.extend(reasoning_blocks);
-                }
-            } else if self.has_first_reasoning && !self.accumulated_reasonings.is_empty() {
-                // 有历史思考但当前没有新思考，也需要更新 turn 信息
-                if let Some(ref tx) = step_tx {
-                    let _ = tx
-                        .send(AgentStep {
-                            step_type: "thought".to_string(),
-                            content: format!("[第 {} 轮思考完成]", iterations),
-                            tool_name: None,
-                            tool_result: None,
-                            turn: iterations,
-                            max_turns: self.max_iterations,
-                        })
-                        .await;
-                }
+                self.accumulated_again_reasonings.extend(reasoning_blocks.clone());
             }
 
             let tool_calls: Vec<AgentToolCall> = assistant_message
@@ -348,10 +293,11 @@ impl AgentRuntime {
                 let registry = self.tool_registry.clone();
                 let name = tc.name.clone();
                 let id = tc.id.clone();
+                let ws = self.session.workspace.clone();
                 let args: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Null);
                 async move {
-                    let result = registry.execute(&name, args).await;
+                    let result = registry.execute(&name, args, ws.as_deref()).await;
                     (id, name, result)
                 }
             }).collect();
@@ -359,7 +305,9 @@ impl AgentRuntime {
             let tool_results = futures::future::join_all(tool_futures).await;
 
             for (tc_id, tc_name, result) in tool_results {
-                self.executed_tools.insert(format!("{}_{}", tc_name, tc_id));
+                // 使用工具名+参数作为key，与filter_duplicate_tool_calls保持一致
+                let key = format!("{}_{}", tc_name, tc_id);
+                self.executed_tools.insert(key);
 
                 let tool_result = match result {
                     Ok(output) => {
@@ -452,10 +400,10 @@ impl AgentRuntime {
             iterations,
             messages: self.session.messages.clone(),
             first_reasoning,
-            reasonings: if self.accumulated_reasonings.is_empty() {
+            again_reasonings: if self.accumulated_again_reasonings.is_empty() {
                 None
             } else {
-                Some(self.accumulated_reasonings.clone())
+                Some(self.accumulated_again_reasonings.clone())
             },
             reasoning: None,
             cancelled,
@@ -496,7 +444,8 @@ impl AgentRuntime {
         tool_calls
             .iter()
             .filter(|tc| {
-                let key = format!("{}_{}", tc.name, tc.arguments);
+                // 使用工具名+id作为key，与工具执行后的插入逻辑保持一致
+                let key = format!("{}_{}", tc.name, tc.id);
                 !self.executed_tools.contains(&key)
             })
             .cloned()
@@ -596,7 +545,7 @@ impl AgentRuntime {
     }
 
     async fn call_llm_with_tools(
-        &self,
+        &mut self,
         system_prompt: &str,
         step_tx: &Option<mpsc::Sender<AgentStep>>,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -666,20 +615,21 @@ impl AgentRuntime {
         );
 
         let cancel_flag = cancel.clone();
-        let mut event_rx = self.llm_client.chat_stream(&request, cancel.clone()).await?;
+        let mut stream_handle = self.llm_client.chat_stream(&request, cancel.clone()).await?;
 
         let mut full_content = String::new();
         let mut accumulated_reasoning = String::new();
         let mut accumulated_tool_calls: Vec<AgentToolCall> = Vec::new();
         let mut was_cancelled = false;
-        let mut sent_tool_call_indices: HashSet<usize> = HashSet::new();
         let mut input_tokens: u64 = 0;
         let mut output_tokens: u64 = 0;
 
-        while let Some(event) = event_rx.recv().await {
+        while let Some(event) = stream_handle.rx.recv().await {
             if let Some(ref flag) = cancel_flag {
                 if flag.load(std::sync::atomic::Ordering::Relaxed) {
                     was_cancelled = true;
+                    // 立即终止底层的 HTTP 流任务，强制关闭与 LLM 服务的连接
+                    stream_handle.abort();
                     break;
                 }
             }
@@ -729,27 +679,7 @@ impl AgentRuntime {
                     }
                     accumulated_tool_calls[index].id = id.clone();
                     accumulated_tool_calls[index].name = name.clone();
-                    accumulated_tool_calls[index].arguments = arguments;
-
-                    if !name.is_empty() && !sent_tool_call_indices.contains(&index) {
-                        sent_tool_call_indices.insert(index);
-                        
-                        // 格式化工具调用显示信息
-                        let display_content = format_tool_call_display(&name, &accumulated_tool_calls[index].arguments);
-                        
-                        if let Some(ref tx) = step_tx {
-                            let _ = tx
-                                .send(AgentStep {
-                                    step_type: "tool_call".to_string(),
-                                    content: display_content,
-                                    tool_name: Some(name.clone()),
-                                    tool_result: None,
-                                    turn: 0,
-                                    max_turns: self.max_iterations,
-                                })
-                                .await;
-                        }
-                    }
+                    accumulated_tool_calls[index].arguments = arguments.clone();
                 }
                 StreamEvent::Usage { prompt_tokens, completion_tokens } => {
                     input_tokens = prompt_tokens;
@@ -795,10 +725,78 @@ impl AgentRuntime {
             re.replace_all(&full_content, "").trim().to_string()
         };
 
+        // 在流结束后、返回之前，按正确顺序发送 first_thought → tool_call
+        // 确保前端按 思考→工具调用 的正确顺序渲染
+        if let Some(ref tx) = step_tx {
+            // 1. 先发送推理完成事件
+            if !reasoning_blocks.is_empty() {
+                for (idx, block) in reasoning_blocks.iter().enumerate() {
+                    let step_type = if idx == 0 && !self.has_first_reasoning {
+                        "first_thought"
+                    } else {
+                        "thought"
+                    };
+                    let _ = tx
+                        .send(AgentStep {
+                            step_type: step_type.to_string(),
+                            content: block.clone(),
+                            tool_name: None,
+                            tool_result: None,
+                            turn: 0,
+                            max_turns: self.max_iterations,
+                        })
+                        .await;
+                }
+            }
+
+            // 2. 再发送所有累积的工具调用事件
+            for tc in &accumulated_tool_calls {
+                if !tc.name.is_empty() {
+                    let _ = tx
+                        .send(AgentStep {
+                            step_type: "tool_call".to_string(),
+                            content: tc.arguments.clone(),
+                            tool_name: Some(tc.name.clone()),
+                            tool_result: None,
+                            turn: 0,
+                            max_turns: self.max_iterations,
+                        })
+                        .await;
+                }
+            }
+        }
+
         let tool_calls = if accumulated_tool_calls.is_empty() {
             None
         } else {
             Some(accumulated_tool_calls)
+        };
+
+        let is_first_llm_call = !self.has_first_reasoning;
+
+        let (first_reasoning, again_reasonings) = if reasoning_blocks.is_empty() {
+            (None, None)
+        } else if is_first_llm_call {
+            // 首次思考：第一个推理块作为 first_reasoning，其余作为 again_reasonings
+            let first = reasoning_blocks.first().cloned();
+            let rest = if reasoning_blocks.len() > 1 {
+                Some(reasoning_blocks[1..].to_vec())
+            } else {
+                None
+            };
+            (first, rest)
+        } else {
+            // 非首次思考：所有推理块都作为 again_reasonings
+            (None, Some(reasoning_blocks.clone()))
+        };
+
+        // 标记首次 LLM 调用完成（在 first_reasoning/again_reasonings 计算之后）
+        self.has_first_reasoning = true;
+
+        let reasoning = if accumulated_reasoning.is_empty() {
+            None
+        } else {
+            Some(accumulated_reasoning)
         };
 
         let agent_msg = AgentMessage {
@@ -807,9 +805,9 @@ impl AgentRuntime {
             tool_calls,
             tool_call_id: None,
             tool_name: None,
-            first_reasoning: None,
-            reasonings: None,
-            reasoning: None,
+            first_reasoning,
+            again_reasonings,
+            reasoning,
         };
 
         Ok((agent_msg, reasoning_blocks, was_cancelled, input_tokens, output_tokens))

@@ -53,6 +53,7 @@ anyhow = "1"
 # 异步流
 async-stream = "0.3"
 futures = "0.3"
+tokio-stream = "0.1"
 
 # 延迟初始化
 once_cell = "1"

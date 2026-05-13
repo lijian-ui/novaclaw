@@ -11,6 +11,9 @@ interface ChatContextType {
   setCurrentModel: (model: Model | null) => void
   isTyping: boolean
   setIsTyping: (typing: boolean) => void
+  /** 会话列表版本号，每次创建或删除会话时递增，供侧边栏刷新列表 */
+  sessionListVersion: number
+  refreshSessionList: () => void
 }
 
 const ChatContext = createContext<ChatContextType | null>(null)
@@ -20,9 +23,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<Message[]>([])
   const [currentModel, setCurrentModel] = useState<Model | null>(null)
   const [isTyping, setIsTyping] = useState(false)
+  const [sessionListVersion, setSessionListVersion] = useState(0)
 
   const addMessage = useCallback((message: Message) => {
     setMessages(prev => [...prev, message])
+  }, [])
+
+  const refreshSessionList = useCallback(() => {
+    setSessionListVersion(v => v + 1)
   }, [])
 
   return (
@@ -37,6 +45,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         setCurrentModel,
         isTyping,
         setIsTyping,
+        sessionListVersion,
+        refreshSessionList,
       }}
     >
       {children}

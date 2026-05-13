@@ -7,6 +7,7 @@ use std::collections::HashMap;
 /// System Prompt 构建器
 /// 参考 claw-code 的 SystemPromptBuilder 和 hermes-agent 的 8 层组装模式
 pub struct SystemPromptBuilder<'a> {
+    #[allow(dead_code)]
     config: &'a AppConfig,
     os_name: String,
     workspace: Option<String>,
@@ -501,6 +502,13 @@ Before completing your response:
 - **Format**: Does the output follow the requested format?
 - **Safety**: If there are side effects (file writes, command execution), confirm the scope before proceeding.
 
+## Output Format
+**CRITICAL: Your response content must be in standard Markdown format.**
+- Use proper Markdown syntax: headers (`#`, `##`, etc.), lists (`-`, `1.`), code blocks (```), bold (`**`), italic (`*`), etc.
+- Code snippets should always be wrapped in code blocks with appropriate language hints.
+- Structure your response with clear headings and logical sections.
+- Use tables when presenting structured data.
+
 ## Missing Context
 - If necessary context is missing, do not guess or fabricate answers.
 - When missing information can be retrieved via tools, use the appropriate lookup tool.
@@ -510,17 +518,15 @@ Before completing your response:
 
     /// Environment info
     fn build_environment(&self) -> String {
-        let mut env = format!(
-            "# Environment\n\n- OS: {}\n- Current date: {}",
+        let ws = self.workspace.clone().unwrap_or_else(|| {
+            crate::config::get_workspace_dir().to_string_lossy().to_string()
+        });
+        format!(
+            "# Environment\n\n- OS: {}\n- Current date: {}\n- Working directory: {}",
             self.os_name,
             chrono::Local::now().format("%Y-%m-%d"),
-        );
-
-        if let Some(ref ws) = self.workspace {
-            env.push_str(&format!("\n- Working directory: {}", ws));
-        }
-
-        env
+            ws,
+        )
     }
 
     /// Tool usage guidance

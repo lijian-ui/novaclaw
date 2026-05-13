@@ -1,3 +1,69 @@
+/**
+ * ChatPanel.tsx - 聊天面板主组件
+ * 
+ * 【文件功能概述】
+ * 该组件是聊天界面的核心容器，负责管理聊天会话的完整生命周期，包括消息发送、接收、
+ * 流式渲染、会话管理、模型选择等功能。它是用户与 AI 助手交互的主要界面入口。
+ * 
+ * 【主要组件/模块说明】
+ * 1. 顶部导航栏
+ *    - 工作空间选择器：显示当前工作目录，支持切换
+ *    - 工具菜单：提供编辑器、技能、模型、代理等功能入口
+ *    - 用户头像按钮
+ * 
+ * 2. 消息展示区域
+ *    - 集成 ChatMessages 组件渲染消息列表
+ *    - 支持任务进度面板展示（复杂任务分解时显示）
+ *    - 自动滚动到最新消息
+ *    - 显示滚动到顶部按钮
+ * 
+ * 3. 底部输入区域
+ *    - 多行文本输入框（支持自动高度调整）
+ *    - 模型选择下拉菜单
+ *    - 发送/停止按钮（根据流式状态切换）
+ *    - 附件上传按钮
+ * 
+ * 【数据处理逻辑】
+ * - 消息状态管理：维护本地消息数组，支持流式增量更新
+ * - 会话同步：监听 ChatContext 中的上下文消息变化，同步历史消息
+ * - 消息格式转换：将后端返回的消息格式转换为前端展示格式
+ *   - first_reasoning → first_thought（首次思考）
+ *   - again_reasonings → thought（后续思考）
+ *   - tool_calls → tool_call（工具调用）
+ *   - tool 角色 → tool_result（工具结果）
+ * 
+ * 【WebSocket 流式通信】
+ * - 建立 WebSocket 连接进行实时聊天
+ * - 处理流式文本增量（text_chunk）
+ * - 处理思考过程增量（reasoning）
+ * - 处理工具调用事件（tool_call、tool_result）
+ * - 支持用户打断/停止生成
+ * 
+ * 【与其他文件的关联关系】
+ * - 使用 ChatMessages 组件渲染消息列表
+ * - 使用 TaskList 组件展示任务进度
+ * - 使用 useApi hook 进行 API 调用和 WebSocket 通信
+ * - 使用 ChatContext 管理会话状态
+ * - 使用 useTranslation 进行国际化支持
+ * 
+ * 【使用场景】
+ * - 主聊天界面：用户输入消息，AI 助手回复
+ * - 会话管理：创建新会话、切换已有会话
+ * - 模型切换：选择不同的 AI 模型
+ * - 工具调用：展示工具执行过程和结果
+ * - 思考过程展示：显示 AI 的推理步骤（可折叠）
+ * 
+ * 【关键特性】
+ * - WebSocket 流式消息传输，实时显示思考过程
+ * - 支持消息打断（停止生成）
+ * - 自动滚动到最新消息
+ * - 响应式输入框（自动调整高度）
+ * - 会话历史同步与恢复
+ * - 模型选择与配置
+ * - 多语言支持（i18n）
+ * - 复杂任务检测与进度展示
+ */
+
 import { useState, useRef, useCallback, useEffect } from 'react'
 import {
   ChevronDown,
@@ -22,7 +88,7 @@ import {
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
 import { TaskList, type TaskProgress, type TaskProgressItem } from './TaskList'
-import { useApi } from '@/hooks/useApi'
+import { startChatStream, cancelChatStream, useApi } from '@/hooks/useApi'
 import { useChat } from '@/contexts/ChatContext'
 import { useTranslation } from 'react-i18next'
 
@@ -61,6 +127,8 @@ function getProviderIcon(providerId: string): string | undefined {
 interface ChatPanelProps {
   onOpenFilePanel?: () => void
   onOpenTool?: (tool: string) => void
+  workspacePath?: string
+  onWorkspacePathChange?: (path: string) => void
 }
 
 // ---- Helpers ----
@@ -69,9 +137,9 @@ function genId() {
   return `msg_${++mockIdCounter}_${Date.now()}`
 }
 
-export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
+export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorkspacePathChange }: ChatPanelProps) {
   const { t } = useTranslation()
-  const { currentSession, setCurrentSession, messages: contextMessages } = useChat()
+  const { currentSession, setCurrentSession, messages: contextMessages, refreshSessionList } = useChat()
   const sessionIdRef = useRef<string | undefined>(undefined)
   const userContentRef = useRef('') // 保存用户消息用于标题生成
 
@@ -104,6 +172,12 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
 
   // 当 contextMessages 实际更新时：同步到本地状态
   useEffect(() => {
+    // 流式刚结束时跳过同步，防止 contextMessages 覆盖本地流式消息
+    if (streamingJustEndedRef.current) {
+      streamingJustEndedRef.current = false
+      lastSyncMsgCountRef.current = contextMessages.length
+      return
+    }
     if (!currentSession) {
       setMessages([])
       return
@@ -116,16 +190,16 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
       for (const m of contextMessages) {
         const role = m.role === 'tool' || m.role === 'system' ? 'assistant' : m.role as 'user' | 'assistant'
 
-        // 处理工具调用消息（assistant 消息携带 tool_calls，也可能同时有 first_reasoning）
+        // 处理工具调用消息（assistant 消息携带 tool_calls，也可能同时有 first_reasoning 和 again_reasonings）
         if (m.tool_calls && m.tool_calls.length > 0) {
-          // 先处理 first_reasoning（思考内容），放在 tool_call 之前显示
+          // 1️⃣ 先处理 first_reasoning（首次思考），必须放在最前面！
           if (m.first_reasoning && m.first_reasoning.trim()) {
             const blocks = m.first_reasoning
-              .split(/ response/i)
+              .split(/<｜end▁of▁thinking｜>| response/i)
               .map(s => s.trim())
               .filter(s => s.length > 0)
             if (blocks.length > 0) {
-              // 第一个思考块 → first_thought
+              // 第一个思考块 → first_thought（琥珀色）
               converted.push({
                 id: `${m.id}_first_reasoning`,
                 role: 'agent_step',
@@ -139,7 +213,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
                   maxTurns: 20,
                 }
               })
-              // 后续思考块 → thought
+              // 后续思考块 → 放在后面（如果有的话）
               for (let fi = 1; fi < blocks.length; fi++) {
                 if (blocks[fi] && blocks[fi].trim()) {
                   converted.push({
@@ -159,15 +233,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
               }
             }
           }
-          // 再添加 assistant 消息本身（如有内容）
-          if (m.content && m.content.trim()) {
-            converted.push({
-              id: m.id,
-              role,
-              content: m.content,
-            })
-          }
-          // 展开 tool_calls 为 agent_step 消息
+          // 2️⃣ 然后展开 tool_calls 为 agent_step 消息（思考之后！）
           for (const tc of m.tool_calls) {
             converted.push({
               id: `tool_${tc.id}`,
@@ -183,62 +249,13 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
               }
             })
           }
-        }
-        // 处理推理/思考内容（first_reasoning 和 reasonings 字段，无 tool_calls）
-        else if (role === 'assistant' && (m.first_reasoning || m.reasonings || m.reasoning)) {
-          // 使用 parseAllThinkBlocks 解析 first_reasoning，分离多个思考块
-          // 第一个思考块 → first_thought（主要样式），后续思考块 → thought（次要样式）
-          const rawFirstReasoning = m.first_reasoning || m.reasoning || ''
-          // 解析多个思考块（兼容合并的思考内容）
-          const firstReasoningBlocks = rawFirstReasoning
-            .split(/<｜end▁of▁thinking｜>/i)
-            .map(s => s.trim())
-            .filter(s => s.length > 0)
-          
-          // 处理第一次思考块（first_reasoning 中的第一块 → first_thought）
-          if (firstReasoningBlocks.length > 0) {
-            // 第一个思考块 → first_thought
-            converted.push({
-              id: `${m.id}_first_reasoning`,
-              role: 'agent_step',
-              content: firstReasoningBlocks[0],
-              agentStep: {
-                stepType: 'first_thought',
-                content: firstReasoningBlocks[0],
-                toolName: undefined,
-                toolResult: undefined,
-                turn: 0,
-                maxTurns: 20,
-              }
-            })
-            
-            // 后续思考块 → thought（次要样式）
-            for (let fi = 1; fi < firstReasoningBlocks.length; fi++) {
-              const fb = firstReasoningBlocks[fi]
-              if (fb && fb.trim()) {
-                converted.push({
-                  id: `${m.id}_first_reasoning_${fi}`,
-                  role: 'agent_step',
-                  content: fb,
-                  agentStep: {
-                    stepType: 'thought',
-                    content: fb,
-                    toolName: undefined,
-                    toolResult: undefined,
-                    turn: fi,
-                    maxTurns: 20,
-                  }
-                })
-              }
-            }
-          }
-          // 处理后续思考（reasonings）
-          if (m.reasonings && m.reasonings.length > 0) {
-            for (let ri = 0; ri < m.reasonings.length; ri++) {
-              const r = m.reasonings[ri]
+          // 3️⃣ 处理 again_reasonings（工具调用完成后的二次思考）
+          if (m.again_reasonings && m.again_reasonings.length > 0) {
+            for (let ri = 0; ri < m.again_reasonings.length; ri++) {
+              const r = m.again_reasonings[ri]
               if (r && r.trim()) {
                 converted.push({
-                  id: `${m.id}_reasoning_${ri}`,
+                  id: `${m.id}_again_reasoning_${ri}`,
                   role: 'agent_step',
                   content: r,
                   agentStep: {
@@ -253,8 +270,85 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
               }
             }
           }
-          // 兼容旧字段 reasoning（如果 first_reasoning 和 reasonings 都为空）
-          if (!m.first_reasoning && !m.reasonings && m.reasoning && m.reasoning.trim()) {
+          // 4️⃣ 最后添加 assistant 消息本身（最终回复）
+          if (m.content && m.content.trim()) {
+            converted.push({
+              id: m.id,
+              role,
+              content: m.content,
+            })
+          }
+        }
+        // 处理推理/思考内容（first_reasoning 和 again_reasonings 字段，无 tool_calls）
+        else if (role === 'assistant' && (m.first_reasoning || m.again_reasonings || m.reasoning)) {
+          // 处理首次思考（first_reasoning → first_thought）
+          if (m.first_reasoning && m.first_reasoning.trim()) {
+            // 解析多个思考块（兼容合并的思考内容）
+            const firstReasoningBlocks = m.first_reasoning
+              .split(/<｜end▁of▁thinking｜>/i)
+              .map(s => s.trim())
+              .filter(s => s.length > 0)
+            
+            if (firstReasoningBlocks.length > 0) {
+              // 第一个思考块 → first_thought（主要样式）
+              converted.push({
+                id: `${m.id}_first_reasoning`,
+                role: 'agent_step',
+                content: firstReasoningBlocks[0],
+                agentStep: {
+                  stepType: 'first_thought',
+                  content: firstReasoningBlocks[0],
+                  toolName: undefined,
+                  toolResult: undefined,
+                  turn: 0,
+                  maxTurns: 20,
+                }
+              })
+              
+              // first_reasoning 中的后续思考块 → thought（次要样式）
+              for (let fi = 1; fi < firstReasoningBlocks.length; fi++) {
+                const fb = firstReasoningBlocks[fi]
+                if (fb && fb.trim()) {
+                  converted.push({
+                    id: `${m.id}_first_reasoning_${fi}`,
+                    role: 'agent_step',
+                    content: fb,
+                    agentStep: {
+                      stepType: 'thought',
+                      content: fb,
+                      toolName: undefined,
+                      toolResult: undefined,
+                      turn: fi,
+                      maxTurns: 20,
+                    }
+                  })
+                }
+              }
+            }
+          }
+          // 处理后续思考（again_reasonings → thought）
+          if (m.again_reasonings && m.again_reasonings.length > 0) {
+            for (let ri = 0; ri < m.again_reasonings.length; ri++) {
+              const r = m.again_reasonings[ri]
+              if (r && r.trim()) {
+                converted.push({
+                  id: `${m.id}_again_reasoning_${ri}`,
+                  role: 'agent_step',
+                  content: r,
+                  agentStep: {
+                    stepType: 'thought',
+                    content: r,
+                    toolName: undefined,
+                    toolResult: undefined,
+                    turn: ri + 1,
+                    maxTurns: 20,
+                  }
+                })
+              }
+            }
+          }
+          // 兼容旧字段 reasoning（如果 first_reasoning 和 again_reasonings 都为空）
+          if (!m.first_reasoning && !m.again_reasonings && m.reasoning && m.reasoning.trim()) {
             converted.push({
               id: `${m.id}_reasoning`,
               role: 'agent_step',
@@ -325,6 +419,8 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([{ name: 'Auto', providerId: '' }])
   const [workspaceName, setWorkspaceName] = useState('workspace')
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
+  const [editingWorkspace, setEditingWorkspace] = useState(false)
+  const [editingWsPath, setEditingWsPath] = useState('')
   const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null)
   const [taskDetected, setTaskDetected] = useState<boolean | null>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
@@ -333,7 +429,9 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const streamingContentRef = useRef('')
   const streamingReasoningRef = useRef('')
-  const hasFlushedFirstReasoningRef = useRef(false) // 标记是否已刷新第一次思考
+  const hasFlushedFirstReasoningRef = useRef(false) // 标记是否已刷新第一次思考内容
+  const streamingJustEndedRef = useRef(false) // 标记流式刚结束，阻止 contextMessages 覆盖
+  const [isRethinking, setIsRethinking] = useState(false) // 标记是否处于二次思考阶段
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -363,7 +461,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
     setShowScrollBtn(distFromBottom > 100)
   }, [])
 
-  const { connectChatStream, sendChatMessage, stopChatStream, disconnectChat, listProviders, getDefaultModel, setDefaultModel } = useApi()
+  const { abortRef, listProviders, getDefaultModel, setDefaultModel } = useApi()
 
   // Load model list from backend
   const loadModels = useCallback(() => {
@@ -419,7 +517,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
     return title || t('chat.newConversation')
   }
 
-  // Pure WebSocket streaming – no mock fallback
+  // SSE streaming via HTTP POST + SSE
   const startStreaming = useCallback((userContent: string) => {
     setTaskDetected(null)
     setTaskProgress(null)
@@ -430,128 +528,37 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
     streamingContentRef.current = ''
     streamingReasoningRef.current = ''
     hasFlushedFirstReasoningRef.current = false
+    setIsRethinking(false)
     userContentRef.current = userContent
 
-    const ws = connectChatStream(
-      null,
-      (chunk) => {
-        streamingContentRef.current += chunk
-        setStreamingContent(streamingContentRef.current)
+    const sessionId = sessionIdRef.current
 
-        // 从流式内容中提取 <think> 标签内容，实时显示思考过程
-        // 某些模型（如 DeepSeek）将思考内容放在 <think> 标签中，没有独立的 reasoning_content 字段
-        const thinkMatch = streamingContentRef.current.match(/<think\s*>([\s\S]*?)(?:<\/think\s*>|$)/)
-        if (thinkMatch) {
-          const extractedReasoning = thinkMatch[1].trim()
-          if (extractedReasoning && extractedReasoning !== streamingReasoningRef.current) {
-            streamingReasoningRef.current = extractedReasoning
-            setStreamingReasoning(extractedReasoning)
-          }
-        }
+    const ac = startChatStream(
+      {
+        message: userContent,
+        model: selectedModel === 'Auto' ? undefined : selectedModel,
+        session_id: sessionId,
+        workspace: workspacePath || undefined,
       },
-      (result: { content?: string; sessionId?: string }) => {
-        setIsStreaming(false)
+      {
+        onChunk: (chunk) => {
+          streamingContentRef.current += chunk
+          setStreamingContent(streamingContentRef.current)
 
-        // 流式结束：把剩余的推理内容固化为 agent_step 消息
-        if (streamingReasoningRef.current.trim()) {
-          const stepType = hasFlushedFirstReasoningRef.current ? 'thought' : 'first_thought'
-          setMessages(prev => [...prev, {
-            id: genId(),
-            role: 'agent_step',
-            content: streamingReasoningRef.current,
-            agentStep: {
-              stepType,
-              content: streamingReasoningRef.current,
-              toolName: undefined,
-              toolResult: undefined,
-              turn: 0,
-              maxTurns: 20,
+          // 从流式内容中提取 <think> 标签内容，实时显示思考过程
+          const thinkMatch = streamingContentRef.current.match(/<think\s*>([\s\S]*?)(?:<\/think\s*>|$)/)
+          if (thinkMatch) {
+            const extractedReasoning = thinkMatch[1].trim()
+            if (extractedReasoning && extractedReasoning !== streamingReasoningRef.current) {
+              streamingReasoningRef.current = extractedReasoning
+              setStreamingReasoning(extractedReasoning)
             }
-          }])
-          streamingReasoningRef.current = ''
-          setStreamingReasoning('')
-        }
-
-        // 固化最终文本输出为 assistant 消息
-        const content = streamingContentRef.current || result.content || ''
-        if (content) {
-          setMessages(prev => [...prev, { id: genId(), role: 'assistant', content }])
-        }
-        setStreamingContent('')
-        streamingContentRef.current = ''
-
-        // 首次对话：后端返回新 session_id，更新 ChatContext
-        if (result.sessionId && result.sessionId !== sessionIdRef.current) {
-          const title = makeTitle(userContentRef.current)
-          setCurrentSession({
-            id: result.sessionId,
-            name: title,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            model: selectedModel === 'Auto' ? '' : selectedModel,
-          })
-          sessionIdRef.current = result.sessionId
-        }
-      },
-      (err) => {
-        setIsStreaming(false)
-        setStreamingContent('')
-        streamingContentRef.current = ''
-        setStreamError(err || t('chat.connectionFailed'))
-      },
-      (step) => {
-        if (step.stepType === 'reasoning') {
-          // reasoning 类型：流式累积，实时显示在 ThinkingBlock 里（打字机效果）
-          streamingReasoningRef.current += step.content
-          setStreamingReasoning(streamingReasoningRef.current)
-
-        } else if (step.stepType === 'first_thought' || step.stepType === 'thought') {
-          // first_thought/thought 类型：直接作为 agent_step 消息固化显示
-          // 固化之前的流式推理内容
-          if (streamingReasoningRef.current.trim()) {
-            setMessages(prev => [...prev, {
-              id: genId(),
-              role: 'agent_step',
-              content: streamingReasoningRef.current,
-              agentStep: {
-                stepType: hasFlushedFirstReasoningRef.current ? 'thought' : 'first_thought',
-                content: streamingReasoningRef.current,
-                toolName: undefined,
-                toolResult: undefined,
-                turn: step.turn,
-                maxTurns: step.maxTurns,
-              }
-            }])
-            streamingReasoningRef.current = ''
-            setStreamingReasoning('')
           }
-          // 固化流式文本
-          if (streamingContentRef.current.trim()) {
-            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content: streamingContentRef.current }])
-            streamingContentRef.current = ''
-            setStreamingContent('')
-          }
-          // 固化当前思考消息
-          setMessages(prev => [...prev, {
-            id: genId(),
-            role: 'agent_step',
-            content: step.content,
-            agentStep: {
-              stepType: step.stepType,
-              content: step.content,
-              toolName: step.toolName,
-              toolResult: undefined,
-              turn: step.turn,
-              maxTurns: step.maxTurns,
-            }
-          }])
-          // 标记首次思考已刷新
-          if (step.stepType === 'first_thought') {
-            hasFlushedFirstReasoningRef.current = true
-          }
+        },
+        onDone: (result: { content?: string; sessionId?: string }) => {
+          setIsStreaming(false)
 
-        } else if (step.stepType === 'tool_call') {
-          // 工具调用开始：先把当前推理内容固化为 agent_step 消息
+          // 流式结束：固化剩余的推理内容（安全兜底）
           if (streamingReasoningRef.current.trim()) {
             const stepType = hasFlushedFirstReasoningRef.current ? 'thought' : 'first_thought'
             setMessages(prev => [...prev, {
@@ -567,116 +574,184 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
                 maxTurns: 20,
               }
             }])
+            if (stepType === 'first_thought') {
+              hasFlushedFirstReasoningRef.current = true
+            }
             streamingReasoningRef.current = ''
             setStreamingReasoning('')
-            hasFlushedFirstReasoningRef.current = true
           }
-          // 同时清空流式文本（工具调用前的文本已固化）
-          if (streamingContentRef.current.trim()) {
-            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content: streamingContentRef.current }])
-            streamingContentRef.current = ''
-            setStreamingContent('')
-          }
-          // 追加 tool_call 消息（显示为工具调用卡片，done=false 表示执行中）
-          setMessages(prev => [...prev, {
-            id: genId(),
-            role: 'agent_step',
-            content: step.content,
-            agentStep: {
-              stepType: 'tool_call',
-              content: step.content,
-              toolName: step.toolName,
-              toolResult: undefined,
-              turn: step.turn,
-              maxTurns: step.maxTurns,
-            }
-          }])
 
-        } else if (step.stepType === 'tool_result') {
-          // 工具执行完成：把最后一个同名 tool_call 标记为 done
-          setMessages(prev => {
-            const updated = [...prev]
-            // 从后往前找最近的同名 tool_call，更新为 done 状态
-            for (let i = updated.length - 1; i >= 0; i--) {
-              const m = updated[i]
-              if (
-                m.role === 'agent_step' &&
-                m.agentStep?.stepType === 'tool_call' &&
-                m.agentStep?.toolName === step.toolName
-              ) {
-                updated[i] = {
-                  ...m,
-                  agentStep: { ...m.agentStep!, stepType: 'tool_call_done' }
+          // 固化最终文本为 assistant 消息
+          const content = streamingContentRef.current || result.content || ''
+          if (content) {
+            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content }])
+          }
+          setStreamingContent('')
+          streamingContentRef.current = ''
+
+          // 首次对话：更新 session_id
+          if (result.sessionId && result.sessionId !== sessionIdRef.current) {
+            const title = makeTitle(userContentRef.current)
+            setCurrentSession({
+              id: result.sessionId,
+              name: title,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+              model: selectedModel === 'Auto' ? '' : selectedModel,
+            })
+            sessionIdRef.current = result.sessionId
+            // 刷新侧边栏会话列表
+            refreshSessionList()
+          }
+          streamingJustEndedRef.current = true
+        },
+        onError: (err) => {
+          setIsStreaming(false)
+          setStreamingContent('')
+          streamingContentRef.current = ''
+          setStreamError(err || t('chat.connectionFailed'))
+          streamingJustEndedRef.current = true
+        },
+        onAgentStep: (step) => {
+          if (step.stepType === 'reasoning') {
+            streamingReasoningRef.current += step.content
+            setStreamingReasoning(streamingReasoningRef.current)
+
+          } else if (step.stepType === 'first_thought' || step.stepType === 'thought') {
+            const reasoningContent = streamingReasoningRef.current.trim() || step.content
+            if (reasoningContent) {
+              setMessages(prev => [...prev, {
+                id: genId(),
+                role: 'agent_step',
+                content: reasoningContent,
+                agentStep: {
+                  stepType: step.stepType,
+                  content: reasoningContent,
+                  toolName: undefined,
+                  toolResult: undefined,
+                  turn: step.turn,
+                  maxTurns: step.maxTurns,
                 }
-                break
+              }])
+              if (step.stepType === 'first_thought') {
+                hasFlushedFirstReasoningRef.current = true
               }
             }
-            return updated
-          })
+            streamingReasoningRef.current = ''
+            setStreamingReasoning('')
 
-        } else if (step.stepType === 'retry') {
-          // 重试提示
-          setMessages(prev => [...prev, {
-            id: genId(),
-            role: 'agent_step',
-            content: step.content,
-            agentStep: {
-              stepType: 'retry',
+          } else if (step.stepType === 'tool_call') {
+            setMessages(prev => {
+              const newMessages = [...prev]
+              
+              const contentToFlush = streamingContentRef.current.trim()
+              if (contentToFlush) {
+                newMessages.push({ id: genId(), role: 'assistant', content: contentToFlush })
+              }
+              
+              newMessages.push({
+                id: genId(),
+                role: 'agent_step',
+                content: step.content,
+                agentStep: {
+                  stepType: 'tool_call',
+                  content: step.content,
+                  toolName: step.toolName,
+                  toolResult: undefined,
+                  turn: step.turn,
+                  maxTurns: step.maxTurns,
+                }
+              })
+              
+              return newMessages
+            })
+            
+            streamingContentRef.current = ''
+            setStreamingContent('')
+            setIsRethinking(true)
+
+          } else if (step.stepType === 'tool_result') {
+            setMessages(prev => {
+              const updated = [...prev]
+              for (let i = updated.length - 1; i >= 0; i--) {
+                const m = updated[i]
+                if (
+                  m.role === 'agent_step' &&
+                  m.agentStep?.stepType === 'tool_call' &&
+                  m.agentStep?.toolName === step.toolName
+                ) {
+                  updated[i] = {
+                    ...m,
+                    agentStep: { ...m.agentStep!, stepType: 'tool_call_done' }
+                  }
+                  break
+                }
+              }
+              return updated
+            })
+
+          } else if (step.stepType === 'tool_error') {
+            setMessages(prev => {
+              const updated = [...prev]
+              for (let i = updated.length - 1; i >= 0; i--) {
+                const m = updated[i]
+                if (
+                  m.role === 'agent_step' &&
+                  m.agentStep?.stepType === 'tool_call' &&
+                  m.agentStep?.toolName === step.toolName
+                ) {
+                  updated[i] = {
+                    ...m,
+                    agentStep: { ...m.agentStep!, stepType: 'tool_error' }
+                  }
+                  break
+                }
+              }
+              return updated
+            })
+
+          } else if (step.stepType === 'retry') {
+            setMessages(prev => [...prev, {
+              id: genId(),
+              role: 'agent_step',
               content: step.content,
-              toolName: undefined,
-              toolResult: undefined,
-              turn: step.turn,
-              maxTurns: step.maxTurns,
+              agentStep: {
+                stepType: 'retry',
+                content: step.content,
+                toolName: undefined,
+                toolResult: undefined,
+                turn: step.turn,
+                maxTurns: step.maxTurns,
+              }
+            }])
+          } else if (step.stepType === 'task_detection') {
+            try {
+              const detection = JSON.parse(step.content)
+              setTaskDetected(detection.is_complex)
+            } catch {
+              console.error('Failed to parse task detection:', step.content)
             }
-          }])
-        } else if (step.stepType === 'task_detection') {
-          // 复杂任务检测结果
-          try {
-            const detection = JSON.parse(step.content)
-            setTaskDetected(detection.is_complex)
-          } catch {
-            console.error('Failed to parse task detection:', step.content)
+          } else if (step.stepType === 'task_plan') {
+            try {
+              const plan = JSON.parse(step.content) as TaskProgress
+              setTaskProgress(plan)
+            } catch {
+              console.error('Failed to parse task plan:', step.content)
+            }
+          } else if (step.stepType === 'task_progress') {
+            try {
+              const progress = JSON.parse(step.content) as TaskProgress
+              setTaskProgress(progress)
+            } catch {
+              console.error('Failed to parse task progress:', step.content)
+            }
           }
-        } else if (step.stepType === 'task_plan') {
-          // 任务计划解析
-          try {
-            const plan = JSON.parse(step.content) as TaskProgress
-            setTaskProgress(plan)
-          } catch {
-            console.error('Failed to parse task plan:', step.content)
-          }
-        } else if (step.stepType === 'task_progress') {
-          // 任务进度更新
-          try {
-            const progress = JSON.parse(step.content) as TaskProgress
-            setTaskProgress(progress)
-          } catch {
-            console.error('Failed to parse task progress:', step.content)
-          }
-        }
-        // tool_error 等其他类型忽略（不影响主流程）
+        },
       },
     )
 
-    // 获取当前 session_id（若无则用 undefined 让后端自动创建）
-    const sessionId = sessionIdRef.current
-
-    // 等待 WebSocket 连接建立后再发送消息
-    if (ws.readyState === WebSocket.OPEN) {
-      sendChatMessage(userContent, selectedModel === 'Auto' ? undefined : selectedModel, sessionId)
-    } else if (ws.readyState === WebSocket.CONNECTING) {
-      ws.addEventListener('open', () => {
-        sendChatMessage(userContent, selectedModel === 'Auto' ? undefined : selectedModel, sessionId)
-      }, { once: true })
-    } else {
-      setIsStreaming(false)
-      setStreamError(t('chat.webSocketFailed'))
-    }
-
-    return () => {
-      disconnectChat()
-    }
-  }, [connectChatStream, sendChatMessage, disconnectChat, selectedModel])
+    abortRef.current = ac
+  }, [selectedModel, abortRef, workspacePath])
 
   const handleSend = useCallback(() => {
     if (!input.trim() || isStreaming) return
@@ -696,10 +771,17 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
     startStreaming(msg)
   }, [input, isStreaming, startStreaming])
 
-  // 打断停止：发送 stop 指令给后端 → 后端取消 LLM 请求 → 后端返回 "stopped" → onDone 处理
+  // 打断停止：AbortController 取消 SSE 请求 + 通知后端
   const handleStop = useCallback(() => {
-    stopChatStream()
-  }, [stopChatStream])
+    // 先拿到当前 sessionId（可能有值）
+    const sid = sessionIdRef.current
+    // 通知后端取消 Agent 执行（后端会通过 SSE 返回 stopped 事件）
+    if (sid) {
+      void cancelChatStream(sid)
+    }
+    // 不要在收到后端 stopped 响应前关闭 SSE 连接！
+    // abortRef 由 startChatStream 内部管理，SSE 流结束后自动清理
+  }, [])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -722,9 +804,10 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      disconnectChat()
+      abortRef.current?.abort()
+      abortRef.current = null
     }
-  }, [disconnectChat])
+  }, [abortRef])
 
   const hasMessages = messages.length > 0 || isStreaming
 
@@ -741,13 +824,13 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
             webkitdirectory=""
             directory=""
             onChange={async (e) => {
+              // webkitdirectory 只能获取文件夹名（浏览器限制），完整路径走 Tauri 选择器
               const files = e.target.files
               if (files && files.length > 0) {
                 const relPath = files[0].webkitRelativePath
                 const dirName = relPath.split('/')[0]
                 setWorkspaceName(dirName)
                 setWorkspaceOpen(false)
-                // 打开文件预览面板
                 onOpenFilePanel?.()
               }
             }}
@@ -760,22 +843,82 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
             <ChevronDown className="w-3.5 h-3.5 text-foreground/50" />
           </div>
           {workspaceOpen && (
-            <div className="absolute left-0 top-full mt-1 w-44 py-1 rounded-md bg-card border border-border shadow-lg z-20">
+            <div className="absolute left-0 top-full mt-1 w-56 py-1 rounded-md bg-card border border-border shadow-lg z-20">
               <button
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground/70 hover:bg-foreground/10 transition-colors"
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation()
-                  const input = folderInputRef.current
-                  if (input) {
-                    input.setAttribute('webkitdirectory', '')
-                    input.setAttribute('directory', '')
-                    input.click()
+                  // Tauri 模式下使用原生文件夹选择器获取完整路径
+                  const tauriApi = (window as any).__TAURI__
+                  if (tauriApi) {
+                    try {
+                      // @ts-ignore
+                      const selected = await import('@tauri-apps/plugin-dialog').then(m => m.open({
+                        directory: true,
+                        multiple: false,
+                      }))
+                      if (selected) {
+                        const fullPath = String(selected)
+                        const name = fullPath.split(/[/\\]/).pop() || 'workspace'
+                        setWorkspaceName(name)
+                        setWorkspacePath(fullPath)
+                        onWorkspacePathChange?.(fullPath)
+                        setWorkspaceOpen(false)
+                        onOpenFilePanel?.()
+                      }
+                    } catch { /* user cancelled */ }
+                  } else {
+                    const input = folderInputRef.current
+                    if (input) {
+                      input.setAttribute('webkitdirectory', '')
+                      input.setAttribute('directory', '')
+                      input.click()
+                    }
                   }
                 }}
               >
                 <Folder className="w-3.5 h-3.5" />
                 {t('chat.openFolder')}
               </button>
+              <div className="border-t border-border my-1" />
+              <div className="px-3 py-1.5">
+                <div
+                  className="flex items-center gap-1.5 cursor-pointer"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setEditingWsPath(workspacePath)
+                    setEditingWorkspace(true)
+                  }}
+                >
+                  <span className="text-xs text-foreground/70 truncate flex-1">
+                    {workspacePath || '输入工作目录路径...'}
+                  </span>
+                </div>
+                {editingWorkspace && (
+                  <input
+                    type="text"
+                    className="w-full mt-1 px-2 py-1 text-xs rounded border border-border bg-background text-foreground outline-none focus:border-primary"
+                    placeholder="例如: C:\Users\xxx\my-project"
+                    value={editingWsPath}
+                    onChange={(e) => setEditingWsPath(e.target.value)}
+                    // 阻止鼠标按下事件冒泡，防止 document click 处理器关闭下拉菜单
+                    onMouseDown={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.stopPropagation()
+                        onWorkspacePathChange?.(editingWsPath)
+                        setWorkspaceName(editingWsPath.split(/[/\\]/).pop() || 'workspace')
+                        setEditingWorkspace(false)
+                        setWorkspaceOpen(false)
+                      }
+                      if (e.key === 'Escape') {
+                        setEditingWorkspace(false)
+                      }
+                    }}
+                    autoFocus
+                  />
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -851,6 +994,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool }: ChatPanelProps) {
               isStreaming={isStreaming}
               streamingContent={streamingContent}
               streamingReasoning={streamingReasoning}
+              isRethinking={isRethinking}
               messagesEndRef={messagesEndRef}
             />
 

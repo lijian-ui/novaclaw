@@ -1,7 +1,7 @@
 pub mod routes;
 pub mod ws;
 
-use axum::{Router, routing::get};
+use axum::Router;
 use tower_http::{cors::{CorsLayer, Any}, services::ServeDir};
 use std::net::SocketAddr;
 use std::path::Path;

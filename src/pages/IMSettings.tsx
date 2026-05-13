@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, Check, ArrowLeft, Shield, Webhook } from 'lucide-react'
-import { useTauriCommands } from '@/hooks/useTauriCommands'
+import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, ArrowLeft, Shield, Webhook } from 'lucide-react'
+import { API_BASE } from '@/hooks/useApi'
 import { useTranslation } from 'react-i18next'
 
 interface IMChannel {
@@ -37,7 +37,6 @@ const emptyForm = {
 
 export function IMSettings({ onBack }: IMSettingsProps) {
   const { t } = useTranslation()
-  const { isTauri, getConfigDir } = useTauriCommands()
 
   const [channels, setChannels] = useState<IMChannel[]>([])
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
@@ -48,11 +47,14 @@ export function IMSettings({ onBack }: IMSettingsProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
 
-  const configPath = `${getConfigDir()}/im_channels.json`
+  useEffect(() => {
+    // 初始化配置（IM 设置使用配置目录）
+    fetch(`${API_BASE}/paths`).then(r => r.json()).catch(() => {})
+  }, [])
 
   const loadChannels = useCallback(async () => {
     try {
-      const response = await fetch(`http://localhost:18792/api/config/im_channels`)
+      const response = await fetch(`${API_BASE}/config/im_channels`)
       if (response.ok) {
         const data = await response.json()
         setChannels(data.channels || [])
@@ -71,7 +73,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
     setChannels(newChannels)
     setSaveError(null)
     try {
-      const response = await fetch('http://localhost:18792/api/config/im_channels', {
+      const response = await fetch(`${API_BASE}/config/im_channels`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channels: newChannels }),
@@ -106,17 +108,17 @@ export function IMSettings({ onBack }: IMSettingsProps) {
   const openEditModal = (channel: IMChannel) => {
     setEditingChannel(channel.id)
     setSelectedChannelType(channel.id)
-    setForm(channel.config || emptyForm)
+    setForm({ ...emptyForm, ...channel.config })
     setShowModal(true)
   }
 
   const handleSave = async () => {
-    const channelType = channelTypes.find(c => c.id === selectedChannelType)
-    if (!channelType) return
+    const selectedType = channelTypes.find(c => c.id === selectedChannelType)
+    if (!selectedType) return
 
     const newChannel: IMChannel = {
       id: editingChannel || `im_${Date.now()}`,
-      name: channelType.name,
+      name: selectedType.name,
       enabled: true,
       config: form,
     }
@@ -172,7 +174,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
         </div>
         <button
           onClick={() => openAddModal()}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-400 text-xs transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
           {t('imSettings.addChannel')}
@@ -191,7 +193,6 @@ export function IMSettings({ onBack }: IMSettingsProps) {
         ) : (
           channels.map((channel) => {
             const isExpanded = expandedIds.has(channel.id)
-            const channelType = channelTypes.find(c => c.id === channel.id)
 
             return (
               <div
@@ -418,7 +419,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                 </button>
                 <button
                   onClick={handleSave}
-                  className="px-4 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-xs text-white font-medium transition-colors"
+                  className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 text-xs text-white font-medium transition-colors"
                 >
                   {t('imSettings.save')}
                 </button>

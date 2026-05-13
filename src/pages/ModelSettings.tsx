@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, Play, Trash2, Pencil, Star, ChevronRight, ChevronDown, X, Check, ArrowLeft } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
-import { useTauriCommands } from '@/hooks/useTauriCommands'
 import type { ProviderConfig } from '@/types'
 import { useTranslation } from 'react-i18next'
 
@@ -19,11 +18,6 @@ interface Provider {
   id: string
   name: string
   models: ModelConfig[]
-}
-
-interface ModelsConfig {
-  default_model?: string
-  providers: ProviderConfig[]
 }
 
 function apiProvidersToLocal(apiProviders: ProviderConfig[]): Provider[] {
@@ -79,7 +73,6 @@ interface ModelSettingsProps {
 
 export function ModelSettings({ onBack }: ModelSettingsProps) {
   const { t } = useTranslation()
-  const { isTauri, getModelsConfig, saveModelsConfig } = useTauriCommands()
   const { listProviders, saveProvider, testConnection, setDefaultModel, getDefaultModel } = useApi()
 
   const [providers, setProviders] = useState<Provider[]>([])
@@ -95,16 +88,8 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
 
   const loadProviders = useCallback(async () => {
     try {
-      let apiProviders: ProviderConfig[] = []
-      let defaultModelName = ''
-      if (isTauri) {
-        const config = await getModelsConfig() as unknown as ModelsConfig
-        apiProviders = config.providers || []
-        defaultModelName = config.default_model || ''
-      } else {
-        apiProviders = await listProviders()
-        defaultModelName = await getDefaultModel()
-      }
+      const apiProviders = await listProviders()
+      const defaultModelName = await getDefaultModel()
       if (apiProviders.length > 0) {
         const localProviders = apiProvidersToLocal(apiProviders)
         if (defaultModelName) {
@@ -119,7 +104,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
     } catch (err) {
       console.error('[ModelSettings]', t('modelSettings.loadingProviders'), err)
     }
-  }, [isTauri, getModelsConfig, listProviders, getDefaultModel, t])
+  }, [listProviders, getDefaultModel, t])
 
   useEffect(() => {
     loadProviders()
@@ -143,14 +128,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
     
     console.log('[ModelSettings]', t('modelSettings.savingProviders'), JSON.stringify(apiData), t('settings.modelTitle') + ':', defaultModelName)
     try {
-      if (isTauri) {
-        await saveModelsConfig({ 
-          default_model: defaultModelName,
-          providers: apiData 
-        })
-      } else {
-        await saveProvider(apiData)
-      }
+      await saveProvider(apiData)
       console.log('[ModelSettings]', t('modelSettings.saveSuccessLog'))
     } catch (err) {
       const msg = err instanceof Error ? err.message : t('modelSettings.saveFailed')
@@ -158,7 +136,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       setSaveError(msg)
       throw err
     }
-  }, [isTauri, saveModelsConfig, saveProvider, t])
+  }, [saveProvider, t])
 
   const toggleExpanded = (id: string) => {
     setExpandedIds(prev => {

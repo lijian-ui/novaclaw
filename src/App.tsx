@@ -28,6 +28,7 @@ function App() {
   const [fileWidth, setFileWidth] = useState(0)
   const [draggingTarget, setDraggingTarget] = useState<'chat' | 'file' | null>(null)
   const [activeTool, setActiveTool] = useState<string | null>(null)
+  const [workspacePath, setWorkspacePath] = useState('')
   const containerRef = useRef<HTMLDivElement>(null)
 
   const {
@@ -136,7 +137,7 @@ function App() {
       {/* Chat Area with draggable resize */}
       <div className="flex shrink-0" style={{ width: chatWidth }}>
         <div className="flex-1 min-w-0">
-          <ChatPanel onOpenFilePanel={openFilePanel} onOpenTool={setActiveTool} />
+          <ChatPanel onOpenFilePanel={openFilePanel} onOpenTool={setActiveTool} workspacePath={workspacePath} onWorkspacePathChange={setWorkspacePath} />
         </div>
         <div
           className="w-1.5 cursor-col-resize hover:bg-foreground/5 active:bg-foreground/10 transition-colors shrink-0 relative"
@@ -177,7 +178,7 @@ function App() {
               <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border" />
             </div>
             <div className="flex-1 min-w-0">
-              <FileExplorer onFileOpen={handleFileOpen} />
+              <FileExplorer onFileOpen={handleFileOpen} customPath={workspacePath} />
             </div>
           </>
         )}

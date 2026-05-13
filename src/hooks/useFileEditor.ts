@@ -1,16 +1,28 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type { EditorTab, UseFileEditorReturn } from '@/types/fileEditor'
-import { getFileWebSocket, onFileWsMessage, sendFileWs } from '@/hooks/useFileWs'
+import { getFileWebSocket, onFileWsMessage } from '@/hooks/useFileWs'
+import { API_BASE } from '@/hooks/useApi'
 
 const SAVE_DEBOUNCE_MS = 1500
 
-/** 检测 Tauri 环境 */
-const isTauri = (): boolean =>
-  typeof window !== 'undefined' && !!(window as any).__TAURI__?.invoke
+/** REST API 文件操作（统一走 Axum 后端，三平台通用） */
+async function apiReadFile(path: string): Promise<string> {
+  const res = await fetch(`${API_BASE}/files/read`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path }),
+  })
+  const json = await res.json()
+  if (!json.success) throw new Error(json.message || '读取失败')
+  return json.data
+}
 
-/** Tauri invoke */
-async function tauriInvoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  return (window as any).__TAURI__.invoke(cmd, args || {}) as Promise<T>
+async function apiWriteFile(path: string, content: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/files/write`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path, content }),
+  })
+  const json = await res.json()
+  if (!json.success) throw new Error(json.message || '写入失败')
 }
 
 function getLanguage(filePath: string): string {
@@ -29,8 +41,7 @@ export function useFileEditor(): UseFileEditorReturn {
   const [tabs, setTabs] = useState<EditorTab[]>([])
   const [activePath, setActivePath] = useState<string | null>(null)
   const [connected, setConnected] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
+  const [error] = useState<string | null>(null)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingSaveRef = useRef<{ path: string; content: string } | null>(null)
   const tabsRef = useRef<EditorTab[]>(tabs)
@@ -39,17 +50,13 @@ export function useFileEditor(): UseFileEditorReturn {
 
   // ---- 共享 WebSocket 消息监听（浏览器模式）----
   useEffect(() => {
-    if (isTauri()) {
-      setConnected(true)
-      return
-    }
-
-    // 初始化共享 WS
+    // 初始化共享 WS（文件编辑均走 REST API）
     getFileWebSocket().then(() => {
       wsReadyRef.current = true
       setConnected(true)
     }).catch(() => {
-      setError('WebSocket 连接失败')
+      // WebSocket 仅用于文件变更通知，非必须；核心文件操作走 REST
+      setConnected(true)
     })
 
     // 监听 file_changed 事件（外部修改时自动更新）
@@ -72,42 +79,14 @@ export function useFileEditor(): UseFileEditorReturn {
     return unsub
   }, [])
 
-  /** 通过共享 WS 读取文件（等待连接就绪） */
+  /** 通过 REST API 读取文件（三平台通用） */
   const readFileContent = useCallback(async (path: string): Promise<string> => {
-    if (isTauri()) {
-      return tauriInvoke<string>('read_file', { path })
-    }
-    // 等待共享 WS 就绪
-    await getFileWebSocket()
-
-    return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('读取超时')), 10000)
-      const handler = (event: MessageEvent) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'read_result' && msg.path === path) {
-            clearTimeout(timeout)
-            ;(event.target as EventTarget)?.removeEventListener?.('message', handler as EventListener)
-            if (msg.success) resolve(msg.content)
-            else reject(new Error(msg.message || '读取失败'))
-          }
-        } catch { /* ignore */ }
-      }
-      // 直接用 WebSocket 发 read 请求
-      getFileWebSocket().then(ws => {
-        ws.addEventListener('message', handler)
-        ws.send(JSON.stringify({ type: 'read', path }))
-      })
-    })
+    return apiReadFile(path)
   }, [])
 
-  /** 通过共享 WS 保存文件 */
+  /** 通过 REST API 保存文件（三平台通用） */
   const saveFileContent = useCallback(async (path: string, content: string): Promise<void> => {
-    if (isTauri()) {
-      await tauriInvoke('write_file', { path, content })
-      return
-    }
-    await sendFileWs({ type: 'write', path, content })
+    await apiWriteFile(path, content)
   }, [])
 
   /** 打开文件 */

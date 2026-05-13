@@ -340,7 +340,7 @@ async fn handle_file_socket(socket: WebSocket) {
             }
             "list" => {
                 let list_path = if cmd_path.is_empty() { ws_str.clone() } else { cmd_path.clone() };
-                tracing::info!("WebSocket 列出目录: {}", list_path);
+                tracing::trace!("WebSocket 列出目录: {}", list_path);
                 let result = list_directory(&list_path);
                 let mut sender = ws_sender.lock().await;
                 match result {

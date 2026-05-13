@@ -7,10 +7,7 @@ const isTauri = (): boolean =>
   typeof window !== 'undefined' && !!(window as any).__TAURI__?.invoke
 
 const API_HOST = isTauri() ? 'http://127.0.0.1:3000' : ''
-const API_BASE = `${API_HOST}/api`
-const WS_BASE = isTauri()
-  ? 'ws://127.0.0.1:3000/ws'
-  : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+export const API_BASE = `${API_HOST}/api`
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -28,15 +25,146 @@ api.interceptors.response.use(
     return response
   },
   error => {
+    if (axios.isCancel(error) || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
+      return Promise.reject(error)
+    }
     console.error(`[API] ${error.config?.method?.toUpperCase()} ${error.config?.url} → ${error.response?.status || error.message}`)
     return Promise.reject(error)
   },
 )
 
+/** SSE 事件回调类型 */
+export type SseCallbacks = {
+  onChunk: (text: string) => void
+  onDone: (result: { content?: string; sessionId?: string }) => void
+  onError: (err: string) => void
+  onAgentStep?: (step: {
+    stepType: string
+    content: string
+    toolName?: string
+    toolResult?: string
+    turn: number
+    maxTurns: number
+  }) => void
+}
+
+/** 发起 SSE 流式聊天请求，返回 AbortController 用于取消 */
+export function startChatStream(
+  params: { message: string; model?: string; session_id?: string; workspace?: string },
+  callbacks: SseCallbacks,
+): AbortController {
+  const abortController = new AbortController()
+  const { onChunk, onDone, onError, onAgentStep } = callbacks
+
+  void (async () => {
+    try {
+      const response = await fetch(`${API_BASE}/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+        signal: abortController.signal,
+      })
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => '')
+        onError(`请求失败 (${response.status}): ${text}`)
+        return
+      }
+
+      const reader = response.body?.getReader()
+      if (!reader) {
+        onError('响应体为空')
+        return
+      }
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+
+        // 按 SSE 的双换行分隔符解析完整事件
+        const parts = buffer.split('\n\n')
+        buffer = parts.pop() || ''
+
+        for (const part of parts) {
+          const trimmed = part.trim()
+          if (!trimmed || trimmed.startsWith(':')) continue
+
+          // 提取 data: 行
+          const dataLine = trimmed
+            .split('\n')
+            .find((line) => line.startsWith('data:'))
+            ?.replace(/^data:\s*/, '')
+          if (!dataLine) continue
+
+          try {
+            const parsed = JSON.parse(dataLine)
+            const payload = parsed.data
+
+            if (parsed.type === 'chunk') {
+              onChunk(payload || '')
+            } else if (parsed.type === 'agent_step') {
+              onAgentStep?.({
+                stepType: payload?.step_type || '',
+                content: payload?.content || '',
+                toolName: payload?.tool_name,
+                toolResult: payload?.tool_result,
+                turn: payload?.turn || 0,
+                maxTurns: payload?.max_turns || 20,
+              })
+            } else if (parsed.type === 'done') {
+              onDone({
+                content: payload?.content || '',
+                sessionId: payload?.session_id || undefined,
+              })
+            } else if (parsed.type === 'stopped') {
+              onDone({
+                content: '',
+                sessionId: payload?.session_id || undefined,
+              })
+            } else if (parsed.type === 'error') {
+              onError(payload?.message || '未知错误')
+            }
+          } catch {
+            // 忽略解析错误
+          }
+        }
+      }
+    } catch (err: unknown) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // 用户取消，忽略
+        return
+      }
+      onError(err instanceof Error ? err.message : '连接失败')
+    }
+  })()
+
+  return abortController
+}
+
+/** 取消正在进行的 SSE 流式生成 */
+export async function cancelChatStream(sessionId: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_BASE}/chat/cancel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_id: sessionId }),
+    })
+    const data = await response.json()
+    return data.success === true
+  } catch {
+    return false
+  }
+}
+
 export function useApi() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
 
   const handleError = useCallback((err: unknown) => {
     if (axios.isAxiosError(err)) {
@@ -46,7 +174,7 @@ export function useApi() {
     }
   }, [])
 
-  // ---- HTTP Chat ----
+  // ---- HTTP Chat (非流式) ----
   const chat = useCallback(async (request: ChatRequest): Promise<ChatResponse> => {
     setLoading(true)
     setError(null)
@@ -60,109 +188,6 @@ export function useApi() {
       setLoading(false)
     }
   }, [handleError])
-
-  // ---- WebSocket Chat Streaming ----
-  // 后端协议：
-  // 发送: {"type":"send","data":{"message":"...","model":"...","session_id":"..."}}
-  // 接收: {"type":"chunk","data":"文本"}
-  // 接收: {"type":"agent_step","data":{"step_type":"...","content":"...","tool_name":"...","tool_result":"...","turn":...,"max_turns":...}}
-  // 接收: {"type":"done","data":{"session_id":"...","content":"...","iterations":...}}
-  // 接收: {"type":"error","data":{"message":"..."}}
-  const connectChatStream = useCallback((
-    _sessionId: string | null,
-    onChunk: (text: string) => void,
-    /**
-     * @param result - 包含 content 和可选的 sessionId
-     * content: 后端的最终响应文本（仅最后一轮迭代），
-     *         应优先使用 streamingContentRef.current（累积了所有轮次）
-     * sessionId: 后端创建的会话 ID（首次对话时自动创建）
-     */
-    onDone: (result: { content?: string; sessionId?: string }) => void,
-    onError: (err: string) => void,
-    onAgentStep?: (step: { stepType: string; content: string; toolName?: string; toolResult?: string; turn: number; maxTurns: number }) => void,
-  ) => {
-    if (wsRef.current) {
-      wsRef.current.close()
-    }
-    const ws = new WebSocket(`${WS_BASE}/chat`)
-    wsRef.current = ws
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data)
-        const payload = data.data
-        if (data.type === 'chunk') {
-          onChunk(payload || data.data || '')
-        } else if (data.type === 'agent_step') {
-          onAgentStep?.({
-            stepType: payload?.step_type || '',
-            content: payload?.content || '',
-            toolName: payload?.tool_name,
-            toolResult: payload?.tool_result,
-            turn: payload?.turn || 0,
-            maxTurns: payload?.max_turns || 20,
-          })
-        } else if (data.type === 'done') {
-          onDone({
-            content: payload?.content || '',
-            sessionId: payload?.session_id || undefined,
-          })
-        } else if (data.type === 'stopped') {
-          // 用户打断停止，保留已输出的部分内容
-          onDone({
-            content: '',
-            sessionId: payload?.session_id || undefined,
-          })
-        } else if (data.type === 'error') {
-          onError(payload?.message || data.data?.message || '未知错误')
-        }
-      } catch {
-        onChunk(event.data)
-      }
-    }
-
-    ws.onerror = () => {
-      onError('WebSocket 连接失败')
-    }
-
-    ws.onclose = () => {
-      // 仅当 wsRef.current 仍然指向本 WebSocket 时才清空，
-      // 防止异步触发时覆盖已创建的新连接
-      if (wsRef.current === ws) {
-        wsRef.current = null
-      }
-    }
-
-    return ws
-  }, [])
-
-  // 后端协议：{"type":"send","data":{"message":"...","model":"...","session_id":"..."}}
-  const sendChatMessage = useCallback((message: string, model?: string, sessionId?: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      const data: Record<string, string> = { message }
-      if (model) data.model = model
-      if (sessionId) data.session_id = sessionId
-      wsRef.current.send(JSON.stringify({
-        type: 'send',
-        data,
-      }))
-    }
-  }, [])
-
-  // 发送停止指令：中断当前正在生成的流式响应
-  // 后端收到后会取消 LLM 请求、保存已输出部分、发送 "stopped" 响应
-  const stopChatStream = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'stop' }))
-    }
-  }, [])
-
-  const disconnectChat = useCallback(() => {
-    if (wsRef.current) {
-      wsRef.current.close()
-      wsRef.current = null
-    }
-  }, [])
 
   // ---- Models ----
   const listModels = useCallback(async (): Promise<Model[]> => {
@@ -548,13 +573,9 @@ export function useApi() {
   return {
     loading,
     error,
+    abortRef,
     // HTTP Chat
     chat,
-    // WebSocket Chat
-    connectChatStream,
-    sendChatMessage,
-    stopChatStream,
-    disconnectChat,
     // Models
     listModels,
     getModel,

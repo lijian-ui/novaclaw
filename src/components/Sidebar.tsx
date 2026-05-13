@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, ChevronLeft, ChevronRight, Trash2, MessageSquare, Loader2 } from 'lucide-react'
 import { useChat } from '@/contexts/ChatContext'
 import { useApi } from '@/hooks/useApi'
@@ -17,22 +17,49 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null)
-  const { currentSession, setCurrentSession, setMessages } = useChat()
+  const { currentSession, setCurrentSession, setMessages, sessionListVersion, refreshSessionList } = useChat()
   const { listSessions, createSession, deleteSession, getMessages } = useApi()
+  const autoOpenedRef = useRef(false)
+  const hasSessionRef = useRef(false)
 
   const loadSessions = useCallback(async () => {
     setLoading(true)
     try {
       const result = await listSessions()
       if (Array.isArray(result)) {
-        // 去重：根据会话 ID 过滤重复会话
         const seen = new Set<string>()
         const uniqueSessions = result.filter(session => {
           if (seen.has(session.id)) return false
           seen.add(session.id)
           return true
         })
+        // 按更新时间降序排列，最新的在最前面
+        uniqueSessions.sort((a, b) => {
+          const aTime = new Date(a.updated_at || a.created_at).getTime()
+          const bTime = new Date(b.updated_at || b.created_at).getTime()
+          return bTime - aTime
+        })
         setSessions(uniqueSessions)
+
+        // 首次加载且当前未选中任何会话，自动打开最近一次的会话
+        if (!autoOpenedRef.current && !hasSessionRef.current && uniqueSessions.length > 0) {
+          autoOpenedRef.current = true
+          hasSessionRef.current = true
+          const latest = uniqueSessions[0]
+          setCurrentSession(latest)
+          setMessages([])
+          try {
+            const messages = await getMessages(latest.id)
+            if (Array.isArray(messages)) {
+              setMessages(messages)
+            }
+          } catch {
+            // 忽略消息加载错误
+          }
+        }
+        if (uniqueSessions.length > 0) {
+          hasSessionRef.current = true
+        }
       } else {
         setSessions([])
       }
@@ -40,11 +67,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       setSessions([])
     }
     setLoading(false)
-  }, [listSessions])
+  }, [listSessions, setCurrentSession, setMessages, getMessages])
 
   useEffect(() => {
     loadSessions()
-  }, [loadSessions])
+  }, [loadSessions, sessionListVersion])
 
   const handleCreateSession = async () => {
     try {
@@ -53,6 +80,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         setSessions(prev => [session, ...prev])
         setCurrentSession(session)
         setMessages([])
+        refreshSessionList()
       }
     } catch (error) {
       console.error('Failed to create session:', error)
@@ -83,6 +111,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         setCurrentSession(null)
         setMessages([])
       }
+      refreshSessionList()
     } catch (error) {
       console.error('Failed to delete session:', error)
     }

@@ -7,6 +7,20 @@ use super::types::*;
 use crate::config::ProviderConfig;
 use crate::error::AppError;
 
+/// 流式聊天返回的句柄，同时持有事件接收器和底层的 HTTP 流任务
+/// 取消时通过 abort 底层任务强制关闭 HTTP 连接，让 LLM 服务真正停止生成
+pub struct StreamHandle {
+    pub rx: mpsc::Receiver<StreamEvent>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl StreamHandle {
+    /// 立即终止流式请求（强制关闭 HTTP 连接）
+    pub fn abort(&self) {
+        self.task.abort();
+    }
+}
+
 /// 对 base_url 做智能标准化：
 /// - 去除末尾多余斜杠
 /// - 如果 URL 路径中不含 `/v1`，自动追加 `/v1`（兼容 LM Studio / Ollama 等本地服务）
@@ -28,6 +42,7 @@ pub fn normalize_base_url(base_url: &str) -> String {
 pub struct LlmClient {
     http: Client,
     provider: Arc<ProviderConfig>,
+    #[allow(dead_code)]
     timeout_secs: u32,
 }
 
@@ -96,12 +111,12 @@ impl LlmClient {
     }
 
 /// 流式聊天 - 返回 SSE 事件流
-/// cancel: 可选取消信号，收到取消时立即中止 SSE 读取
-pub async fn chat_stream(
-    &self,
-    req: &ChatRequest,
-    cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-) -> Result<mpsc::Receiver<StreamEvent>, AppError> {
+    /// cancel: 可选取消信号，收到取消时立即中止 SSE 读取
+    pub async fn chat_stream(
+        &self,
+        req: &ChatRequest,
+        cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    ) -> Result<StreamHandle, AppError> {
         let base = self.api_base();
         let url = format!("{}/chat/completions", base);
         let (tx, rx) = mpsc::channel(256);
@@ -125,27 +140,29 @@ pub async fn chat_stream(
             )));
         }
 
+        let cancel_check = cancel.clone();
+
         // 在独立任务中解析 SSE 流
-        tokio::spawn(async move {
-            let mut stream = response.bytes_stream();
-            let mut buffer = String::new();
-            // 使用 HashMap 支持多工具调用追踪（key: tool_call_index）
-            let mut tool_calls_acc: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
-            let mut early_sent_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let task = tokio::spawn(async move {
+                // 将 response 显式移到任务中，确保 abort 时 response 被及时 drop
+                let _response = response;
+                let mut stream = _response.bytes_stream();
+                let mut buffer = String::new();
+                // 使用 HashMap 支持多工具调用追踪（key: tool_call_index）
+                let mut tool_calls_acc: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
+                let mut early_sent_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
-            async fn send_event(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> bool {
-                tx.send(event).await.is_ok()
-            }
-
-            let cancel_check = cancel.clone();
-
-            'stream_loop: while let Some(chunk_result) = stream.next().await {
-                // 检查取消信号
-                if let Some(ref flag) = cancel_check {
-                    if flag.load(std::sync::atomic::Ordering::Relaxed) {
-                        break 'stream_loop;
-                    }
+                async fn send_event(tx: &mpsc::Sender<StreamEvent>, event: StreamEvent) -> bool {
+                    tx.send(event).await.is_ok()
                 }
+
+                'stream_loop: while let Some(chunk_result) = stream.next().await {
+                    // 检查取消信号
+                    if let Some(ref flag) = cancel_check {
+                        if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                            break 'stream_loop;
+                        }
+                    }
 
                 match chunk_result {
                     Ok(chunk) => {
@@ -270,6 +287,6 @@ pub async fn chat_stream(
             let _ = tx.send(StreamEvent::Done("done".to_string())).await;
         });
 
-        Ok(rx)
+        Ok(StreamHandle { rx, task })
     }
 }

@@ -29,7 +29,7 @@ export interface Message {
   /** 第一次思考内容（CoT）- 用于前端显示为"思考过程" */
   first_reasoning?: string
   /** 后续思考内容数组（CoT）- 用于前端显示为"Thought" */
-  reasonings?: string[]
+  again_reasonings?: string[]
   /** 兼容旧字段：完整的推理内容 */
   reasoning?: string
 }

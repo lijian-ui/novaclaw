@@ -5,20 +5,27 @@ use super::registry::ToolDef;
 use super::registry::ToolRegistry;
 
 /// 解析文件路径
-/// 如果是相对路径，将其解析到工作目录下
+/// 如果是相对路径，优先使用会话的工作目录；没有则使用全局默认 workspace
 /// 如果是绝对路径，直接返回
-fn resolve_path(path_str: &str) -> PathBuf {
+fn resolve_path(path_str: &str, args: &serde_json::Value) -> PathBuf {
     let path = Path::new(path_str);
     
     if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        crate::config::get_workspace_dir().join(path)
+        return path.to_path_buf();
     }
+    
+    // 优先使用注入的 session workspace
+    if let Some(ws) = args.get("_workspace").and_then(|v| v.as_str()) {
+        return PathBuf::from(ws).join(path);
+    }
+    
+    // 兜底：使用全局默认 workspace
+    crate::config::get_workspace_dir().join(path)
 }
 
 /// 查询预处理模块
 /// 提升搜索质量的预处理逻辑
+#[allow(dead_code)]
 fn preprocess_query(query: &str, _context: Option<&str>) -> String {
     let mut processed = query.to_string();
     
@@ -48,10 +55,12 @@ struct SearchResult {
     title: String,
     url: String,
     snippet: String,
+    #[allow(dead_code)]
     relevance: f64,
 }
 
 /// 解析并排序搜索结果
+#[allow(dead_code)]
 fn parse_and_rank(raw_results: &serde_json::Value, query: &str) -> Vec<SearchResult> {
     let mut results = Vec::new();
     
@@ -149,7 +158,7 @@ pub fn register_all(
             // read_file tool
             registry_clone.register(ToolDef {
                 name: "read_file".to_string(),
-                description: "Read file content from the filesystem".to_string(),
+                description: "Read file content. Params: path (required), offset (optional line number), limit (optional max lines)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -169,10 +178,10 @@ pub fn register_all(
                     "required": ["path"]
                 }),
                 handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    let path = args["path"].as_str().ok_or("缺少 path 参数")?;
-                    let resolved_path = resolve_path(path);
+                    let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
+                    let resolved_path = resolve_path(path, &args);
                     let content = std::fs::read_to_string(&resolved_path)
-                        .map_err(|e| format!("读取文件失败: {}", e))?;
+                        .map_err(|e| format!("Failed to read file: {}", e))?;
 
                     let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                     let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
@@ -185,7 +194,7 @@ pub fn register_all(
             // write_file tool
             registry_clone.register(ToolDef {
                 name: "write_file".to_string(),
-                description: "Write content to a file (auto-creates directories)".to_string(),
+                description: "Write content to a file (auto-creates dirs). Params: path (required), content (required)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -201,26 +210,26 @@ pub fn register_all(
                     "required": ["path", "content"]
                 }),
                 handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    let path = args["path"].as_str().ok_or("缺少 path 参数")?;
-                    let content = args["content"].as_str().ok_or("缺少 content 参数")?;
+                    let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
+                    let content = args["content"].as_str().ok_or("Missing 'content' parameter")?;
 
-                    let resolved_path = resolve_path(path);
+                    let resolved_path = resolve_path(path, &args);
 
                     if let Some(parent) = resolved_path.parent() {
                         std::fs::create_dir_all(parent)
-                            .map_err(|e| format!("创建目录失败: {}", e))?;
+                            .map_err(|e| format!("Failed to create directory: {}", e))?;
                     }
                     std::fs::write(&resolved_path, content)
-                        .map_err(|e| format!("写入文件失败: {}", e))?;
+                        .map_err(|e| format!("Failed to write file: {}", e))?;
 
-                    Ok(format!("成功写入文件: {}", resolved_path.display()))
+                    Ok(format!("Successfully wrote file: {}", resolved_path.display()))
                 }),
             }).await;
 
             // edit_file tool
             registry_clone.register(ToolDef {
                 name: "edit_file".to_string(),
-                description: "Edit a file by finding and replacing text".to_string(),
+                description: "Find and replace text in a file (1 replacement). Params: path (required), old_string (required), new_string (required)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -240,31 +249,31 @@ pub fn register_all(
                     "required": ["path", "old_string", "new_string"]
                 }),
                 handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    let path = args["path"].as_str().ok_or("缺少 path 参数")?;
-                    let old_str = args["old_string"].as_str().ok_or("缺少 old_string 参数")?;
-                    let new_str = args["new_string"].as_str().ok_or("缺少 new_string 参数")?;
+                    let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
+                    let old_str = args["old_string"].as_str().ok_or("Missing 'old_string' parameter")?;
+                    let new_str = args["new_string"].as_str().ok_or("Missing 'new_string' parameter")?;
 
-                    let resolved_path = resolve_path(path);
+                    let resolved_path = resolve_path(path, &args);
                     let content = std::fs::read_to_string(&resolved_path)
-                        .map_err(|e| format!("读取文件失败: {}", e))?;
+                        .map_err(|e| format!("Failed to read file: {}", e))?;
 
                     if !content.contains(old_str) {
-                        return Err(format!("未找到要替换的内容"));
+                        return Err("Text not found: the 'old_string' does not exist in the file. Make sure to match exact content including whitespace.".to_string());
                     }
 
                     // 只替换第一次出现
                     let new_content = content.replacen(old_str, new_str, 1);
                     std::fs::write(&resolved_path, &new_content)
-                        .map_err(|e| format!("写入文件失败: {}", e))?;
+                        .map_err(|e| format!("Failed to write file: {}", e))?;
 
-                    Ok(format!("成功编辑文件: {}", resolved_path.display()))
+                    Ok(format!("Successfully edited file: {}", resolved_path.display()))
                 }),
             }).await;
 
             // glob file search tool
             registry_clone.register(ToolDef {
                 name: "glob".to_string(),
-                description: "Search files using glob patterns".to_string(),
+                description: "Search files by glob pattern. Params: pattern (required, e.g. **/*.rs or **/*), path (optional directory)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -280,10 +289,15 @@ pub fn register_all(
                     "required": ["pattern"]
                 }),
                 handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    let pattern = args["pattern"].as_str().ok_or("缺少 pattern 参数")?;
+                    let pattern = args["pattern"].as_str().ok_or("Missing 'pattern' parameter - provide a glob pattern like **/*.rs")?;
                     let base = args["path"].as_str().unwrap_or(".");
+                    // 处理 LLM 可能误传的路径别名，统一映射到工作目录根
+                    let base = match base {
+                        "" | "." | "workspace" | "workspace/" | "workspace\\" => ".",
+                        other => other,
+                    };
 
-                    let resolved_base = resolve_path(base);
+                    let resolved_base = resolve_path(base, &args);
 
                     let glob_pattern = if resolved_base.to_string_lossy().ends_with('/') || resolved_base.to_string_lossy().ends_with('\\') {
                         format!("{}{}", resolved_base.display(), pattern)
@@ -297,17 +311,17 @@ pub fn register_all(
                             for entry in entries.flatten() {
                                 results.push(entry.display().to_string());
                                 if results.len() >= 200 {
-                                    results.push("...(结果已截断)".to_string());
+                                    results.push("...(results truncated)".to_string());
                                     break;
                                 }
                             }
                             if results.is_empty() {
-                                Ok("未找到匹配的文件".to_string())
+                                Ok("No files matched the pattern".to_string())
                             } else {
                                 Ok(results.join("\n"))
                             }
                         }
-                        Err(e) => Err(format!("glob 模式错误: {}", e)),
+                        Err(e) => Err(format!("Invalid glob pattern: {}", e)),
                     }
                 }),
             }).await;
@@ -315,7 +329,7 @@ pub fn register_all(
             // grep content search tool
             registry_clone.register(ToolDef {
                 name: "grep".to_string(),
-                description: "Search for text patterns in files".to_string(),
+                description: "Search text in files with regex. Pass a directory path as 'path' (not a glob pattern). Params: pattern (required), path (optional directory, e.g. '.' or 'scripts'), include (optional file filter like '*.rs')".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -335,17 +349,22 @@ pub fn register_all(
                     "required": ["pattern"]
                 }),
                 handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    let pattern = args["pattern"].as_str().ok_or("缺少 pattern 参数")?;
+                    let pattern = args["pattern"].as_str().ok_or("Missing 'pattern' parameter - provide a regex pattern to search for")?;
                     let base = args["path"].as_str().unwrap_or(".");
+                    // 处理 LLM 可能误传的路径别名，统一映射到工作目录根
+                    let base = match base.trim_end_matches('*').trim_end_matches('/').trim_end_matches('\\') {
+                        "" | "." | "workspace" | "workspace/" | "workspace\\" => ".",
+                        other => other,
+                    };
                     let include = args["include"].as_str();
 
-                    let resolved_base = resolve_path(base);
+                    let resolved_base = resolve_path(base, &args);
 
                     let re = regex::RegexBuilder::new(pattern)
                         .case_insensitive(true)
                         .multi_line(true)
                         .build()
-                        .map_err(|e| format!("正则表达式错误: {}", e))?;
+                        .map_err(|e| format!("Invalid regex pattern: {}", e))?;
 
                     let mut results = Vec::new();
                     let walker = walkdir::WalkDir::new(resolved_base).max_depth(20);
@@ -363,18 +382,30 @@ pub fn register_all(
                             }
                         }
 
-                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
-                            for (line_no, line) in content.lines().enumerate() {
-                                if re.is_match(line) {
-                                    results.push(format!(
-                                        "{}:{}: {}",
-                                        entry.path().display(),
-                                        line_no + 1,
-                                        line.trim()
-                                    ));
-                                    if results.len() >= 100 {
-                                        break;
+                        // 使用 BufReader 逐行读取，避免大文件全量加载到内存
+                        if let Ok(file) = std::fs::File::open(entry.path()) {
+                            let mut reader = std::io::BufReader::new(file);
+                            let mut line_no = 0usize;
+                            loop {
+                                let mut line = String::new();
+                                match std::io::BufRead::read_line(&mut reader, &mut line) {
+                                    Ok(0) => break, // EOF
+                                    Ok(_) => {
+                                        line_no += 1;
+                                        let trimmed = line.trim_end();
+                                        if re.is_match(trimmed) {
+                                            results.push(format!(
+                                                "{}:{}: {}",
+                                                entry.path().display(),
+                                                line_no,
+                                                trimmed
+                                            ));
+                                            if results.len() >= 100 {
+                                                break;
+                                            }
+                                        }
                                     }
+                                    Err(_) => continue, // 跳过无法读取的行
                                 }
                             }
                         }
@@ -384,7 +415,7 @@ pub fn register_all(
                     }
 
                     if results.is_empty() {
-                        Ok("未找到匹配内容".to_string())
+                        Ok("No matches found - try a different search term, pattern, or file path".to_string())
                     } else {
                         Ok(results.join("\n"))
                     }
@@ -395,7 +426,7 @@ pub fn register_all(
             let memory_store_for_memory = memory_store.clone();
             registry_clone.register(ToolDef {
                 name: "memory".to_string(),
-                description: "Persistent memory management: add / query / remove".to_string(),
+                description: "Persistent memory management. Params: action (required, enum: add/query/remove), content (required for add/remove), query (for find)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -416,32 +447,32 @@ pub fn register_all(
                     "required": ["action"]
                 }),
                 handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
-                    let action = args["action"].as_str().ok_or("缺少 action 参数")?;
+                    let action = args["action"].as_str().ok_or("Missing 'action' parameter (add/query/remove)")?;
                     match action {
                         "add" => {
-                            let content = args["content"].as_str().ok_or("缺少 content 参数")?;
+                            let content = args["content"].as_str().ok_or("Missing 'content' parameter for add action")?;
                             let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("general");
                             memory_store_for_memory.add_memory(content, category)
-                                .map_err(|e| format!("记忆添加失败: {}", e))?;
-                            Ok("记忆已保存".to_string())
+                                .map_err(|e| format!("Memory add failed: {}", e))?;
+                            Ok("Memory saved".to_string())
                         }
                         "query" => {
                             let query = args["query"].as_str().unwrap_or("");
                             let memories = memory_store_for_memory.query_memories(query)
-                                .map_err(|e| format!("记忆查询失败: {}", e))?;
+                                .map_err(|e| format!("Memory query failed: {}", e))?;
                             if memories.is_empty() {
-                                Ok("未找到相关记忆".to_string())
+                                Ok("No relevant memories found".to_string())
                             } else {
                                 Ok(memories.join("\n---\n"))
                             }
                         }
                         "remove" => {
-                            let content = args["content"].as_str().ok_or("缺少 content 参数")?;
+                            let content = args["content"].as_str().ok_or("Missing 'content' parameter for remove action")?;
                             memory_store_for_memory.remove_memory(content)
-                                .map_err(|e| format!("记忆删除失败: {}", e))?;
-                            Ok("记忆已删除".to_string())
+                                .map_err(|e| format!("Memory remove failed: {}", e))?;
+                            Ok("Memory removed".to_string())
                         }
-                        _ => Err(format!("未知操作: {}", action)),
+                        _ => Err(format!("Unknown action '{}'. Supported: add, query, remove", action)),
                     }
                 }),
             }).await;
@@ -465,11 +496,11 @@ pub fn register_all(
                     "required": ["query"]
                 }),
                 handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    let query = args["query"].as_str().ok_or("缺少 query 参数")?;
+                    let query = args["query"].as_str().ok_or("Missing 'query' parameter")?;
                     let _limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
                     // 简单的文本匹配搜索
-                    Ok(format!("搜索 '{}' 完成（历史搜索功能开发中）", query))
+                    Ok(format!("Search '{}' completed (session search feature in development)", query))
                 }),
             }).await;
 
@@ -490,7 +521,7 @@ pub fn register_all(
                 std::sync::Arc::new(std::sync::Mutex::new(tavily_api_key.clone()));
             registry_clone.register(ToolDef {
                 name: "web_search".to_string(),
-                description: "Search the web for up-to-date information".to_string(),
+                description: "Search the web (DuckDuckGo / TinyFish / Tavily). Params: query (required), count (optional, max 10)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -506,7 +537,7 @@ pub fn register_all(
                     "required": ["query"]
                 }),
                 handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
-                    let query = args["query"].as_str().ok_or("缺少 query 参数")?.to_string();
+                    let query = args["query"].as_str().ok_or("Missing 'query' parameter - provide a search query")?.to_string();
                     let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
                     let encoded_query = urlencoding::encode(&query).to_string();
                     let client = web_search_client.clone();
@@ -521,7 +552,7 @@ pub fn register_all(
 
                     let result = std::thread::spawn(move || {
                         let rt = tokio::runtime::Runtime::new()
-                            .map_err(|e| format!("创建运行时失败: {}", e))?;
+                            .map_err(|e| format!("Search engine runtime error: {}", e))?;
 
                         rt.block_on(async move {
                             let mut last_error = String::new();
@@ -543,10 +574,10 @@ pub fn register_all(
                                             html = text;
                                             search_source = "DuckDuckGo".to_string();
                                         }
-                                        Err(e) => last_error = format!("DuckDuckGo 读取响应失败 (status={}): {}", status, e),
+                                        Err(e) => last_error = format!("DuckDuckGo read failed (status={}): {}", status, e),
                                     }
                                 }
-                                Err(e) => last_error = format!("DuckDuckGo 请求失败: {}", e),
+                                Err(e) => last_error = format!("DuckDuckGo request failed: {}", e),
                             }
 
                             // 2. TinyFish
@@ -559,9 +590,9 @@ pub fn register_all(
                                                 json_result = text;
                                                 search_source = "TinyFish".to_string();
                                             }
-                                            Err(e) => last_error = format!("TinyFish 读取响应失败: {}", e),
+                                            Err(e) => last_error = format!("TinyFish read failed: {}", e),
                                         },
-                                        Err(e) => last_error = format!("TinyFish 请求失败: {}", e),
+                                        Err(e) => last_error = format!("TinyFish request failed: {}", e),
                                     }
                                 }
                             }
@@ -587,9 +618,9 @@ pub fn register_all(
                                                 json_result = text;
                                                 search_source = "Tavily".to_string();
                                             }
-                                            Err(e) => last_error = format!("Tavily 读取响应失败: {}", e),
+                                            Err(e) => last_error = format!("Tavily read failed: {}", e),
                                         },
-                                        Err(e) => last_error = format!("Tavily 请求失败: {}", e),
+                                        Err(e) => last_error = format!("Tavily request failed: {}", e),
                                     }
                                 }
                             }
@@ -653,16 +684,16 @@ pub fn register_all(
 
                             if results.is_empty() {
                                 Err(if last_error.is_empty() {
-                                    format!("未找到与 '{}' 相关的搜索结果", query)
+                                    format!("No search results for '{}'", query)
                                 } else {
-                                    format!("搜索失败: {}", last_error)
+                                    format!("Search failed: {}", last_error)
                                 })
                             } else {
                                 Ok(format_results(&results, count, &query, &search_source))
                             }
                         })
                     }).join()
-                    .map_err(|_| "搜索线程崩溃".to_string())??;
+                    .map_err(|_| "Search engine thread crashed".to_string())??;
 
                     Ok(result)
                 }),
@@ -711,7 +742,7 @@ pub fn register_all(
                     "required": ["name"]
                 }),
                 handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
-                    let name = args["name"].as_str().ok_or("缺少 name 参数")?;
+                    let name = args["name"].as_str().ok_or("Missing 'name' parameter - provide the skill name")?;
                     match skills_loader_for_view.get_skill(name) {
                         Some(skill) => {
                             Ok(serde_json::json!({
@@ -724,7 +755,7 @@ pub fn register_all(
                         None => {
                             let available: Vec<String> = skills_loader_for_view.list_skills()
                                 .iter().map(|s| s.name.clone()).collect();
-                            Err(format!("技能 '{}' 未找到。可用技能: {}", name, available.join(", ")))
+                            Err(format!("Skill '{}' not found. Available skills: {}", name, available.join(", ")))
                         }
                     }
                 }),
@@ -733,7 +764,7 @@ pub fn register_all(
             // todo tool
             registry_clone.register(ToolDef {
                 name: "todo".to_string(),
-                description: "Task management: add / list / done / remove".to_string(),
+                description: "Simple task management. Params: action (required, enum: add/list/done/remove), title (for add), id (for done/remove)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -754,17 +785,419 @@ pub fn register_all(
                     "required": ["action"]
                 }),
                 handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
-                    let action = args["action"].as_str().ok_or("缺少 action 参数")?;
+                    let action = args["action"].as_str().ok_or("Missing 'action' parameter (add/list/done/remove)")?;
                     match action {
                         "add" => {
-                            let title = args["title"].as_str().unwrap_or("未命名任务");
-                            Ok(format!("任务已添加: {}", title))
+                            let title = args["title"].as_str().unwrap_or("unnamed task");
+                            Ok(format!("Task added: {}", title))
                         }
-                        "list" => Ok("暂无待办任务".to_string()),
-                        "done" => Ok("任务已标记完成".to_string()),
-                        "remove" => Ok("任务已删除".to_string()),
-                        _ => Err(format!("未知操作: {}", action)),
+                        "list" => Ok("No pending tasks".to_string()),
+                        "done" => Ok("Task marked as done".to_string()),
+                        "remove" => Ok("Task removed".to_string()),
+                        _ => Err(format!("Unknown action '{}'. Supported: add, list, done, remove", action)),
                     }
+                }),
+            }).await;
+
+            // search_replace tool - batch find and replace across files
+            registry_clone.register(ToolDef {
+                name: "search_replace".to_string(),
+                description: "Batch find and replace text across multiple files using regex. Params: pattern (required, regex), replacement (required), path (optional directory, default workspace), include (optional file filter like '*.rs' or '*.tsx')".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "Regex pattern to search for"
+                        },
+                        "replacement": {
+                            "type": "string",
+                            "description": "Replacement text"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Directory to search in (defaults to workspace root)"
+                        },
+                        "include": {
+                            "type": "string",
+                            "description": "File filter, e.g. '*.rs' or '*.tsx'"
+                        }
+                    },
+                    "required": ["pattern", "replacement"]
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                    let pattern = args["pattern"].as_str().ok_or("Missing 'pattern' parameter")?;
+                    let replacement = args["replacement"].as_str().ok_or("Missing 'replacement' parameter")?;
+                    let base = args["path"].as_str().unwrap_or(".");
+                    let base = match base.trim_end_matches('*').trim_end_matches('/').trim_end_matches('\\') {
+                        "" | "." | "workspace" => ".",
+                        other => other,
+                    };
+                    let include = args["include"].as_str();
+
+                    let resolved_base = resolve_path(base, &args);
+                    let re = regex::RegexBuilder::new(pattern)
+                        .multi_line(true)
+                        .build()
+                        .map_err(|e| format!("Invalid regex pattern: {}", e))?;
+
+                    let walker = walkdir::WalkDir::new(&resolved_base).max_depth(20);
+                    let mut total_changes = 0usize;
+                    let mut changed_files: Vec<String> = Vec::new();
+
+                    for entry in walker.into_iter().filter_map(|e| e.ok()) {
+                        if entry.file_type().is_dir() { continue; }
+                        if let Some(ref inc) = include {
+                            if let Some(name) = entry.file_name().to_str() {
+                                if !glob_match(name, inc) { continue; }
+                            }
+                        }
+                        if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                            if re.is_match(&content) {
+                                let new_content = re.replace_all(&content, replacement);
+                                if new_content != content {
+                                    if std::fs::write(entry.path(), new_content.as_ref()).is_ok() {
+                                        total_changes += 1;
+                                        changed_files.push(entry.path().display().to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if changed_files.is_empty() {
+                        Ok("No matches found - no files were modified".to_string())
+                    } else {
+                        Ok(format!(
+                            "Replaced matches in {} file(s):\n{}",
+                            total_changes,
+                            changed_files.join("\n")
+                        ))
+                    }
+                }),
+            }).await;
+
+            // list_dir tool - list directory contents
+            registry_clone.register(ToolDef {
+                name: "list_dir".to_string(),
+                description: "List files and directories. Params: path (optional, default workspace). Returns directory entries with name, type, and size".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Directory path (relative to workspace or absolute)"
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "Max recursion depth (default 1, use 0 for unlimited)"
+                        }
+                    },
+                    "required": []
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                    let base = args["path"].as_str().unwrap_or(".");
+                    let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                    let resolved_base = resolve_path(base, &args);
+
+                    if !resolved_base.exists() {
+                        return Err(format!("Directory not found: {}", resolved_base.display()));
+                    }
+                    if !resolved_base.is_dir() {
+                        return Err(format!("Not a directory: {}", resolved_base.display()));
+                    }
+
+                    let max_depth = if depth == 0 { usize::MAX } else { depth };
+                    let walker = walkdir::WalkDir::new(&resolved_base).max_depth(max_depth);
+                    let mut entries: Vec<String> = Vec::new();
+
+                    for entry in walker.into_iter().filter_map(|e| e.ok()) {
+                        let indent = entry.depth().saturating_sub(1);
+                        let prefix = "  ".repeat(indent);
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with('.') || name == "node_modules" { continue; }
+                        let file_type = if entry.file_type().is_dir() { "📁" } else { "📄" };
+                        let size = entry.metadata().ok().map(|m| m.len()).unwrap_or(0);
+                        let size_str = if size > 1024 * 1024 {
+                            format!(" ({:.1} MB)", size as f64 / 1024.0 / 1024.0)
+                        } else if size > 1024 {
+                            format!(" ({:.1} KB)", size as f64 / 1024.0)
+                        } else if size > 0 {
+                            format!(" ({} B)", size)
+                        } else {
+                            String::new()
+                        };
+                        entries.push(format!("{}{} {}{}", prefix, file_type, name, size_str));
+                    }
+
+                    if entries.is_empty() {
+                        Ok("(empty directory)".to_string())
+                    } else {
+                        Ok(entries.join("\n"))
+                    }
+                }),
+            }).await;
+
+            // delete_file tool
+            registry_clone.register(ToolDef {
+                name: "delete_file".to_string(),
+                description: "Delete a file or directory (recursive). Params: path (required)".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "File or directory path to delete"
+                        }
+                    },
+                    "required": ["path"]
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                    let path_str = args["path"].as_str().ok_or("Missing 'path' parameter")?;
+                    let resolved = resolve_path(path_str, &args);
+
+                    if !resolved.exists() {
+                        return Err(format!("Path not found: {}", resolved.display()));
+                    }
+
+                    if resolved.is_dir() {
+                        std::fs::remove_dir_all(&resolved)
+                            .map_err(|e| format!("Failed to delete directory: {}", e))?;
+                        Ok(format!("Deleted directory: {}", resolved.display()))
+                    } else {
+                        std::fs::remove_file(&resolved)
+                            .map_err(|e| format!("Failed to delete file: {}", e))?;
+                        Ok(format!("Deleted file: {}", resolved.display()))
+                    }
+                }),
+            }).await;
+
+            // rename_file tool
+            registry_clone.register(ToolDef {
+                name: "rename_file".to_string(),
+                description: "Rename or move a file/directory. Params: path (required, source), new_path (required, destination)".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Source file or directory path"
+                        },
+                        "new_path": {
+                            "type": "string",
+                            "description": "Destination file or directory path"
+                        }
+                    },
+                    "required": ["path", "new_path"]
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                    let old_path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
+                    let new_path = args["new_path"].as_str().ok_or("Missing 'new_path' parameter")?;
+                    let old_resolved = resolve_path(old_path, &args);
+                    let new_resolved = resolve_path(new_path, &args);
+
+                    if !old_resolved.exists() {
+                        return Err(format!("Source not found: {}", old_resolved.display()));
+                    }
+                    if new_resolved.exists() {
+                        return Err(format!("Destination already exists: {}", new_resolved.display()));
+                    }
+
+                    // Create parent directory if needed
+                    if let Some(parent) = new_resolved.parent() {
+                        if !parent.exists() {
+                            std::fs::create_dir_all(parent)
+                                .map_err(|e| format!("Failed to create destination directory: {}", e))?;
+                        }
+                    }
+
+                    std::fs::rename(&old_resolved, &new_resolved)
+                        .map_err(|e| format!("Failed to rename: {}", e))?;
+
+                    Ok(format!("Renamed: {} -> {}", old_resolved.display(), new_resolved.display()))
+                }),
+            }).await;
+
+            // apply_patch tool - apply unified diff
+            registry_clone.register(ToolDef {
+                name: "apply_patch".to_string(),
+                description: "Apply a unified diff (patch) to files. The diff format is standard 'diff -u' output with ---/+++ headers and @@ hunks. Params: diff (required, the patch content)".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "diff": {
+                            "type": "string",
+                            "description": "Unified diff content to apply"
+                        }
+                    },
+                    "required": ["diff"]
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                    let diff = args["diff"].as_str().ok_or("Missing 'diff' parameter")?;
+                    apply_unified_diff(diff, &args).map(|summary| {
+                        format!("Patch applied successfully:\n{}", summary.join("\n"))
+                    })
+                }),
+            }).await;
+
+            // lsp tool - semantic code analysis
+            registry_clone.register(ToolDef {
+                name: "lsp".to_string(),
+                description: "Semantic code analysis via language server. Supports: definition (find where something is defined), references (find all usages), diagnostics (get compile/lint errors), hover (get type info/documentation). Params: action (required), file (required), symbol (optional name), line/character (optional position)".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["definition", "references", "diagnostics", "hover"],
+                            "description": "Action to perform"
+                        },
+                        "file": {
+                            "type": "string",
+                            "description": "Path to the source file"
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name to look up (used for definition/references/hover)"
+                        },
+                        "line": {
+                            "type": "integer",
+                            "description": "Line number (0-based, optional)"
+                        },
+                        "character": {
+                            "type": "integer",
+                            "description": "Character offset (0-based, optional)"
+                        }
+                    },
+                    "required": ["action", "file"]
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                    let action = args["action"].as_str().ok_or("Missing 'action' parameter")?;
+                    let file = args["file"].as_str().ok_or("Missing 'file' parameter")?;
+                    let resolved_file = resolve_path(file, &args);
+                    let symbol = args["symbol"].as_str();
+
+                    if !resolved_file.exists() {
+                        return Err(format!("File not found: {}", resolved_file.display()));
+                    }
+
+                    // Determine language server command from file extension
+                    let ext = resolved_file.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let server_cmd: String = match ext {
+                        "rs" => "rust-analyzer".to_string(),
+                        "ts" | "tsx" | "js" | "jsx" => {
+                            // 优先使用项目内 node_modules/.bin 中的版本
+                            let node_bin = std::path::Path::new("node_modules/.bin/typescript-language-server");
+                            if node_bin.exists() {
+                                node_bin.to_string_lossy().to_string()
+                            } else if cfg!(target_os = "windows") {
+                                // Windows: 检查 node_modules/.bin/typescript-language-server.cmd
+                                let node_bat = std::path::Path::new("node_modules/.bin/typescript-language-server.cmd");
+                                if node_bat.exists() {
+                                    node_bat.to_string_lossy().to_string()
+                                } else {
+                                    "typescript-language-server".to_string()
+                                }
+                            } else {
+                                "typescript-language-server".to_string()
+                            }
+                        }
+                        "py" => "pylsp".to_string(),
+                        "go" => "gopls".to_string(),
+                        "java" => "eclipse.jdt.ls".to_string(),
+                        _ => return Err(format!("No language server available for .{} files. Try using grep or search_replace as fallback. Supported: .rs, .ts, .tsx, .js, .jsx, .py, .go, .java", ext)),
+                    };
+
+                    let content = std::fs::read_to_string(&resolved_file)
+                        .map_err(|e| format!("Failed to read file: {}", e))?;
+
+                    let file_path = resolved_file.to_string_lossy().to_string();
+                    let root_uri = resolved_file.parent()
+                        .map(|p| format!("file:///{}", p.to_string_lossy().replace('\\', "/")))
+                        .unwrap_or_default();
+
+                    let mut client = crate::tools::lsp::LspClient::new(&server_cmd);
+                    client.start(&root_uri).map_err(|e| format!("LSP start failed: {}", e))?;
+
+                    let (line, character) = if let (Some(l), Some(c)) = (
+                        args.get("line").and_then(|v| v.as_u64()),
+                        args.get("character").and_then(|v| v.as_u64())
+                    ) {
+                        (l as u32, c as u32)
+                    } else if let Some(sym) = symbol {
+                        crate::tools::lsp::find_position(&content, sym, None)
+                    } else {
+                        (0, 0)
+                    };
+
+                    let result = match action {
+                        "definition" => {
+                            let defs = client.goto_definition(&file_path, line, character)?;
+                            if defs.is_empty() {
+                                "No definition found".to_string()
+                            } else {
+                                let lines: Vec<String> = defs.iter().map(|d| {
+                                    let uri = d.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                                    let range = d.get("range").or_else(|| d.get("targetRange"));
+                                    let start = range.and_then(|r| r.get("start")).unwrap_or(&serde_json::Value::Null);
+                                    let rl = start.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let rc = start.get("character").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    format!("{}:{}:{}", uri, rl + 1, rc)
+                                }).collect();
+                                format!("Definition found at:\n{}", lines.join("\n"))
+                            }
+                        }
+                        "references" => {
+                            let refs = client.find_references(&file_path, line, character)?;
+                            if refs.is_empty() {
+                                "No references found".to_string()
+                            } else {
+                                let lines: Vec<String> = refs.iter().map(|r| {
+                                    let uri = r.get("uri").and_then(|v| v.as_str()).unwrap_or("");
+                                    let start = r.get("range").and_then(|r| r.get("start")).unwrap_or(&serde_json::Value::Null);
+                                    let rl = start.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let rc = start.get("character").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    format!("{}:{}:{}", uri, rl + 1, rc)
+                                }).collect();
+                                format!("Found {} reference(s):\n{}", lines.len(), lines.join("\n"))
+                            }
+                        }
+                        "diagnostics" => {
+                            let diags = client.get_diagnostics(&file_path, &content)?;
+                            if diags.is_empty() {
+                                "No diagnostics - file looks clean".to_string()
+                            } else {
+                                let lines: Vec<String> = diags.iter().map(|d| {
+                                    let msg = d.get("message").and_then(|v| v.as_str()).unwrap_or("");
+                                    let severity = match d.get("severity").and_then(|v| v.as_u64()).unwrap_or(0) {
+                                        1 => "ERROR",
+                                        2 => "WARNING",
+                                        3 => "INFO",
+                                        4 => "HINT",
+                                        _ => "UNKNOWN",
+                                    };
+                                    let range = d.get("range").unwrap_or(&serde_json::Value::Null);
+                                    let start = range.get("start").unwrap_or(&serde_json::Value::Null);
+                                    let rl = start.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    let rc = start.get("character").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    format!("{}:{} {}: {}", rl + 1, rc, severity, msg)
+                                }).collect();
+                                format!("Found {} diagnostic(s):\n{}", lines.len(), lines.join("\n"))
+                            }
+                        }
+                        "hover" => {
+                            let info = client.hover(&file_path, line, character)?;
+                            if info.is_empty() {
+                                "No information available at this position".to_string()
+                            } else {
+                                format!("```\n{}\n```", info)
+                            }
+                        }
+                        _ => return Err(format!("Unknown action '{}'. Supported: definition, references, diagnostics, hover", action)),
+                    };
+
+                    client.shutdown();
+                    Ok(result)
                 }),
             }).await;
 
@@ -798,12 +1231,12 @@ fn html_unescape(s: &str) -> String {
 /// 格式化搜索结果输出
 fn format_results(results: &[SearchResult], count: usize, query: &str, source: &str) -> String {
     if results.is_empty() {
-        return format!("未找到与 '{}' 相关的搜索结果", query);
+        return format!("No search results for '{}'", query);
     }
 
     let mut output = Vec::new();
-    let source_tag = if source.is_empty() { String::new() } else { format!(" - 来源: {}", source) };
-    output.push(format!("🔍 搜索结果（共 {} 条）{}", results.len(), source_tag));
+    let source_tag = if source.is_empty() { String::new() } else { format!(" - Source: {}", source) };
+    output.push(format!("🔍 Search results ({} total){}", results.len(), source_tag));
     output.push("---".to_string());
 
     for (idx, result) in results.iter().take(count).enumerate() {
@@ -817,4 +1250,128 @@ fn format_results(results: &[SearchResult], count: usize, query: &str, source: &
     }
 
     output.join("\n")
+}
+
+/// Apply a unified diff patch to files
+fn apply_unified_diff(diff: &str, _args: &serde_json::Value) -> Result<Vec<String>, String> {
+    let mut summary: Vec<String> = Vec::new();
+    let mut current_file: Option<String> = None;
+    let mut hunks: Vec<(usize, Vec<String>)> = Vec::new(); // (start_line, hunk_lines)
+
+    // Parse unified diff format
+    for line in diff.lines() {
+        if line.starts_with("--- ") {
+            continue; // Skip original file header
+        }
+        if line.starts_with("+++ ") {
+            // New file header -> finalize current file
+            if let Some(ref file) = current_file {
+                if !hunks.is_empty() {
+                    apply_hunks_to_file(file, &hunks)?;
+                    summary.push(format!("  Patched: {}", file));
+                }
+            }
+            let path = &line[4..].trim();
+            current_file = Some(path.to_string());
+            hunks.clear();
+            continue;
+        }
+        if line.starts_with("@@ ") {
+            // Parse hunk header: @@ -start,count +start,count @@
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                if let Some(new_start) = parts.get(1).and_then(|s| s.split(',').next()) {
+                    let start_line = new_start.trim_start_matches('+').parse::<usize>().unwrap_or(1);
+                    hunks.push((start_line, Vec::new()));
+                }
+            }
+            continue;
+        }
+
+        if let Some((_, ref mut lines)) = hunks.last_mut() {
+            lines.push(line.to_string());
+        }
+    }
+
+    // Apply last file
+    if let Some(ref file) = current_file {
+        if !hunks.is_empty() {
+            apply_hunks_to_file(file, &hunks)?;
+            summary.push(format!("  Patched: {}", file));
+        }
+    }
+
+    if summary.is_empty() {
+        return Err("No patch hunks to apply - check diff format".to_string());
+    }
+
+    Ok(summary)
+}
+
+/// Apply parsed hunks to a single file
+fn apply_hunks_to_file(file: &str, hunks: &[(usize, Vec<String>)]) -> Result<(), String> {
+    let path = std::path::Path::new(file);
+    let content = if path.exists() {
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("Failed to read '{}': {}", file, e))?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+    // Apply hunks in reverse order to preserve line numbers
+    for (hunk_start, hunk_lines) in hunks.iter().rev() {
+        let mut insertions: Vec<(usize, String)> = Vec::new();
+        let mut deletions: Vec<usize> = Vec::new();
+        let mut current_line = *hunk_start - 1; // 0-based
+
+        for hunk_line in hunk_lines {
+            if hunk_line.starts_with("+") {
+                // Insertion
+                let text = &hunk_line[1..];
+                // If next line in hunk is a context line, insert before that
+                insertions.push((current_line.min(lines.len()), text.to_string()));
+            } else if hunk_line.starts_with("-") {
+                // Deletion
+                if current_line < lines.len() {
+                    deletions.push(current_line);
+                }
+                // Don't advance line number for deletions
+            } else if hunk_line.starts_with(" ") {
+                // Context - advance line number
+                current_line = current_line.saturating_add(1);
+            }
+        }
+
+        // Apply deletions (reverse order to preserve indices)
+        for &dl in deletions.iter().rev() {
+            if dl < lines.len() {
+                lines.remove(dl);
+            }
+        }
+
+        // Apply insertions (reverse order to preserve indices, then fix order)
+        let mut offset = 0i32;
+        for (pos, text) in &insertions {
+            let adj_pos = ((*pos as i32) + offset).max(0) as usize;
+            // Check if we should replace or insert
+            if adj_pos <= lines.len() {
+                lines.insert(adj_pos, text.clone());
+                offset += 1;
+            }
+        }
+    }
+
+    // Ensure parent dir exists
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+
+    std::fs::write(path, lines.join("\n"))
+        .map_err(|e| format!("Failed to write '{}': {}", file, e))?;
+
+    Ok(())
 }

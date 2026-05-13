@@ -48,8 +48,8 @@ pub struct AgentMessage {
     pub first_reasoning: Option<String>,
     /// 后续思考内容数组（CoT）- 用于前端显示为"Thought"
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasonings: Option<Vec<String>>,
-    /// 兼容旧字段：完整的推理内容（已废弃，请使用 first_reasoning 和 reasonings）
+    pub again_reasonings: Option<Vec<String>>,
+    /// 兼容旧字段：完整的推理内容（已废弃，请使用 first_reasoning 和 again_reasonings）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
 }
@@ -96,7 +96,7 @@ impl AgentSession {
             tool_call_id: None,
             tool_name: None,
             first_reasoning: None,
-            reasonings: None,
+            again_reasonings: None,
             reasoning: None,
         });
     }
@@ -110,7 +110,7 @@ impl AgentSession {
             tool_call_id: None,
             tool_name: None,
             first_reasoning: None,
-            reasonings: None,
+            again_reasonings: None,
             reasoning: None,
         });
     }
@@ -124,7 +124,7 @@ impl AgentSession {
             tool_call_id: Some(tool_call_id.to_string()),
             tool_name: Some(tool_name.to_string()),
             first_reasoning: None,
-            reasonings: None,
+            again_reasonings: None,
             reasoning: None,
         });
     }
@@ -154,7 +154,7 @@ impl AgentSession {
             tool_call_id: None,
             tool_name: None,
             first_reasoning: None,
-            reasonings: None,
+            again_reasonings: None,
             reasoning: None,
         };
 

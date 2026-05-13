@@ -9,6 +9,8 @@ pub mod skills;
 pub mod server;
 
 use once_cell::sync::Lazy;
+use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -26,6 +28,10 @@ pub struct AppState {
     pub session_store: storage::SessionStore,
     pub memory_store: memory::store::MemoryStore,
     pub skills_loader: skills::loader::SkillsLoader,
+    /// 正在运行的流式会话取消标志表
+    /// key: session_id, value: 取消标志
+    /// 用于 SSE cancel 端点中断正在进行的流式生成
+    pub cancel_map: HashMap<String, Arc<AtomicBool>>,
 }
 
 impl AppState {
@@ -40,6 +46,7 @@ impl AppState {
             skills_loader: skills::loader::SkillsLoader::new(&config.skills_dir()),
             config,
             models_config,
+            cancel_map: HashMap::new(),
         }
     }
 }
