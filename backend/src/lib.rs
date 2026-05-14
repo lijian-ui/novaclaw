@@ -7,6 +7,7 @@ pub mod tools;
 pub mod agent;
 pub mod memory;
 pub mod skills;
+pub mod cron;
 pub mod server;
 
 use once_cell::sync::Lazy;

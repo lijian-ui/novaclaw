@@ -461,6 +461,17 @@ pub fn get_logs_dir() -> PathBuf {
     get_base_dir().join("logs")
 }
 
+/// 获取定时任务存放目录
+/// 
+/// | 平台   | 路径示例                                  |
+/// |--------|-------------------------------------------|
+/// | Win    | %LOCALAPPDATA%\novaclaw\cron\              |
+/// | macOS  | ~/Library/Application Support/novaclaw/cron/ |
+/// | Linux  | ~/.local/share/novaclaw/cron/              |
+pub fn get_cron_dir() -> PathBuf {
+    get_base_dir().join("cron")
+}
+
 /// 确保所有必要目录存在，不存在则创建
 pub fn ensure_directories_exists() {
     let dirs = [
@@ -471,6 +482,7 @@ pub fn ensure_directories_exists() {
         get_memories_dir(),
         get_sessions_dir(),
         get_logs_dir(),
+        get_cron_dir(),
     ];
 
     for dir in dirs {

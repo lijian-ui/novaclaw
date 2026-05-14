@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ArrowLeft, Info, AlertTriangle, XCircle, Bug, Terminal, Loader2 } from 'lucide-react'
+import { ArrowLeft, Info, AlertTriangle, XCircle, Bug, Terminal, Loader2, BugOff } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 type LogLevel = 'all' | 'info' | 'warn' | 'error' | 'debug'
@@ -8,7 +8,6 @@ interface LogEntry {
   id: number
   timestamp: string
   level: string
-  module: string
   message: string
   task_id?: string | null
 }
@@ -38,15 +37,6 @@ function normalizeLevel(level: string): string {
   return l
 }
 
-/// 后端 API 可接受的日志级别值
-const backendLevels = {
-  all: 'trace',
-  debug: 'debug',
-  info: 'info',
-  warn: 'warn',
-  error: 'error',
-}
-
 interface LogsPageProps {
   onBack?: () => void
 }
@@ -57,15 +47,16 @@ export function LogsPage({ onBack }: LogsPageProps) {
   const [filter, setFilter] = useState<LogLevel>('all')
   const [loading, setLoading] = useState(true)
   const [connected, setConnected] = useState(false)
+  const [debugMode, setDebugMode] = useState(() => localStorage.getItem('novaclaw_log_debug') === 'true')
   const scrollRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const idCounterRef = useRef(0)
 
-  // 加载历史日志（根据 filter 变化重新加载）
+  // 只加载一次历史日志
   const loadHistory = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}?level=${filter === 'all' ? '' : filter}`)
+      const res = await fetch(`${API_BASE}`)
       const data = await res.json()
       if (data.success && Array.isArray(data.data)) {
         setLogs(data.data.map((entry: any) => {
@@ -74,7 +65,6 @@ export function LogsPage({ onBack }: LogsPageProps) {
             id: idCounterRef.current,
             timestamp: entry.timestamp || '',
             level: normalizeLevel(entry.level),
-            module: entry.module || 'System',
             message: entry.message || '',
             task_id: entry.task_id || null,
           }
@@ -82,14 +72,11 @@ export function LogsPage({ onBack }: LogsPageProps) {
       }
     } catch { /* ignore */ }
     setLoading(false)
-  }, [filter])
+  }, [])
 
-  // 首次挂载和 filter 变化时加载历史
-  useEffect(() => {
-    loadHistory()
-  }, [loadHistory])
+  useEffect(() => { loadHistory() }, [loadHistory])
 
-  // 连接到 WebSocket（独立于历史加载，避免闭包过期）
+  // 连接到 WebSocket
   useEffect(() => {
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
@@ -107,7 +94,6 @@ export function LogsPage({ onBack }: LogsPageProps) {
           const entry = msg.data as {
             timestamp?: string
             level?: string
-            module?: string
             message?: string
             task_id?: string | null
           }
@@ -118,9 +104,8 @@ export function LogsPage({ onBack }: LogsPageProps) {
               const newEntry: LogEntry = {
                 id,
                 timestamp: entry.timestamp || new Date().toISOString().replace('T', ' ').slice(0, 19),
-                level: normalizeLevel(entry.level),
-                module: entry.module || 'System',
-                message: entry.message,
+                level: normalizeLevel(entry.level || 'info'),
+                message: entry.message || '',
                 task_id: entry.task_id || null,
               }
               const updated = [...prev, newEntry]
@@ -134,25 +119,37 @@ export function LogsPage({ onBack }: LogsPageProps) {
     return () => { ws.close(); wsRef.current = null }
   }, [])
 
-  // 切换到新的日志级别
-  const handleLevelChange = useCallback(async (lv: LogLevel) => {
-    setFilter(lv)
-    const backendLevel = backendLevels[lv]
+  // 挂载时同步后端日志级别（如果之前开启了 Debug）
+  useEffect(() => {
+    if (debugMode) {
+      fetch(`${API_BASE}/level`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ level: 'debug' }),
+      }).catch(() => {})
+    }
+  }, [])
+
+  // Debug 模式开关：切换后端日志级别 info ↔ debug
+  const toggleDebugMode = useCallback(async () => {
+    const next = !debugMode
+    setDebugMode(next)
+    localStorage.setItem('novaclaw_log_debug', String(next))
     try {
       await fetch(`${API_BASE}/level`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ level: backendLevel }),
+        body: JSON.stringify({ level: next ? 'debug' : 'info' }),
       })
     } catch { /* ignore */ }
-  }, [])
+  }, [debugMode])
 
-  // Auto scroll
+  // Auto scroll（filter 变化或新日志到达时始终滚到底部）
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [logs])
+  }, [filter, logs.length])
 
   const levels: LogLevel[] = ['all', 'info', 'warn', 'error', 'debug']
   const filteredLogs = filter === 'all' ? logs : logs.filter(l => l.level === filter)
@@ -179,14 +176,14 @@ export function LogsPage({ onBack }: LogsPageProps) {
         </div>
       </div>
 
-      {/* 日志级别过滤按钮（点击时同步调整后端日志级别） */}
+      {/* 日志级别过滤按钮（仅前端过滤） + Debug 模式开关 */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0 overflow-x-auto">
         {levels.map(lv => {
           const isActive = filter === lv
           const cfg = levelConfig[lv]
           const Icon = cfg.icon
           return (
-            <button key={lv} onClick={() => handleLevelChange(lv)}
+            <button key={lv} onClick={() => setFilter(lv)}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition-colors ${
                 isActive ? 'bg-blue-500/20 text-blue-400' : 'bg-foreground/5 text-foreground/50 hover:bg-foreground/10'
               }`}>
@@ -195,6 +192,17 @@ export function LogsPage({ onBack }: LogsPageProps) {
             </button>
           )
         })}
+
+        <div className="w-px h-5 bg-border mx-1" />
+
+        {/* Debug 模式开关 */}
+        <button onClick={toggleDebugMode}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs whitespace-nowrap transition-colors ${
+            debugMode ? 'bg-amber-500/20 text-amber-400' : 'bg-foreground/5 text-foreground/50 hover:bg-foreground/10'
+          }`}>
+          {debugMode ? <Bug className="w-3.5 h-3.5" /> : <BugOff className="w-3.5 h-3.5" />}
+          {debugMode ? 'Debug 已开启' : 'Debug 已关闭'}
+        </button>
       </div>
 
       {/* 日志内容 */}

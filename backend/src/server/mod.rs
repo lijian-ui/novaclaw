@@ -21,6 +21,9 @@ pub async fn start() {
         .allow_methods(Any)
         .allow_headers(Any);
 
+        // 启动 Cron 调度器
+    crate::cron::start_scheduler().await;
+
     // 构建路由：静态文件托管优先于 API 路由
     let app = Router::new()
         .nest("/api", routes::build())

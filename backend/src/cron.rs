@@ -168,7 +168,7 @@ async fn tick() -> Result<(), String> {
         let store = CRON_STORE.lock().await;
         store.get_due_jobs().len()
     };
-    tracing::info!("[Cron] 检查到期任务... 发现 {} 个待执行", due_jobs_count);
+    tracing::info!("[Cron] 检查到期任务... 发现 {} 个待执行的定时任务", due_jobs_count);
 
     let due_jobs = {
         let store = CRON_STORE.lock().await;

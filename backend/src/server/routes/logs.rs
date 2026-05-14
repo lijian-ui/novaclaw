@@ -20,7 +20,8 @@ struct SetLevelReq {
 async fn get_system_logs(
     axum::extract::Query(params): axum::extract::Query<LogQuery>,
 ) -> Json<serde_json::Value> {
-    let entries = logging::read_system_logs(params.level.as_deref());
+    let level_filter = params.level.filter(|l| !l.is_empty());
+    let entries = logging::read_system_logs(level_filter.as_deref());
     match entries {
         Ok(entries) => Json(serde_json::json!({
             "success": true,
@@ -96,13 +97,10 @@ async fn set_log_level(Json(req): Json<SetLevelReq>) -> Json<serde_json::Value> 
     }
 
     match logging::set_log_level(&level) {
-        Ok(_) => {
-            tracing::info!("日志级别已切换为: {}", level);
-            Json(serde_json::json!({
-                "success": true,
-                "message": format!("日志级别已切换为 {}", level)
-            }))
-        }
+        Ok(_) => Json(serde_json::json!({
+            "success": true,
+            "message": format!("日志级别已切换为 {}", level)
+        })),
         Err(e) => Json(serde_json::json!({
             "success": false,
             "message": e

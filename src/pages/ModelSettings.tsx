@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, Play, Trash2, Pencil, Star, ChevronRight, ChevronDown, X, Check, ArrowLeft } from 'lucide-react'
 import { useApi } from '@/hooks/useApi'
+import { useChat } from '@/contexts/ChatContext'
 import type { ProviderConfig } from '@/types'
 import { useTranslation } from 'react-i18next'
 
@@ -73,6 +74,7 @@ interface ModelSettingsProps {
 
 export function ModelSettings({ onBack }: ModelSettingsProps) {
   const { t } = useTranslation()
+  const chat = useChat()
   const { listProviders, saveProvider, testConnection, setDefaultModel, getDefaultModel } = useApi()
 
   const [providers, setProviders] = useState<Provider[]>([])
@@ -93,6 +95,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       if (apiProviders.length > 0) {
         const localProviders = apiProvidersToLocal(apiProviders)
         if (defaultModelName) {
+          chat.setDefaultModelName(defaultModelName)
           for (const provider of localProviders) {
             for (const model of provider.models) {
               model.isDefault = model.name === defaultModelName
@@ -260,6 +263,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       models: p.models.map(m => ({ ...m, isDefault: m.id === modelId })),
     })))
     if (defaultModelName) {
+      chat.setDefaultModelName(defaultModelName)
       setDefaultModel(defaultModelName).catch(() => {})
     }
   }

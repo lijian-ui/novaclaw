@@ -379,6 +379,113 @@ const markdownComponents: Components = {
   strong({ children, ...props }) { return <strong className="font-semibold text-foreground" {...props}>{children}</strong> },
 }
 
+// ─── TerminalBlock ───────────────────────────────────────────────
+// 终端风格的工具执行展示组件，用于 execute_command 工具
+function TerminalBlock({
+  toolName,
+  argsJson,
+  output,
+  isExecuting,
+  isError,
+}: {
+  toolName?: string
+  argsJson: string
+  output?: string
+  isExecuting?: boolean
+  isError?: boolean
+}) {
+  const [expanded, setExpanded] = useState(isExecuting)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const { isDark } = useTheme()
+  const { icon: Icon, color } = getToolMeta(toolName)
+  const commandStr = extractToolParams(toolName, argsJson)
+  const outputLines = output ? output.split('\n').length : 0
+
+  // 执行中自动展开；执行完成后如果有输出也保持展开
+  useEffect(() => {
+    if (isExecuting || output) {
+      setExpanded(true)
+    }
+  }, [isExecuting, output])
+
+  // 自动滚动到最底部
+  useEffect(() => {
+    if (expanded && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [output, expanded])
+
+  return (
+    <div className={`my-2 rounded-lg border overflow-hidden ${
+      isError
+        ? 'border-red-500/30'
+        : 'border-green-500/20'
+    }`} style={{ background: isDark ? '#0d1117' : '#f8f9fa' }}>
+      {/* 终端头部 - 点击折叠/展开 */}
+      <button
+        onClick={() => setExpanded(v => !v)}
+        className={`w-full flex items-center gap-2 px-4 py-2.5 text-xs transition-colors ${
+          isDark ? 'hover:bg-white/[0.03]' : 'hover:bg-black/[0.03]'
+        }`}
+      >
+        {expanded
+          ? <ChevronDown className={`w-3.5 h-3.5 shrink-0 ${isDark ? 'text-green-500/50' : 'text-green-600/60'}`} />
+          : <ChevronRight className={`w-3.5 h-3.5 shrink-0 ${isDark ? 'text-green-500/50' : 'text-green-600/60'}`} />
+        }
+        <Icon className={`w-4 h-4 shrink-0 ${color}`} />
+        <span className="text-blue-500/60 font-medium">执行命令:</span>
+        <span className={`font-semibold font-mono truncate ${isDark ? 'text-green-500' : 'text-green-700'}`}>{commandStr}</span>
+
+        {/* 执行状态指示 */}
+        {isExecuting && (
+          <span className="ml-auto flex items-center gap-1 text-[10px] text-amber-400/70">
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+            执行中...
+          </span>
+        )}
+        {isError && (
+          <span className="ml-auto text-[10px] text-red-400/70">执行出错</span>
+        )}
+        {!isExecuting && !isError && output && (
+          <span className={`ml-auto text-[10px] ${isDark ? 'text-green-500/50' : 'text-green-600/60'}`}>{outputLines} 行</span>
+        )}
+      </button>
+
+      {/* 终端输出内容 */}
+      <div
+        className={`border-t transition-all duration-200 overflow-hidden ${
+          isDark ? 'border-green-500/10' : 'border-green-600/15'
+        }`}
+        style={{
+          maxHeight: expanded ? '600px' : '0px',
+          opacity: expanded ? 1 : 0,
+        }}
+      >
+        <div
+          ref={scrollRef}
+          className="p-3 text-xs leading-relaxed font-mono whitespace-pre-wrap overflow-y-auto"
+          style={{ maxHeight: '600px', background: isDark ? '#0d1117' : '#f8f9fa', color: isDark ? '#22c55e' : '#166534' }}
+        >
+          {/* 命令提示符 */}
+          <div className={`flex items-center gap-2 mb-2 select-none ${isDark ? 'text-green-500/60' : 'text-green-700/60'}`}>
+            <span>{'>'}</span>
+            <span className={isDark ? 'text-green-400/90' : 'text-green-700/90'}>{commandStr}</span>
+          </div>
+
+          {/* 输出内容 */}
+          {output ? (
+            <div className={`${isError ? (isDark ? 'text-red-400/80' : 'text-red-600/80') : (isDark ? 'text-green-400/70' : 'text-green-700/80')}`}>
+              {output}
+            </div>
+          ) : !isExecuting ? (
+            <div className={isDark ? 'text-green-500/30' : 'text-green-700/40'}>（命令已结束）</div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── 类型定义 ────────────────────────────────────────────────────
 export interface AgentStepInfo {
   stepType: string
@@ -432,18 +539,41 @@ function renderAgentStep(msg: MessageData, _isStreaming: boolean): JSX.Element |
   }
   
   if (st === 'tool_call' || st === 'function_call' || st === 'tool_call_done' || st === 'tool_error') {
+    const toolName = msg.agentStep.toolName
+
+    // execute_command 和 terminal 工具使用终端风格渲染
+    if (toolName === 'execute_command' || toolName === 'terminal') {
+      const isExecuting = st === 'tool_call' || st === 'function_call'
+      const isError = st === 'tool_error'
+      return (
+        <div key={msg.id}>
+          <TerminalBlock
+            toolName={toolName}
+            argsJson={msg.agentStep.content}
+            output={msg.agentStep.toolResult}
+            isExecuting={isExecuting}
+            isError={isError}
+          />
+        </div>
+      )
+    }
+
+    // 其他工具使用简单的一行显示
     return (
       <div key={msg.id}>
         <ToolCallBlock
-          toolName={msg.agentStep.toolName}
+          toolName={toolName}
           argsJson={msg.agentStep.content}
         />
       </div>
     )
   }
   
+  // tool_result / function_result：如果是 execute_command 则跳过（已在 tool_call 中展示）
   if (st === 'tool_result' || st === 'function_result') {
-    return null
+    if (msg.agentStep.toolName === 'execute_command' || msg.agentStep.toolName === 'terminal') {
+      return null
+    }
   }
   
   return null

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 
 // ── Circuit Breaker 状态常量 ────────────────────────────────────────────────
 
@@ -206,7 +206,7 @@ pub struct ToolDef {
     pub name: String,
     pub description: String,
     pub parameters: Value,
-    pub handler: Arc<dyn Fn(Value) -> Result<String, String> + Send + Sync>,
+    pub handler: Arc<dyn Fn(Value, Option<mpsc::UnboundedSender<String>>) -> Result<String, String> + Send + Sync>,
 }
 
 /// 工具注册表
@@ -260,7 +260,8 @@ impl ToolRegistry {
     }
 
     /// 执行工具（受熔断器 + 超时 + spawn_blocking 保护）
-    pub async fn execute(&self, name: &str, mut args: Value, workspace: Option<&str>) -> Result<String, String> {
+    /// `chunk_tx` 可选：用于流式输出（如 execute_command 的实时终端输出）
+    pub async fn execute(&self, name: &str, mut args: Value, workspace: Option<&str>, chunk_tx: Option<mpsc::UnboundedSender<String>>) -> Result<String, String> {
         let (handler, circuit_breaker) = {
             let tools = self.tools.read().await;
             let cbs = self.circuit_breakers.read().await;
@@ -289,12 +290,13 @@ impl ToolRegistry {
             "write_file" | "edit_file" => 60,
             "glob" | "list_dir" | "delete_file" | "rename_file" => 30,
             "web_search" => 60,
+            "execute_command" => 300, // 命令执行最多 5 分钟
             _ => 120,
         };
         let timeout = std::time::Duration::from_secs(timeout_secs);
 
         let h = handler.clone();
-        let spawned = tokio::task::spawn_blocking(move || (h)(args));
+        let spawned = tokio::task::spawn_blocking(move || (h)(args, chunk_tx));
 
         let result = match tokio::time::timeout(timeout, spawned).await {
             Ok(Ok(Ok(output))) => Ok(output),
