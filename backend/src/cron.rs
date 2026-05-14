@@ -298,12 +298,29 @@ async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
     Ok(result.content)
 }
 
+/// 获取当前本地时间（用于 cron 计算）
+fn now_local() -> chrono::DateTime<chrono::FixedOffset> {
+    chrono::Local::now().fixed_offset()
+}
+
+/// 将 UTC 字符串解析为 DateTime，支持多种格式
+fn parse_dt(s: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt);
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt.and_local_timezone(chrono::Local).unwrap().fixed_offset());
+    }
+    None
+}
+
 /// 计算下一次执行时间
 pub fn compute_next_run(schedule: &str) -> Option<String> {
-    let now = chrono::Utc::now();
+    // cron 表达式基于本地时间解析，存储为 UTC
+    let now = now_local();
 
     // 检查是不是 ISO 时间戳（一次性任务）
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(schedule) {
+    if let Some(dt) = parse_dt(schedule) {
         if dt > now {
             return Some(dt.to_rfc3339());
         }
@@ -317,7 +334,6 @@ pub fn compute_next_run(schedule: &str) -> Option<String> {
 
     // 检查是否是标准 cron 表达式
     if is_valid_cron(schedule) {
-        // 简单近似：向前推 1 分钟到 24 小时
         return compute_cron_next(schedule, &now);
     }
 
@@ -330,7 +346,7 @@ pub fn compute_next_run(schedule: &str) -> Option<String> {
 }
 
 /// 解析自然语言调度描述，如 "daily at 2:30 PM"、"每天下午14点30"、"hourly" 等
-fn parse_natural_schedule(schedule: &str, now: &chrono::DateTime<chrono::Utc>) -> Option<String> {
+fn parse_natural_schedule(schedule: &str, now: &chrono::DateTime<chrono::FixedOffset>) -> Option<String> {
     let s = schedule.trim().to_lowercase();
 
     // "hourly" / "every hour"
@@ -412,7 +428,7 @@ fn parse_natural_schedule(schedule: &str, now: &chrono::DateTime<chrono::Utc>) -
     None
 }
 
-fn parse_duration_next(schedule: &str, now: &chrono::DateTime<chrono::Utc>) -> Option<String> {
+fn parse_duration_next(schedule: &str, now: &chrono::DateTime<chrono::FixedOffset>) -> Option<String> {
     let s = schedule.trim();
     if s.ends_with('m') {
         let num: u64 = s.trim_end_matches('m').parse().ok()?;
@@ -429,7 +445,7 @@ fn parse_duration_next(schedule: &str, now: &chrono::DateTime<chrono::Utc>) -> O
     None
 }
 
-fn compute_cron_next(expr: &str, now: &chrono::DateTime<chrono::Utc>) -> Option<String> {
+fn compute_cron_next(expr: &str, now: &chrono::DateTime<chrono::FixedOffset>) -> Option<String> {
     let parts: Vec<&str> = expr.split_whitespace().collect();
     if parts.len() != 5 {
         return None;
@@ -472,12 +488,12 @@ fn parse_cron_field(field: &str, min: u32, max: u32) -> Option<i32> {
     }
 }
 
-/// 为刚创建的任务计算第一次执行时间
+/// 为刚创建的任务计算第一次执行时间（基于本地时区，存储为 UTC）
 pub fn compute_initial_next_run(schedule: &str) -> String {
-    let now = chrono::Utc::now();
+    let now = now_local();
 
     // 检查是否 ISO 时间戳
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(schedule) {
+    if let Some(dt) = parse_dt(schedule) {
         if dt > now {
             return dt.to_rfc3339();
         }

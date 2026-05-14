@@ -42,7 +42,7 @@ tracing-appender = "0.2"
 uuid = { version = "1", features = ["v4"] }
 
 # 时间
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
 
 # 平台目录（仅用于获取 home 目录）
 dirs = "5"
