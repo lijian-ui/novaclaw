@@ -1352,9 +1352,11 @@ pub fn register_all(
 
                             // 为定时任务创建专属会话（侧边栏显示为 ⏰ 任务名）
                             let cron_session_name = format!("⏰ {}", name);
-                            let cron_session = crate::APP_STATE.blocking_read().session_store
-                                .create_session(&cron_session_name, None)
-                                .map_err(|e| format!("创建定时任务会话失败: {}", e))?;
+                            let cron_session = rt.block_on(async {
+                                crate::APP_STATE.read().await.session_store
+                                    .create_session(&cron_session_name, None)
+                                    .map_err(|e| format!("创建定时任务会话失败: {}", e))
+                            })?;
 
                             let job = crate::cron::CronJob {
                                 id: id.clone(),

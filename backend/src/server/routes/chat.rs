@@ -503,6 +503,7 @@ async fn test_connection(Json(req): Json<TestConnectionReq>) -> Json<serde_json:
         temperature: Some(0.0),
         stream: false,
         tools: None,
+        stream_options: None,
     };
 
     match client.chat(&chat_req).await {

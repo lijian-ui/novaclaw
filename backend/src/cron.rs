@@ -147,14 +147,16 @@ static CRON_SEMAPHORE: Lazy<Arc<Semaphore>> = Lazy::new(|| {
 
 /// 启动后台调度器
 pub async fn start_scheduler() {
-    tracing::info!("[Cron] 调度器已启动（检查间隔: 60s）");
+    tracing::info!("[Cron] 调度器已启动（检查间隔: 30s）");
 
     tokio::spawn(async {
         let mut ticker = interval(Duration::from_secs(30));
         loop {
             ticker.tick().await;
-            if let Err(e) = tick().await {
-                tracing::error!("[Cron] 调度器执行出错: {}", e);
+            match tokio::time::timeout(Duration::from_secs(30), tick()).await {
+                Ok(Ok(())) => {},
+                Ok(Err(e)) => tracing::error!("[Cron] 调度器执行出错: {}", e),
+                Err(_) => tracing::warn!("[Cron] 调度器 tick 超时（超过30秒），强制继续"),
             }
         }
     });
