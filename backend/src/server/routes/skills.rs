@@ -191,6 +191,6 @@ pub fn routes() -> Router {
     Router::new()
         .route("/skills", get(list_skills))
         .route("/skills/upload", post(upload_skill))
-        .route("/skills/{id}", get(get_skill))
-        .route("/skills/{id}", delete(delete_skill))
+        .route("/skills/:id", get(get_skill))
+        .route("/skills/:id", delete(delete_skill))
 }

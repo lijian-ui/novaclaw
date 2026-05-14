@@ -11,7 +11,7 @@ use crate::tools::registry::ToolRegistry;
 use crate::tools::types::AgentStep;
 use crate::error::AppError;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -123,6 +123,8 @@ pub struct AgentRuntime {
     task_plan: Option<TaskPlan>,
     completed_tasks: HashSet<String>,
     executed_tools: HashSet<String>,
+    /// 同一工具+参数的重试次数，超过限制后强制跳过
+    tool_retry_count: HashMap<String, u32>,
     detection_result: Option<DetectionResult>,
 }
 
@@ -149,6 +151,7 @@ impl AgentRuntime {
             task_plan: None,
             completed_tasks: HashSet::new(),
             executed_tools: HashSet::new(),
+            tool_retry_count: HashMap::new(),
             detection_result: None,
         }
     }
@@ -293,28 +296,69 @@ impl AgentRuntime {
                 let registry = self.tool_registry.clone();
                 let name = tc.name.clone();
                 let id = tc.id.clone();
+                let args_json = tc.arguments.clone();
                 let ws = self.session.workspace.clone();
-                let args: serde_json::Value = serde_json::from_str(&tc.arguments)
+                let mut args: serde_json::Value = serde_json::from_str(&tc.arguments)
                     .unwrap_or(serde_json::Value::Null);
+                let session_id = self.session.id.clone();
+                // 注入会话 ID，供 cron 等工具使用
+                if let Some(obj) = args.as_object_mut() {
+                    obj.insert("_session_id".to_string(), serde_json::json!(session_id));
+                }
+                let step_tx = step_tx.clone();
+                let iterations = iterations;
+                let max_iterations = self.max_iterations;
+                let name_clone_for_spawn = name.clone();
                 async move {
-                    let result = registry.execute(&name, args, ws.as_deref()).await;
-                    (id, name, result)
+                    // 为 execute_command/terminal 工具创建流式输出通道
+                    let chunk_tx: Option<mpsc::UnboundedSender<String>> = if name == "execute_command" || name == "terminal" {
+                        let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+                        let fwd_tx = step_tx.clone();
+                        let spawn_name = name_clone_for_spawn.clone();
+                        tokio::spawn(async move {
+                            while let Some(chunk) = rx.recv().await {
+                                if let Some(ref tx) = fwd_tx {
+                                    let _ = tx
+                                        .send(AgentStep {
+                                            step_type: "tool_chunk".to_string(),
+                                            content: chunk,
+                                            tool_name: Some(spawn_name.clone()),
+                                            tool_result: None,
+                                            turn: iterations,
+                                            max_turns: max_iterations,
+                                        })
+                                        .await;
+                                }
+                            }
+                        });
+                        Some(tx)
+                    } else {
+                        None
+                    };
+
+                    let result = registry.execute(&name, args, ws.as_deref(), chunk_tx).await;
+                    (id, name, args_json, result)
                 }
             }).collect();
 
             let tool_results = futures::future::join_all(tool_futures).await;
 
-            for (tc_id, tc_name, result) in tool_results {
-                // 使用工具名+参数作为key，与filter_duplicate_tool_calls保持一致
-                let key = format!("{}_{}", tc_name, tc_id);
-                self.executed_tools.insert(key);
+            for (tc_id, tc_name, tc_args_json, result) in tool_results {
+                // 基于 name+参数内容的去重 key，相同参数视为重复调用
+                let key = Self::tool_call_dedup_key(&tc_name, &tc_args_json);
+                self.executed_tools.insert(key.clone());
 
                 let tool_result = match result {
                     Ok(output) => {
                         let truncated = if output.len() > 8000 {
+                            // 安全截断，避免 UTF-8 字符边界溢出
+                            let mut end = 8000;
+                            while !output.is_char_boundary(end) {
+                                end -= 1;
+                            }
                             format!(
                                 "{}...\n\n[结果已截断，原长度: {} 字符]",
-                                &output[..8000],
+                                &output[..end],
                                 output.len()
                             )
                         } else {
@@ -337,9 +381,14 @@ impl AgentRuntime {
                                         }
                                     ),
                                     tool_name: Some(tc_name.clone()),
-                                    tool_result: Some(
-                                        truncated[..truncated.len().min(500)].to_string(),
-                                    ),
+                                    tool_result: Some({
+                                        let max_len = truncated.len().min(500);
+                                        let mut end = max_len;
+                                        while !truncated.is_char_boundary(end) {
+                                            end -= 1;
+                                        }
+                                        truncated[..end].to_string()
+                                    }),
                                     turn: iterations,
                                     max_turns: self.max_iterations,
                                 })
@@ -375,7 +424,15 @@ impl AgentRuntime {
                     }
                 };
 
-                self.session.push_tool_result(&tc_id, &tc_name, &tool_result);
+                // 明确标注工具返回的是真实数据，避免小模型误判为帮助信息
+                let contextualized = format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, tool_result);
+                self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
+
+                // 累加重试计数（同 key 递增，用于跨迭代硬限制）
+                *self.tool_retry_count.entry(key.clone()).or_insert(0) += 1;
+                if *self.tool_retry_count.get(&key).unwrap_or(&0) >= 2 {
+                    tracing::warn!("[Agent] 工具 {} 同一参数已执行超过2次，后续调用将被强制跳过", tc_name);
+                }
             }
         }
 
@@ -440,16 +497,38 @@ impl AgentRuntime {
         }
     }
 
+    /// 生成工具调用的去重 key（基于 name + 参数内容）
+    fn tool_call_dedup_key(name: &str, args: &str) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        name.hash(&mut hasher);
+        args.hash(&mut hasher);
+        format!("t{}", hasher.finish())
+    }
+
     fn filter_duplicate_tool_calls(&self, tool_calls: &[AgentToolCall]) -> Vec<AgentToolCall> {
-        tool_calls
-            .iter()
-            .filter(|tc| {
-                // 使用工具名+id作为key，与工具执行后的插入逻辑保持一致
-                let key = format!("{}_{}", tc.name, tc.id);
-                !self.executed_tools.contains(&key)
-            })
-            .cloned()
-            .collect()
+        let mut seen_in_batch = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for tc in tool_calls {
+            let key = Self::tool_call_dedup_key(&tc.name, &tc.arguments);
+            // 跳过已执行过的（跨迭代去重）
+            if self.executed_tools.contains(&key) {
+                continue;
+            }
+            // 跳过本次批次中已出现过的（同批次去重）
+            if !seen_in_batch.insert(key.clone()) {
+                continue;
+            }
+            // 同一工具+参数已重试超过2次，强制跳过
+            if let Some(count) = self.tool_retry_count.get(&key) {
+                if *count >= 2 {
+                    tracing::warn!("[Agent] 工具 {} 已重试 {} 次，强制跳过", tc.name, count);
+                    continue;
+                }
+            }
+            result.push(tc.clone());
+        }
+        result
     }
 
     fn update_task_progress(&mut self, tool_name: &str, result: &str, success: bool, quality_score: Option<f64>) {
@@ -580,7 +659,7 @@ impl AgentRuntime {
                 }),
                 tool_call_id: msg.tool_call_id.clone(),
                 name: msg.tool_name.clone(),
-                reasoning_content: None,
+                reasoning_content: msg.reasoning.clone(),
             });
         }
 
@@ -606,6 +685,7 @@ impl AgentRuntime {
             } else {
                 Some(llm_tools)
             },
+            stream_options: Some(serde_json::json!({"include_usage": true})),
         };
 
         tracing::info!(

@@ -177,7 +177,7 @@ pub fn register_all(
                     },
                     "required": ["path"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
                     let resolved_path = resolve_path(path, &args);
                     let content = std::fs::read_to_string(&resolved_path)
@@ -209,7 +209,7 @@ pub fn register_all(
                     },
                     "required": ["path", "content"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
                     let content = args["content"].as_str().ok_or("Missing 'content' parameter")?;
 
@@ -248,7 +248,7 @@ pub fn register_all(
                     },
                     "required": ["path", "old_string", "new_string"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
                     let old_str = args["old_string"].as_str().ok_or("Missing 'old_string' parameter")?;
                     let new_str = args["new_string"].as_str().ok_or("Missing 'new_string' parameter")?;
@@ -288,7 +288,7 @@ pub fn register_all(
                     },
                     "required": ["pattern"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let pattern = args["pattern"].as_str().ok_or("Missing 'pattern' parameter - provide a glob pattern like **/*.rs")?;
                     let base = args["path"].as_str().unwrap_or(".");
                     // 处理 LLM 可能误传的路径别名，统一映射到工作目录根
@@ -348,7 +348,7 @@ pub fn register_all(
                     },
                     "required": ["pattern"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let pattern = args["pattern"].as_str().ok_or("Missing 'pattern' parameter - provide a regex pattern to search for")?;
                     let base = args["path"].as_str().unwrap_or(".");
                     // 处理 LLM 可能误传的路径别名，统一映射到工作目录根
@@ -446,7 +446,7 @@ pub fn register_all(
                     },
                     "required": ["action"]
                 }),
-                handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(move |args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let action = args["action"].as_str().ok_or("Missing 'action' parameter (add/query/remove)")?;
                     match action {
                         "add" => {
@@ -495,7 +495,7 @@ pub fn register_all(
                     },
                     "required": ["query"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let query = args["query"].as_str().ok_or("Missing 'query' parameter")?;
                     let _limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
 
@@ -536,7 +536,7 @@ pub fn register_all(
                     },
                     "required": ["query"]
                 }),
-                handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(move |args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let query = args["query"].as_str().ok_or("Missing 'query' parameter - provide a search query")?.to_string();
                     let count = args.get("count").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
                     let encoded_query = urlencoding::encode(&query).to_string();
@@ -709,7 +709,7 @@ pub fn register_all(
                     "properties": {},
                     "required": []
                 }),
-                handler: std::sync::Arc::new(move |_args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(move |_args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let skills = skills_loader_for_list.list_skills();
                     if skills.is_empty() {
                         return Ok("{\"skills\": []}".to_string());
@@ -741,7 +741,7 @@ pub fn register_all(
                     },
                     "required": ["name"]
                 }),
-                handler: std::sync::Arc::new(move |args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(move |args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let name = args["name"].as_str().ok_or("Missing 'name' parameter - provide the skill name")?;
                     match skills_loader_for_view.get_skill(name) {
                         Some(skill) => {
@@ -784,7 +784,7 @@ pub fn register_all(
                     },
                     "required": ["action"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let action = args["action"].as_str().ok_or("Missing 'action' parameter (add/list/done/remove)")?;
                     match action {
                         "add" => {
@@ -825,7 +825,7 @@ pub fn register_all(
                     },
                     "required": ["pattern", "replacement"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let pattern = args["pattern"].as_str().ok_or("Missing 'pattern' parameter")?;
                     let replacement = args["replacement"].as_str().ok_or("Missing 'replacement' parameter")?;
                     let base = args["path"].as_str().unwrap_or(".");
@@ -895,7 +895,7 @@ pub fn register_all(
                     },
                     "required": []
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let base = args["path"].as_str().unwrap_or(".");
                     let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
                     let resolved_base = resolve_path(base, &args);
@@ -952,7 +952,7 @@ pub fn register_all(
                     },
                     "required": ["path"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let path_str = args["path"].as_str().ok_or("Missing 'path' parameter")?;
                     let resolved = resolve_path(path_str, &args);
 
@@ -990,7 +990,7 @@ pub fn register_all(
                     },
                     "required": ["path", "new_path"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let old_path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
                     let new_path = args["new_path"].as_str().ok_or("Missing 'new_path' parameter")?;
                     let old_resolved = resolve_path(old_path, &args);
@@ -1032,7 +1032,7 @@ pub fn register_all(
                     },
                     "required": ["diff"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let diff = args["diff"].as_str().ok_or("Missing 'diff' parameter")?;
                     apply_unified_diff(diff, &args).map(|summary| {
                         format!("Patch applied successfully:\n{}", summary.join("\n"))
@@ -1071,7 +1071,7 @@ pub fn register_all(
                     },
                     "required": ["action", "file"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value| -> Result<String, String> {
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let action = args["action"].as_str().ok_or("Missing 'action' parameter")?;
                     let file = args["file"].as_str().ok_or("Missing 'file' parameter")?;
                     let resolved_file = resolve_path(file, &args);
@@ -1198,6 +1198,235 @@ pub fn register_all(
 
                     client.shutdown();
                     Ok(result)
+                }),
+            }).await;
+
+            // execute_command tool - execute shell commands via PTY
+            registry_clone.register(ToolDef {
+                name: "execute_command".to_string(),
+                description: "Execute any shell command in the workspace directory. Pass only the raw command (e.g. 'dir', 'ls -la', 'npm run build'), do NOT wrap it in powershell/cmd/bash/shell invocation - the tool handles that automatically. Params: command (required), description (optional), timeout (optional, default 60s), workdir (optional)".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command to execute (e.g. 'npm run build', 'cargo test', 'python script.py')"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Clear explanation of what this command does (helps with safety review)"
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Maximum execution time in seconds (default 60, max 300)"
+                        },
+                        "workdir": {
+                            "type": "string",
+                            "description": "Working directory (relative to workspace or absolute, defaults to workspace)"
+                        }
+                    },
+                    "required": ["command"]
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value, chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
+                    let command = args["command"].as_str().ok_or("Missing 'command' parameter")?;
+                    let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60).min(300);
+                    let workdir_str = args.get("workdir").and_then(|v| v.as_str()).unwrap_or(".");
+                    let resolved_workdir = resolve_path(workdir_str, &args);
+
+                    if !resolved_workdir.exists() {
+                        return Err(format!("Working directory not found: {}", resolved_workdir.display()));
+                    }
+
+                    // 将发送器包装为回调，用于实时推送终端输出
+                    let chunk_cb = chunk_tx.map(|tx| {
+                        let tx_clone = tx.clone();
+                        Box::new(move |chunk: String| {
+                            let _ = tx_clone.send(chunk);
+                        }) as Box<dyn Fn(String) + Send>
+                    });
+
+                    let result = crate::tools::execute::execute_command_safe(
+                        command,
+                        &resolved_workdir,
+                        timeout,
+                        chunk_cb,
+                    );
+
+                    if result.blocked {
+                        return Err(result.stdout);
+                    }
+
+                    let mut output = String::new();
+                    output.push_str(&result.stdout);
+
+                    if let Some(code) = result.exit_code {
+                        if code != 0 {
+                            output.push_str(&format!("\n\n[Exit code: {}]", code));
+                        }
+                    }
+                    if result.timed_out {
+                        output.push_str(&format!("\n\n[Command timed out after {}s]", timeout));
+                    }
+
+                    Ok(output)
+                }),
+            }).await;
+
+            // cron tool - manage scheduled tasks
+            registry_clone.register(ToolDef {
+                name: "cron".to_string(),
+                description: "Manage cron jobs and scheduled tasks. You MUST write a valid 5-field cron expression yourself. Actions: list (list all), create (name + cron expression + payload), get (by id), update (by id), remove (by id), run (by id)".to_string(),
+                parameters: json!({
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "create", "get", "update", "remove", "run"],
+                            "description": "Action to perform"
+                        },
+                        "name": {
+                            "type": "string",
+                            "description": "Job name (required for create)"
+                        },
+                        "schedule": {
+                            "type": "string",
+                            "description": "CRON EXPRESSION (5 fields, e.g. '0 8 * * *' for daily 8am, '*/30 * * * *' for every 30min). You MUST generate the cron expression based on user's request. DO NOT use natural language!"
+                        },
+                        "payload": {
+                            "type": "string",
+                            "description": "Task prompt content to execute when the job fires (required for create)"
+                        },
+                        "id": {
+                            "type": "string",
+                            "description": "Job ID (required for get/update/remove/run)"
+                        },
+                        "session_id": {
+                            "type": "string",
+                            "description": "(Optional) Chat session ID for results delivery — if omitted, a dedicated cron session is created automatically"
+                        }
+                    },
+                    "required": ["action"]
+                }),
+                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
+                    let action = args["action"].as_str().ok_or("Missing 'action' parameter")?;
+                    let store_arc = crate::cron::get_store();
+                    let rt = tokio::runtime::Handle::current();
+
+                    match action {
+                        "list" => {
+                            let guard = rt.block_on(async { store_arc.lock().await });
+                            let jobs: Vec<crate::cron::CronJob> = guard.list().to_vec();
+                            drop(guard);
+                            let output: Vec<String> = jobs.iter().map(|j| {
+                                format!("[{}] {} | schedule: {} | enabled: {} | runs: {}",
+                                    j.id, j.name, j.schedule, j.enabled, j.run_count)
+                            }).collect();
+                            if output.is_empty() {
+                                Ok("暂无定时任务".to_string())
+                            } else {
+                                Ok(output.join("\n"))
+                            }
+                        }
+                        "get" => {
+                            let id = args["id"].as_str().ok_or("Missing 'id' parameter")?;
+                            let guard = rt.block_on(async { store_arc.lock().await });
+                            let job = guard.get(id).cloned();
+                            drop(guard);
+                            match job {
+                                Some(j) => Ok(format!(
+                                    "ID: {}\n名称: {}\n调度: {}\n启用: {}\n状态: {}\n执行次数: {}\n上次执行: {:?}\n下次执行: {:?}\n负载: {}",
+                                    j.id, j.name, j.schedule, j.enabled, j.status, j.run_count,
+                                    j.last_run_at, j.next_run_at, j.payload
+                                )),
+                                None => Err(format!("定时任务 '{}' 未找到", id)),
+                            }
+                        }
+                        "create" => {
+                            let name = args["name"].as_str().ok_or("Missing 'name' parameter")?;
+                            let schedule = args["schedule"].as_str().unwrap_or("0 * * * *");
+                            let payload = args["payload"].as_str().unwrap_or("");
+
+                            let id = uuid::Uuid::new_v4().to_string();
+                            let now = chrono::Utc::now().to_rfc3339();
+                            let next_run = crate::cron::compute_initial_next_run(schedule);
+
+                            // 为定时任务创建专属会话（侧边栏显示为 ⏰ 任务名）
+                            let cron_session_name = format!("⏰ {}", name);
+                            let cron_session = crate::APP_STATE.blocking_read().session_store
+                                .create_session(&cron_session_name, None)
+                                .map_err(|e| format!("创建定时任务会话失败: {}", e))?;
+
+                            let job = crate::cron::CronJob {
+                                id: id.clone(),
+                                name: name.to_string(),
+                                schedule: schedule.to_string(),
+                                enabled: true,
+                                payload: payload.to_string(),
+                                session_id: Some(cron_session.id.clone()),
+                                created_at: now.clone(),
+                                updated_at: now,
+                                last_run_at: None,
+                                next_run_at: Some(next_run),
+                                status: "idle".to_string(),
+                                run_count: 0,
+                                last_error: None,
+                            };
+
+                            let mut guard = rt.block_on(async { store_arc.lock().await });
+                            guard.add(job);
+                            drop(guard);
+                            Ok(format!("定时任务 '{}' 已创建 (ID: {})", name, id))
+                        }
+                        "update" => {
+                            let id = args["id"].as_str().ok_or("Missing 'id' parameter")?.to_string();
+                            let name = args["name"].as_str().map(|s| s.to_string());
+                            let schedule = args["schedule"].as_str().map(|s| s.to_string());
+                            let payload = args["payload"].as_str().map(|s| s.to_string());
+                            let mut guard = rt.block_on(async { store_arc.lock().await });
+                            let updated = guard.update(&id, |job| {
+                                if let Some(ref n) = name { job.name = n.clone(); }
+                                if let Some(ref sch) = schedule {
+                                    job.schedule = sch.clone();
+                                    job.next_run_at = Some(crate::cron::compute_initial_next_run(sch));
+                                }
+                                if let Some(ref p) = payload { job.payload = p.clone(); }
+                            });
+                            drop(guard);
+                            if updated {
+                                Ok(format!("定时任务已更新"))
+                            } else {
+                                Err(format!("定时任务 '{}' 未找到", id))
+                            }
+                        }
+                        "remove" => {
+                            let id = args["id"].as_str().ok_or("Missing 'id' parameter")?.to_string();
+                            let mut guard = rt.block_on(async { store_arc.lock().await });
+                            let removed = guard.remove(&id);
+                            drop(guard);
+                            if removed {
+                                let _ = crate::logging::delete_task_log(&id);
+                                Ok(format!("定时任务已删除"))
+                            } else {
+                                Err(format!("定时任务 '{}' 未找到", id))
+                            }
+                        }
+                        "run" => {
+                            let id = args["id"].as_str().ok_or("Missing 'id' parameter")?.to_string();
+                            let mut guard = rt.block_on(async { store_arc.lock().await });
+                            let updated = guard.update(&id, |job| {
+                                job.last_run_at = Some(chrono::Utc::now().to_rfc3339());
+                                job.run_count += 1;
+                                tracing::info!("[Cron] 手动触发任务: {}", job.name);
+                            });
+                            drop(guard);
+                            if updated {
+                                Ok(format!("任务已手动触发"))
+                            } else {
+                                Err(format!("定时任务 '{}' 未找到", id))
+                            }
+                        }
+                        _ => Err(format!("未知操作: {}", action)),
+                    }
                 }),
             }).await;
 

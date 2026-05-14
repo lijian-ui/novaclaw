@@ -41,7 +41,6 @@
  * 
  * 【与其他文件的关联关系】
  * - 使用 ChatMessages 组件渲染消息列表
- * - 使用 TaskList 组件展示任务进度
  * - 使用 useApi hook 进行 API 调用和 WebSocket 通信
  * - 使用 ChatContext 管理会话状态
  * - 使用 useTranslation 进行国际化支持
@@ -61,7 +60,6 @@
  * - 会话历史同步与恢复
  * - 模型选择与配置
  * - 多语言支持（i18n）
- * - 复杂任务检测与进度展示
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react'
@@ -84,10 +82,8 @@ import {
   Clock,
   FileText,
   Folder,
-  ListTodo,
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
-import { TaskList, type TaskProgress, type TaskProgressItem } from './TaskList'
 import { startChatStream, cancelChatStream, useApi } from '@/hooks/useApi'
 import { useChat } from '@/contexts/ChatContext'
 import { useTranslation } from 'react-i18next'
@@ -139,7 +135,7 @@ function genId() {
 
 export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorkspacePathChange }: ChatPanelProps) {
   const { t } = useTranslation()
-  const { currentSession, setCurrentSession, messages: contextMessages, refreshSessionList } = useChat()
+  const { currentSession, setCurrentSession, messages: contextMessages, refreshSessionList, defaultModelName, refreshModelKey, setDefaultModelName } = useChat()
   const sessionIdRef = useRef<string | undefined>(undefined)
   const userContentRef = useRef('') // 保存用户消息用于标题生成
 
@@ -407,7 +403,22 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           })
         }
       }
-      setMessages(converted)
+      // 合并：保留本地已有的 tool_call 状态（toolResult、stepType），
+      // 避免 contextMessages 同步时覆盖流式累积的执行输出
+      setMessages(prev => {
+        if (prev.length === 0) return converted
+        // 对每条转换后的消息，检查本地是否有同名 ID 且带有 toolResult 的记录
+        const merged = converted.map(msg => {
+          if (msg.role !== 'agent_step' || !msg.agentStep) return msg
+          if (msg.agentStep.stepType !== 'tool_call') return msg
+          const local = prev.find(p => p.id === msg.id)
+          if (local?.agentStep?.toolResult || local?.agentStep?.stepType === 'tool_call_done' || local?.agentStep?.stepType === 'tool_error') {
+            return local // 保留本地的累积状态
+          }
+          return msg
+        })
+        return merged
+      })
     }
   }, [contextMessages, currentSession])
   const [isStreaming, setIsStreaming] = useState(false)
@@ -421,8 +432,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [editingWorkspace, setEditingWorkspace] = useState(false)
   const [editingWsPath, setEditingWsPath] = useState('')
-  const [taskProgress, setTaskProgress] = useState<TaskProgress | null>(null)
-  const [taskDetected, setTaskDetected] = useState<boolean | null>(null)
   const folderInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
@@ -461,7 +470,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     setShowScrollBtn(distFromBottom > 100)
   }, [])
 
-  const { abortRef, listProviders, getDefaultModel, setDefaultModel } = useApi()
+  const { abortRef, listProviders, setDefaultModel, getDefaultModel } = useApi()
 
   // Load model list from backend
   const loadModels = useCallback(() => {
@@ -478,25 +487,34 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     }).catch(() => {
       // Backend offline, keep ['Auto']
     })
-  }, [listProviders])
+    // 页面加载时同时获取后端保存的默认模型
+    getDefaultModel().then(defaultModelName => {
+      if (defaultModelName) {
+        setDefaultModelName(defaultModelName)
+      }
+    }).catch(() => {})
+  }, [listProviders, getDefaultModel, setDefaultModelName])
 
   // Load workspace info（后端无 workspace 端点，默认即可）
 
-  // Initial load - load both model list and default model
+  // Load model list on mount
   useEffect(() => {
     loadModels()
-    getDefaultModel().then(modelName => {
-      if (modelName) {
-        setSelectedModel(modelName)
-      }
-    }).catch(() => {})
-  }, [loadModels, getDefaultModel])
+  }, [loadModels])
+
+  // Sync selectedModel with ChatContext default
+  useEffect(() => {
+    if (defaultModelName) {
+      setSelectedModel(defaultModelName)
+    }
+  }, [refreshModelKey, defaultModelName])
 
   // Save default model when user changes selection
   const handleModelChange = useCallback((modelName: string) => {
     setSelectedModel(modelName)
+    setDefaultModelName(modelName === 'Auto' ? '' : modelName)
     setDefaultModel(modelName === 'Auto' ? '' : modelName).catch(() => {})
-  }, [setDefaultModel])
+  }, [setDefaultModelName, setDefaultModel])
 
   // 获取当前选中模型对应的图标
   const selectedModelIcon = useCallback(() => {
@@ -519,8 +537,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
 
   // SSE streaming via HTTP POST + SSE
   const startStreaming = useCallback((userContent: string) => {
-    setTaskDetected(null)
-    setTaskProgress(null)
     setIsStreaming(true)
     setStreamingContent('')
     setStreamingReasoning('')
@@ -670,6 +686,30 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             setStreamingContent('')
             setIsRethinking(true)
 
+          } else if (step.stepType === 'tool_chunk') {
+            // 实时追加终端输出块到对应的工具消息中
+            setMessages(prev => {
+              const updated = [...prev]
+              for (let i = updated.length - 1; i >= 0; i--) {
+                const m = updated[i]
+                if (
+                  m.role === 'agent_step' &&
+                  (m.agentStep?.stepType === 'tool_call' || m.agentStep?.stepType === 'tool_call_done') &&
+                  m.agentStep?.toolName === step.toolName
+                ) {
+                  updated[i] = {
+                    ...m,
+                    agentStep: {
+                      ...m.agentStep!,
+                      toolResult: (m.agentStep!.toolResult || '') + step.content,
+                    }
+                  }
+                  break
+                }
+              }
+              return updated
+            })
+
           } else if (step.stepType === 'tool_result') {
             setMessages(prev => {
               const updated = [...prev]
@@ -680,9 +720,17 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                   m.agentStep?.stepType === 'tool_call' &&
                   m.agentStep?.toolName === step.toolName
                 ) {
+                  // 优先使用 tool_result 字段（实际输出），
+                  // 如果已经通过 tool_chunk 累积了内容则保留
+                  const rawResult = (step as any).tool_result
+                  const existingResult = m.agentStep!.toolResult || rawResult || ''
                   updated[i] = {
                     ...m,
-                    agentStep: { ...m.agentStep!, stepType: 'tool_call_done' }
+                    agentStep: {
+                      ...m.agentStep!,
+                      stepType: 'tool_call_done',
+                      toolResult: existingResult,
+                    },
                   }
                   break
                 }
@@ -700,9 +748,15 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                   m.agentStep?.stepType === 'tool_call' &&
                   m.agentStep?.toolName === step.toolName
                 ) {
+                  const rawResult = (step as any).tool_result
+                  const existingResult = m.agentStep!.toolResult || rawResult || ''
                   updated[i] = {
                     ...m,
-                    agentStep: { ...m.agentStep!, stepType: 'tool_error' }
+                    agentStep: {
+                      ...m.agentStep!,
+                      stepType: 'tool_error',
+                      toolResult: existingResult,
+                    },
                   }
                   break
                 }
@@ -724,27 +778,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                 maxTurns: step.maxTurns,
               }
             }])
-          } else if (step.stepType === 'task_detection') {
-            try {
-              const detection = JSON.parse(step.content)
-              setTaskDetected(detection.is_complex)
-            } catch {
-              console.error('Failed to parse task detection:', step.content)
-            }
-          } else if (step.stepType === 'task_plan') {
-            try {
-              const plan = JSON.parse(step.content) as TaskProgress
-              setTaskProgress(plan)
-            } catch {
-              console.error('Failed to parse task plan:', step.content)
-            }
-          } else if (step.stepType === 'task_progress') {
-            try {
-              const progress = JSON.parse(step.content) as TaskProgress
-              setTaskProgress(progress)
-            } catch {
-              console.error('Failed to parse task progress:', step.content)
-            }
           }
         },
       },
@@ -861,7 +894,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                         const fullPath = String(selected)
                         const name = fullPath.split(/[/\\]/).pop() || 'workspace'
                         setWorkspaceName(name)
-                        setWorkspacePath(fullPath)
                         onWorkspacePathChange?.(fullPath)
                         setWorkspaceOpen(false)
                         onOpenFilePanel?.()
@@ -886,7 +918,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                   className="flex items-center gap-1.5 cursor-pointer"
                   onClick={(e) => {
                     e.stopPropagation()
-                    setEditingWsPath(workspacePath)
+                    setEditingWsPath(workspacePath ?? '')
                     setEditingWorkspace(true)
                   }}
                 >
@@ -975,20 +1007,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             onScroll={handleScroll}
             className="flex-1 overflow-y-auto"
           >
-            <TaskList 
-              taskProgress={taskProgress} 
-              onClose={() => setTaskProgress(null)}
-              onTaskClick={(task: TaskProgressItem) => {
-                console.log('Task clicked:', task)
-              }}
-            />
-            {/* 复杂任务检测指示器 */}
-            {taskDetected === true && !taskProgress && (
-              <div className="mx-3 mb-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-gradient-to-r from-green-500/10 to-emerald-500/10 border border-green-500/20">
-                <ListTodo className="w-4 h-4 text-green-400" />
-                <span className="text-sm text-green-400/90">检测到复杂任务，正在生成任务清单...</span>
-              </div>
-            )}
+            {/* 任务进度面板（保留扩展点） */}
             <ChatMessages
               messages={messages}
               isStreaming={isStreaming}
@@ -1064,7 +1083,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                 {modelOpen && (
                   <>
                     <div className="fixed inset-0 z-10" onClick={() => setModelOpen(false)} />
-                    <div className="absolute bottom-full right-0 mb-1 w-60 max-h-40 overflow-y-auto py-1 rounded-md bg-card border border-border shadow-lg z-20">
+                    <div className="absolute bottom-full right-0 mb-1 w-60 py-1 rounded-md bg-card border border-border shadow-lg z-20">
                       {modelOptions.map((opt) => (
                         <button
                           key={opt.name}

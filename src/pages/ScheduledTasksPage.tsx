@@ -17,7 +17,7 @@ interface CronJob {
   last_error: string | null
 }
 
-const API = 'http://127.0.0.1:3000/api/cron/jobs'
+const API = 'http://127.0.0.1:3000/api/cron-jobs'
 const emptyForm = { name: '', description: '', cron: '', payload: '' }
 
 interface ScheduledTasksPageProps {
@@ -28,9 +28,7 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
   const { t } = useTranslation()
   const [tasks, setTasks] = useState<CronJob[]>([])
   const [showModal, setShowModal] = useState(false)
-  const [showNaturalModal, setShowNaturalModal] = useState(false)
   const [form, setForm] = useState(emptyForm)
-  const [naturalForm, setNaturalForm] = useState({ name: '', description: '', payload: '' })
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -38,7 +36,10 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
     setLoading(true)
     try {
       const res = await fetch(API)
-      if (res.ok) setTasks(await res.json())
+      if (res.ok) {
+        const body = await res.json()
+        setTasks(Array.isArray(body) ? body : (body.data || []))
+      }
     } catch { /* ignore */ }
     setLoading(false)
   }, [])
@@ -66,20 +67,6 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
     } catch {}
   }, [form, loadTasks])
 
-  const handleNaturalSave = useCallback(async () => {
-    if (!naturalForm.name.trim()) return
-    try {
-      await fetch(`${API}/natural`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(naturalForm),
-      })
-      setShowNaturalModal(false)
-      setNaturalForm({ name: '', description: '', payload: '' })
-      loadTasks()
-    } catch {}
-  }, [naturalForm, loadTasks])
-
   const confirmDelete = useCallback(async () => {
     if (!showDeleteConfirm) return
     try {
@@ -100,11 +87,6 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
           <span className="text-sm font-medium text-foreground/90">{t('scheduledTasksPage.title')}</span>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => { setNaturalForm({ name: '', description: '', payload: '' }); setShowNaturalModal(true) }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-500/20 hover:bg-purple-500/30 text-purple-400 text-xs transition-colors">
-            <Clock className="w-3.5 h-3.5" />
-            {t('scheduledTasksPage.naturalLanguage')}
-          </button>
           <button onClick={() => { setForm(emptyForm); setShowModal(true) }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors">
             <Plus className="w-3.5 h-3.5" />
@@ -193,47 +175,6 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
               <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
                 <button onClick={() => setShowModal(false)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('scheduledTasksPage.cancel')}</button>
                 <button onClick={handleSave} disabled={!form.name.trim()} className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium transition-colors">{t('scheduledTasksPage.add')}</button>
-              </div>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Natural Language Modal */}
-      {showNaturalModal && (
-        <>
-          <div className="fixed inset-0 bg-black/50 z-30" onClick={() => setShowNaturalModal(false)} />
-          <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
-            <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm font-medium text-foreground/90">{t('scheduledTasksPage.naturalModalTitle')}</span>
-                <button onClick={() => setShowNaturalModal(false)} className="p-1 rounded hover:bg-foreground/10 transition-colors">
-                  <X className="w-4 h-4 text-foreground/50" />
-                </button>
-              </div>
-              <div className="px-4 py-4 space-y-3">
-                <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">{t('scheduledTasksPage.taskName')}</label>
-                  <input value={naturalForm.name} onChange={e => setNaturalForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder={t('scheduledTasksPage.placeholderName')} className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors" />
-                </div>
-                <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">{t('scheduledTasksPage.scheduleNatural')}</label>
-                  <input value={naturalForm.description} onChange={e => setNaturalForm(f => ({ ...f, description: e.target.value }))}
-                    placeholder={t('scheduledTasksPage.placeholderScheduleNatural')} className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors" />
-                </div>
-                <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">{t('scheduledTasksPage.payload')}</label>
-                  <textarea value={naturalForm.payload} onChange={e => setNaturalForm(f => ({ ...f, payload: e.target.value }))}
-                    placeholder={t('scheduledTasksPage.placeholderPayloadDescription')}
-                    rows={3}
-                    className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors resize-none" />
-                </div>
-              </div>
-              <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-                <button onClick={() => setShowNaturalModal(false)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('scheduledTasksPage.cancel')}</button>
-                <button onClick={handleNaturalSave} disabled={!naturalForm.name.trim() || !naturalForm.description.trim()}
-                  className="px-4 py-1.5 rounded-lg bg-purple-500 hover:bg-purple-400 disabled:opacity-50 text-xs text-white font-medium transition-colors">{t('scheduledTasksPage.create')}</button>
               </div>
             </div>
           </div>
