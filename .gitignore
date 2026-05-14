@@ -38,3 +38,9 @@ Desktop.ini
 claude-code-rust/
 opencode/
 picoclaw/
+codex/
+hermes-agent/
+openclaw/
+
+# 其他临时文件
+对话.json
