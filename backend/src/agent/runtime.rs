@@ -1,8 +1,5 @@
 use crate::agent::cot::CotExtractor;
-use crate::agent::prompt::TaskDecompositionParser;
 use crate::agent::session::{AgentMessage, AgentSession, AgentToolCall};
-use crate::agent::task::{TaskPlan, TaskStatus, TaskProgress};
-use crate::agent::task_detector::{TaskComplexityDetector, DetectionResult};
 use crate::config::AppConfig;
 use crate::llm::client::LlmClient;
 use crate::llm::types::{ChatMessage, ChatRequest, StreamEvent};
@@ -102,12 +99,6 @@ pub struct AgentResult {
     pub reasoning: Option<String>,
     pub cancelled: bool,
     pub max_iterations_reached: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_plan: Option<TaskPlan>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_progress: Option<TaskProgress>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detection_result: Option<DetectionResult>,
 }
 
 pub struct AgentRuntime {
@@ -120,12 +111,9 @@ pub struct AgentRuntime {
     has_first_reasoning: bool,
     accumulated_again_reasonings: Vec<String>,
     skills: Vec<SkillDef>,
-    task_plan: Option<TaskPlan>,
-    completed_tasks: HashSet<String>,
     executed_tools: HashSet<String>,
     /// 同一工具+参数的重试次数，超过限制后强制跳过
     tool_retry_count: HashMap<String, u32>,
-    detection_result: Option<DetectionResult>,
 }
 
 impl AgentRuntime {
@@ -148,11 +136,8 @@ impl AgentRuntime {
             has_first_reasoning: false,
             accumulated_again_reasonings: Vec::new(),
             skills,
-            task_plan: None,
-            completed_tasks: HashSet::new(),
             executed_tools: HashSet::new(),
             tool_retry_count: HashMap::new(),
-            detection_result: None,
         }
     }
 
@@ -165,40 +150,8 @@ impl AgentRuntime {
         let mut iterations = 0;
         let mut final_content = String::new();
         let mut max_iterations_reached = false;
-        let mut is_first_iteration = true;
 
         self.session.push_user(user_input);
-
-        // ---- 复杂任务预判断 ----
-        // 在发送 LLM 请求前，对用户输入进行关键词分析，
-        // 判断当前任务是否需要启用任务分解流程
-        let detection = TaskComplexityDetector::analyze(user_input);
-        self.detection_result = Some(detection.clone());
-        if detection.is_complex {
-            tracing::info!(
-                "[Agent] 检测到复杂任务，评分: {:.2}，匹配 {} 个关键词",
-                detection.complexity_score,
-                detection.total_matches
-            );
-            // 向前端推送检测结果
-            if let Some(ref tx) = step_tx {
-                let _ = tx
-                    .send(AgentStep {
-                        step_type: "task_detection".to_string(),
-                        content: serde_json::to_string(&detection).unwrap_or_default(),
-                        tool_name: None,
-                        tool_result: None,
-                        turn: 0,
-                        max_turns: self.max_iterations,
-                    })
-                    .await;
-            }
-        } else {
-            tracing::debug!(
-                "[Agent] 简单任务，评分: {:.2}",
-                detection.complexity_score
-            );
-        }
 
         if self.session.message_count() > COMPACT_THRESHOLD {
             tracing::info!(
@@ -244,11 +197,6 @@ impl AgentRuntime {
             if cancelled {
                 final_content = assistant_message.content.clone();
                 break;
-            }
-
-            if is_first_iteration {
-                self.try_parse_task_plan(&assistant_message.content, &step_tx).await;
-                is_first_iteration = false;
             }
 
             let msg_for_session = assistant_message.clone();
@@ -395,9 +343,6 @@ impl AgentRuntime {
                                 .await;
                         }
 
-                        self.update_task_progress(&tc_name, &truncated, true, None);
-                        self.send_task_progress(&step_tx).await;
-
                         truncated
                     }
                     Err(e) => {
@@ -416,9 +361,6 @@ impl AgentRuntime {
                                 })
                                 .await;
                         }
-
-                        self.update_task_progress(&tc_name, &err_msg, false, None);
-                        self.send_task_progress(&step_tx).await;
 
                         err_msg
                     }
@@ -448,8 +390,6 @@ impl AgentRuntime {
             .and_then(|m| m.first_reasoning.clone());
 
         let cancelled = cancel.map_or(false, |c| c.load(std::sync::atomic::Ordering::Relaxed));
-        
-        let task_progress = self.task_plan.as_ref().map(|p| TaskProgress::from(p));
 
         Ok(AgentResult {
             session_id: self.session.id.clone(),
@@ -465,36 +405,7 @@ impl AgentRuntime {
             reasoning: None,
             cancelled,
             max_iterations_reached,
-            task_plan: self.task_plan.clone(),
-            task_progress,
-            detection_result: self.detection_result.clone(),
         })
-    }
-
-    async fn try_parse_task_plan(&mut self, content: &str, step_tx: &Option<mpsc::Sender<AgentStep>>) {
-        if let Some(result) = TaskDecompositionParser::parse(content) {
-            self.task_plan = Some(result.plan.clone());
-            
-            let issues = TaskDecompositionParser::validate_plan(&result.plan);
-            if !issues.is_empty() {
-                tracing::warn!("[Agent] 任务计划验证发现问题: {:?}", issues);
-            }
-
-            tracing::info!("[Agent] 解析到任务计划: {} 个子任务", result.plan.tasks.len());
-            
-            if let Some(ref tx) = step_tx {
-                let _ = tx
-                    .send(AgentStep {
-                        step_type: "task_plan".to_string(),
-                        content: serde_json::to_string(&result.plan).unwrap_or_default(),
-                        tool_name: None,
-                        tool_result: None,
-                        turn: 0,
-                        max_turns: self.max_iterations,
-                    })
-                    .await;
-            }
-        }
     }
 
     /// 生成工具调用的去重 key（基于 name + 参数内容）
@@ -529,38 +440,6 @@ impl AgentRuntime {
             result.push(tc.clone());
         }
         result
-    }
-
-    fn update_task_progress(&mut self, tool_name: &str, result: &str, success: bool, quality_score: Option<f64>) {
-        if let Some(ref mut plan) = self.task_plan {
-            for task in plan.tasks.iter_mut() {
-                if task.tool_name.as_deref() == Some(tool_name) && task.status == TaskStatus::Pending {
-                    if success {
-                        task.mark_completed(result, quality_score);
-                        self.completed_tasks.insert(task.id.clone());
-                    } else {
-                        task.mark_failed(result);
-                    }
-                    break;
-                }
-            }
-        }
-    }
-
-    async fn send_task_progress(&self, step_tx: &Option<mpsc::Sender<AgentStep>>) {
-        if let (Some(ref tx), Some(ref plan)) = (step_tx, &self.task_plan) {
-            let progress = TaskProgress::from(plan);
-            let _ = tx
-                .send(AgentStep {
-                    step_type: "task_progress".to_string(),
-                    content: serde_json::to_string(&progress).unwrap_or_default(),
-                    tool_name: None,
-                    tool_result: None,
-                    turn: 0,
-                    max_turns: self.max_iterations,
-                })
-                .await;
-        }
     }
 
     async fn call_llm_with_tools_and_retry(
@@ -923,9 +802,5 @@ impl AgentRuntime {
 
     pub fn session_mut(&mut self) -> &mut AgentSession {
         &mut self.session
-    }
-
-    pub fn task_plan(&self) -> Option<&TaskPlan> {
-        self.task_plan.as_ref()
     }
 }
