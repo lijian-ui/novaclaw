@@ -183,6 +183,143 @@ npm run tauri:build
 
 ---
 
+## 📂 数据目录结构
+
+NovaClaw 会在用户目录下创建一个名为 `novaclaw` 的主数据目录，用于存储所有用户数据、配置和文件。
+
+### 主数据目录位置
+
+| 平台   | 路径示例                                  |
+|--------|-------------------------------------------|
+| **Windows** | `%USERPROFILE%\Documents\novaclaw\         |
+| **macOS**   | `~/Library/Application Support/novaclaw/    |
+| **Linux**   | `~/.local/share/novaclaw/                   |
+
+### 目录结构树
+
+```
+novaclaw/
+├── config/              # 配置文件目录
+│   ├── config.json    # 项目配置（端口、CORS、API Key 等）
+│   └── models.json    # 模型配置（LLM 提供商、API Key 等）
+├── workspace/         # 工作目录（Agent 文件读写操作的基础目录）
+├── skills/            # 技能目录（存放用户导入和自定义技能包）
+├── memories/         # 记忆目录（持久化记忆存储）
+├── sessions/        # 会话目录（聊天历史记录）
+├── logs/            # 日志目录（运行日志）
+└── cron/            # 定时任务目录（Cron 任务配置）
+```
+
+### 各目录详细说明
+
+#### config/ - 配置目录
+- **config.json**: 项目配置文件
+  - HTTP 服务器端口、监听地址
+  - CORS 允许来源
+  - LLM 请求超时和重试配置
+  - Agent 迭代次数、温度参数
+  - 上下文压缩配置
+  - 网络搜索 API Key（TinyFish / Tavily）
+  - Prompt 注入保护开关
+
+- **models.json**: 模型配置文件
+  - 默认模型选择
+  - LLM 提供商列表（多个）
+  - 各提供商 API Key、Base URL
+  - 支持的模型列表
+
+> 💡 **提示**: 大部分配置项都可以通过前端界面直接修改，**无需手动编辑配置文件**。除非有特殊需求，否则建议使用前端进行配置管理。
+
+#### workspace/ - 工作目录
+- Agent 进行文件读写、编辑、搜索等操作的基础工作区
+- 所有 `read_file`、`write_file` 等工具的默认根目录
+- 可以通过配置 `data_dir` 自定义此路径
+
+#### skills/ - 技能目录
+- 存放用户导入和自定义的技能包（.zip 格式）
+- 技能可以被 Agent 调用执行
+- 支持导入、导出、分享
+
+#### memories/ - 记忆目录
+- 持久化记忆的长期记忆
+- 按分类存储
+- Agent 可以随时查询和引用
+
+#### sessions/ - 会话目录
+- 所有聊天会话记录
+- 会话历史、消息记录
+- 支持恢复之前的会话
+
+#### logs/ - 日志目录
+- 后端运行日志
+- 调试和故障排查使用
+
+#### cron/ - 定时任务目录
+- Cron 任务配置存储
+- 定时任务的执行记录
+
+### 自定义数据目录
+
+如果需要使用自定义路径，可以在 `config.json` 中设置 `data_dir` 字段：
+
+```json
+{
+  "data_dir": "D:\\my-novaclaw-data"
+}
+```
+
+### 配置文件优先级
+
+1. **环境变量**: `NOVACLAW_CONFIG` 指定自定义配置文件路径（最高优先级）
+2. **配置文件**: `config.json` / `models.json` 中的值
+3. **默认值**: 代码中定义的默认值（最低优先级）
+
+### 配置文件说明
+
+#### config.json 完整示例
+
+```json
+{
+  "port": 3000,
+  "host": "0.0.0.0",
+  "llm_timeout": 180,
+  "max_retries": 3,
+  "max_iterations": 0,
+  "temperature": 0.7,
+  "compact_threshold": 40,
+  "compact_keep": 20,
+  "allowed_origins": [
+    "http://localhost:1420",
+    "http://localhost:5173",
+    "http://127.0.0.1:1420",
+    "http://127.0.0.1:5173",
+    "tauri://localhost"
+  ],
+  "prompt_injection_protection": true,
+  "data_dir": null,
+  "tinyfish_api_key": null,
+  "tavily_api_key": null
+}
+```
+
+#### models.json 完整示例
+
+```json
+{
+  "default_model": "gpt-4o",
+  "providers": [
+    {
+      "name": "openai",
+      "api_key": "your-api-key",
+      "base_url": "https://api.openai.com/v1",
+      "models": ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]
+    }
+  ]
+}
+```
+
+---
+
 ## 🛠️ 内置工具列表
 
 ### 文件操作
