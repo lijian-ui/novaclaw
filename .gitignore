@@ -21,7 +21,8 @@ cargo_output.txt
 .vscode/
 *.swp
 *.swo
-
+*.vscode
+*.deepseek
 # CodeBuddy
 .codebuddy/
 

@@ -210,7 +210,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
     let ws_sender = Arc::new(Mutex::new(ws_sender));
     let cancel_flag = Arc::new(AtomicBool::new(false));
 
-    tracing::info!("[Terminal] New WebSocket connection");
+    tracing::debug!("[Terminal] New WebSocket connection");
 
     let mut cwd = crate::config::get_workspace_dir();
     if !cwd.exists() {
@@ -219,7 +219,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
 
     let session_id = match TERMINAL_MANAGER.create_session(cwd.clone()).await {
         Ok(id) => {
-            tracing::info!("[Terminal] Created session: {}", id);
+            tracing::debug!("[Terminal] Created session: {}", id);
             let welcome = "\x1b[32m--- NovaClaw Terminal ---\x1b[0m\r\n";
             let mut sender = ws_sender.lock().await;
             let _ = sender
@@ -298,7 +298,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
                         }
                     }
                     "kill" => {
-                        tracing::info!("[Terminal] Kill session: {}", session_id);
+                        tracing::debug!("[Terminal] Kill session: {}", session_id);
                         cancel_flag.store(true, Ordering::Relaxed);
                         TERMINAL_MANAGER.remove_session(&session_id).await;
                         break;
@@ -327,7 +327,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
                 }
             }
             Ok(Message::Close(_)) => {
-                tracing::info!("[Terminal] WS closed");
+                tracing::debug!("[Terminal] WS closed");
                 break;
             }
             Err(e) => {
@@ -340,7 +340,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
 
     cancel_flag.store(true, Ordering::Relaxed);
     TERMINAL_MANAGER.remove_session(&session_id).await;
-    tracing::info!("[Terminal] Session {} cleaned up", session_id);
+    tracing::debug!("[Terminal] Session {} cleaned up", session_id);
 }
 
 async fn try_restart_shell(
@@ -348,12 +348,12 @@ async fn try_restart_shell(
     ws_sender: &Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
     cwd: &std::path::Path,
 ) {
-    tracing::info!("[Terminal] Restarting shell for session: {}", session_id);
+    tracing::debug!("[Terminal] Restarting shell for session: {}", session_id);
     TERMINAL_MANAGER.remove_session(session_id).await;
 
     match TERMINAL_MANAGER.create_session(cwd.to_path_buf()).await {
         Ok(new_id) => {
-            tracing::info!("[Terminal] Shell restarted: {}", new_id);
+            tracing::debug!("[Terminal] Shell restarted: {}", new_id);
             let mut sender = ws_sender.lock().await;
             let _ = sender
                 .send(Message::Text(

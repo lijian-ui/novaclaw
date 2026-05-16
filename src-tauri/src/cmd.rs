@@ -169,6 +169,112 @@ pub async fn get_data_dir() -> Result<String, String> {
     Ok(novaclaw_backend::config::get_base_dir().to_string_lossy().to_string())
 }
 
+/// 设置自定义数据目录（自动迁移旧文件）
+#[tauri::command]
+pub async fn set_data_dir(app: tauri::AppHandle, dir: String) -> Result<String, String> {
+    let old_base = novaclaw_backend::config::get_base_dir();
+    let new_base = std::path::PathBuf::from(&dir);
+    
+    // 如果新旧目录相同，直接返回
+    if old_base == new_base {
+        return Ok("目录未改变，无需迁移".to_string());
+    }
+    
+    // 如果旧目录不存在，直接设置新目录
+    if !old_base.exists() {
+        let mut config = novaclaw_backend::config::AppConfig::reload();
+        config.data_dir = Some(dir.clone());
+        config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+        return Ok(format!("已设置新目录: {}", dir));
+    }
+    
+    // 检查新目录是否已存在数据
+    let new_exists = new_base.exists();
+    
+    // 需要迁移的子目录
+    let subdirs = ["config", "workspace", "skills", "memories", "sessions", "logs", "cron"];
+    
+    let mut migrated_count = 0;
+    
+    for subdir in &subdirs {
+        let old_path = old_base.join(subdir);
+        let new_path = new_base.join(subdir);
+        
+        if old_path.exists() {
+            if !new_path.exists() {
+                // 新目录不存在，直接移动
+                std::fs::rename(&old_path, &new_path)
+                    .or_else(|_| copy_dir_recursive_static(&old_path, &new_path))
+                    .map_err(|e| format!("迁移目录失败: {} - {}", subdir, e))?;
+                tracing::info!("已迁移目录: {} -> {:?}", subdir, new_path);
+                migrated_count += 1;
+            } else {
+                // 新目录已存在，只复制不存在的文件（增量迁移）
+                if let Err(e) = copy_missing_files(&old_path, &new_path) {
+                    tracing::warn!("增量迁移 {} 时出现警告: {}", subdir, e);
+                } else {
+                    tracing::info!("已增量迁移目录: {:?}", subdir);
+                }
+            }
+        }
+    }
+    
+    // 保存配置
+    let mut config = novaclaw_backend::config::AppConfig::reload();
+    config.data_dir = Some(dir.clone());
+    config.save().map_err(|e| format!("保存配置失败: {}", e))?;
+    
+    let msg = if migrated_count > 0 {
+        format!("已迁移 {} 个目录到新位置: {}", migrated_count, dir)
+    } else if new_exists {
+        format!("已将设置保存到新目录: {}（增量合并完成）", dir)
+    } else {
+        format!("已设置新目录: {}", dir)
+    };
+    
+    tracing::info!("数据目录迁移完成: {}", msg);
+    Ok(msg)
+}
+
+/// 复制目录（静态版本，用于异步上下文）
+fn copy_dir_recursive_static(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive_static(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
+/// 复制缺失的文件（增量迁移）
+fn copy_missing_files(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        
+        if src_path.is_dir() {
+            copy_missing_files(&src_path, &dst_path)?;
+        } else if !dst_path.exists() {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 /// 获取配置目录
 #[tauri::command]
 pub async fn get_config_dir() -> Result<String, String> {

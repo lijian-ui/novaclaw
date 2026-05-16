@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-const COMPACT_THRESHOLD: usize = 40;
-const COMPACT_KEEP_LAST: usize = 20;
+// 从 AppConfig 读取，保留默认值作为兜底
+pub const COMPACT_KEEP_LAST_FALLBACK: usize = 20;
 
 /// 格式化工具调用显示信息
 /// 将 JSON 参数转换为易读的格式，特别是文件类工具显示相对路径和文件名
@@ -114,6 +114,12 @@ pub struct AgentRuntime {
     executed_tools: HashSet<String>,
     /// 同一工具+参数的重试次数，超过限制后强制跳过
     tool_retry_count: HashMap<String, u32>,
+    /// doom-loop 检测：连续相同工具调用的次数
+    consecutive_doom_count: u32,
+    /// doom-loop 检测：上一次工具调用的去重 key
+    last_doom_key: Option<String>,
+    /// 是否已进入优雅终止（最后一次无工具调用）
+    grace_terminating: bool,
 }
 
 impl AgentRuntime {
@@ -138,6 +144,9 @@ impl AgentRuntime {
             skills,
             executed_tools: HashSet::new(),
             tool_retry_count: HashMap::new(),
+            consecutive_doom_count: 0,
+            last_doom_key: None,
+            grace_terminating: false,
         }
     }
 
@@ -153,14 +162,19 @@ impl AgentRuntime {
 
         self.session.push_user(user_input);
 
-        if self.session.message_count() > COMPACT_THRESHOLD {
+        let compact_keep = if self.config.compact_keep > 0 {
+            self.config.compact_keep
+        } else {
+            COMPACT_KEEP_LAST_FALLBACK
+        };
+        if self.config.compact_threshold > 0 && self.session.message_count() > self.config.compact_threshold {
             tracing::info!(
                 "[Agent] 消息数 {} 超过阈值 {}，触发上下文压缩，保留最近 {} 条",
                 self.session.message_count(),
-                COMPACT_THRESHOLD,
-                COMPACT_KEEP_LAST
+                self.config.compact_threshold,
+                compact_keep
             );
-            self.session.compact(COMPACT_KEEP_LAST);
+            self.session.compact(compact_keep);
             tracing::info!(
                 "[Agent] 压缩完成，当前消息数: {}，累计压缩次数: {}",
                 self.session.message_count(),
@@ -173,19 +187,45 @@ impl AgentRuntime {
         loop {
             iterations += 1;
 
-            if iterations > self.max_iterations {
-                tracing::warn!(
-                    "[Agent] 达到最大迭代次数 {}，优雅停止并返回当前最佳结果",
-                    self.max_iterations
-                );
-                max_iterations_reached = true;
-                if final_content.is_empty() {
-                    final_content = format!(
-                        "[Agent 已达最大迭代次数 {}，任务可能未完全完成，请尝试继续对话]",
+            // max_iterations == 0 表示无限制
+            if self.max_iterations > 0 && iterations > self.max_iterations {
+                if self.grace_terminating {
+                    // 优雅终止已完成，退出循环
+                    tracing::warn!(
+                        "[Agent] 达到最大迭代次数 {}，优雅终止完成",
                         self.max_iterations
                     );
+                    max_iterations_reached = true;
+                    break;
                 }
-                break;
+                // 第一次达到上限：注入总结提示词，剥离工具，做最后一次无工具调用
+                tracing::warn!(
+                    "[Agent] 达到最大迭代次数 {}，进入优雅终止（最后一次无工具调用）",
+                    self.max_iterations
+                );
+                self.grace_terminating = true;
+                max_iterations_reached = true;
+
+                // 注入 user 消息要求 LLM 总结
+                let summary_prompt = format!(
+                    "[Agent 已达最大迭代次数 {}，请提供当前工作的完整总结，包括已完成的内容和任何未完成的事项]",
+                    self.max_iterations
+                );
+                self.session.push_user(&summary_prompt);
+
+                // 用无工具的调用做最后一次 LLM 响应
+                let (summary_msg, _, cancelled) = self
+                    .call_llm_with_tools_and_retry(&system_prompt, &step_tx, cancel.clone())
+                    .await?;
+
+                if cancelled {
+                    final_content = summary_msg.content.clone();
+                    break;
+                }
+
+                final_content = summary_msg.content.clone();
+                self.session.push_message(summary_msg);
+                continue;
             }
 
             tracing::info!("[Agent] ReAct 迭代 {}/{}", iterations, self.max_iterations);
@@ -212,15 +252,29 @@ impl AgentRuntime {
                 .clone()
                 .unwrap_or_default();
 
-            self.session.push_message(msg_for_session);
+            // 先过滤重复工具调用，再推入会话，避免 assistant 消息带有 tool_calls
+            // 但后续缺少对应的 tool 响应（违反 OpenAI API 协议）
+            let valid_tool_calls = self.filter_duplicate_tool_calls(&tool_calls);
+            let has_filtered = valid_tool_calls.len() < tool_calls.len();
+
+            if has_filtered {
+                // 创建只含有效 tool_calls 的 assistant 消息推入会话
+                let mut clean_msg = assistant_message.clone();
+                clean_msg.tool_calls = if valid_tool_calls.is_empty() {
+                    None
+                } else {
+                    Some(valid_tool_calls.clone())
+                };
+                self.session.push_message(clean_msg);
+            } else {
+                self.session.push_message(msg_for_session);
+            }
 
             if tool_calls.is_empty() {
                 final_content = assistant_message.content.clone();
                 break;
             }
 
-            let valid_tool_calls = self.filter_duplicate_tool_calls(&tool_calls);
-            
             if valid_tool_calls.is_empty() {
                 tracing::info!("[Agent] 所有工具调用已执行过，跳过重复执行");
                 if let Some(ref tx) = step_tx {
@@ -376,6 +430,35 @@ impl AgentRuntime {
                     tracing::warn!("[Agent] 工具 {} 同一参数已执行超过2次，后续调用将被强制跳过", tc_name);
                 }
             }
+
+            // doom-loop 检测：连续同一工具+参数调用超过 3 次时熔断
+            if !valid_tool_calls.is_empty() {
+                let first_key = Self::tool_call_dedup_key(&valid_tool_calls[0].name, &valid_tool_calls[0].arguments);
+                if let Some(ref last) = self.last_doom_key {
+                    if last == &first_key {
+                        self.consecutive_doom_count += 1;
+                    } else {
+                        self.consecutive_doom_count = 1;
+                        self.last_doom_key = Some(first_key);
+                    }
+                } else {
+                    self.consecutive_doom_count = 1;
+                    self.last_doom_key = Some(first_key);
+                }
+
+                if self.consecutive_doom_count >= 3 {
+                    // 对批次中所有工具强制标记为已执行，避免下次继续
+                    for tc in &valid_tool_calls {
+                        let k = Self::tool_call_dedup_key(&tc.name, &tc.arguments);
+                        self.executed_tools.insert(k.clone());
+                    }
+                    tracing::warn!(
+                        "[Agent] doom-loop 检测: 连续 {} 次相同工具调用 '{}'，强制熔断",
+                        self.consecutive_doom_count,
+                        valid_tool_calls[0].name
+                    );
+                }
+            }
         }
 
         tracing::info!(
@@ -508,7 +591,12 @@ impl AgentRuntime {
         step_tx: &Option<mpsc::Sender<AgentStep>>,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<(AgentMessage, Vec<String>, bool, u64, u64), AppError> {
-        let tools = self.tool_registry.get_schemas().await;
+        let tools = if self.grace_terminating {
+            // 优雅终止：不传工具，LLM 只能返回文本
+            Vec::new()
+        } else {
+            self.tool_registry.get_schemas().await
+        };
         let tool_count = tools.len();
 
         let mut messages: Vec<ChatMessage> = vec![ChatMessage {

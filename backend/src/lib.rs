@@ -8,6 +8,7 @@ pub mod agent;
 pub mod memory;
 pub mod skills;
 pub mod cron;
+pub mod mcp;
 pub mod server;
 
 use once_cell::sync::Lazy;
@@ -67,6 +68,9 @@ pub async fn initialize() {
         )
     };
 
+    // MCP store 是全局静态的，直接从 crate::mcp::get_store() 获取
+    let mcp_store = crate::mcp::get_store();
+
     // 在锁外注册工具，彻底避免死锁
     tools::builtin::register_all(
         &mut tool_registry,
@@ -74,6 +78,7 @@ pub async fn initialize() {
         tavily_api_key,
         memory_store,
         skills_loader,
+        mcp_store,
     );
 
     // 把注册好的 registry 写回 state

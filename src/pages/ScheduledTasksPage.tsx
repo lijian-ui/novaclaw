@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, X, Clock, ArrowLeft } from 'lucide-react'
+import { Plus, Trash2, X, Clock, ArrowLeft, Pencil, Play } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 interface CronJob {
@@ -18,7 +18,7 @@ interface CronJob {
 }
 
 const API = 'http://127.0.0.1:3000/api/cron-jobs'
-const emptyForm = { name: '', description: '', cron: '', payload: '' }
+const emptyForm = { name: '', cron: '', payload: '' }
 
 interface ScheduledTasksPageProps {
   onBack?: () => void
@@ -30,6 +30,7 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
   const [showModal, setShowModal] = useState(false)
   const [form, setForm] = useState(emptyForm)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
+  const [editingTask, setEditingTask] = useState<CronJob | null>(null)
   const [loading, setLoading] = useState(false)
 
   const loadTasks = useCallback(async () => {
@@ -56,16 +57,25 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
   const handleSave = useCallback(async () => {
     if (!form.name.trim()) return
     try {
-      await fetch(API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: form.name.trim(), schedule: form.cron.trim() || '* * * * *', payload: form.payload.trim() }),
-      })
+      if (editingTask) {
+        await fetch(`${API}/${editingTask.id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: form.name.trim(), schedule: form.cron.trim() || '* * * * *', payload: form.payload.trim() }),
+        })
+      } else {
+        await fetch(API, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: form.name.trim(), schedule: form.cron.trim() || '* * * * *', payload: form.payload.trim() }),
+        })
+      }
       setShowModal(false)
+      setEditingTask(null)
       setForm(emptyForm)
       loadTasks()
     } catch {}
-  }, [form, loadTasks])
+  }, [form, editingTask, loadTasks])
 
   const confirmDelete = useCallback(async () => {
     if (!showDeleteConfirm) return
@@ -76,10 +86,17 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
     } catch {}
   }, [showDeleteConfirm, loadTasks])
 
+  const handleRun = useCallback(async (id: string) => {
+    try {
+      await fetch(`${API}/${id}/run`, { method: 'POST' })
+      loadTasks()
+    } catch {}
+  }, [loadTasks])
+
   return (
     <div className="h-full flex flex-col bg-mainbg">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+      <div className="flex items-center justify-between px-4 py-3.5 border-b border-border shrink-0">
         <div className="flex items-center gap-3">
           <button onClick={onBack} className="p-1 rounded hover:bg-foreground/10 transition-colors">
             <ArrowLeft className="w-4 h-4 text-foreground/60" />
@@ -87,7 +104,7 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
           <span className="text-sm font-medium text-foreground/90">{t('scheduledTasksPage.title')}</span>
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => { setForm(emptyForm); setShowModal(true) }}
+          <button onClick={() => { setEditingTask(null); setForm(emptyForm); setShowModal(true) }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors">
             <Plus className="w-3.5 h-3.5" />
             {t('scheduledTasksPage.add')}
@@ -128,6 +145,14 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
+                  <button onClick={() => { setEditingTask(task); setForm({ name: task.name, cron: task.schedule, payload: task.payload }); setShowModal(true) }}
+                    className="p-1 rounded hover:bg-foreground/10 transition-colors" title="编辑">
+                    <Pencil className="w-3.5 h-3.5 text-foreground/40 hover:text-blue-400" />
+                  </button>
+                  <button onClick={() => handleRun(task.id)}
+                    className="p-1 rounded hover:bg-green-500/10 transition-colors" title="手动执行">
+                    <Play className="w-3.5 h-3.5 text-foreground/40 hover:text-green-400" />
+                  </button>
                   <button onClick={() => handleToggle(task.id)}
                     className={`relative w-8 h-4 rounded-full transition-colors mx-1 ${task.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
                     title={task.enabled ? t('scheduledTasksPage.disable') : t('scheduledTasksPage.enable')}>
@@ -143,15 +168,17 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
         )}
       </div>
 
-      {/* Add Modal (Cron) */}
+      {/* Add/Edit Modal (Cron) */}
       {showModal && (
         <>
-          <div className="fixed inset-0 bg-black/50 z-30" onClick={() => setShowModal(false)} />
+          <div className="fixed inset-0 bg-black/50 z-30" onClick={() => { setShowModal(false); setEditingTask(null); setForm(emptyForm) }} />
           <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
             <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
               <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm font-medium text-foreground/90">{t('scheduledTasksPage.addModalTitle')}</span>
-                <button onClick={() => setShowModal(false)} className="p-1 rounded hover:bg-foreground/10 transition-colors">
+                <span className="text-sm font-medium text-foreground/90">
+                  {editingTask ? '编辑定时任务' : t('scheduledTasksPage.addModalTitle')}
+                </span>
+                <button onClick={() => { setShowModal(false); setEditingTask(null); setForm(emptyForm) }} className="p-1 rounded hover:bg-foreground/10 transition-colors">
                   <X className="w-4 h-4 text-foreground/50" />
                 </button>
               </div>
@@ -173,8 +200,10 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
                 </div>
               </div>
               <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-                <button onClick={() => setShowModal(false)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('scheduledTasksPage.cancel')}</button>
-                <button onClick={handleSave} disabled={!form.name.trim()} className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium transition-colors">{t('scheduledTasksPage.add')}</button>
+                <button onClick={() => { setShowModal(false); setEditingTask(null); setForm(emptyForm) }} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('scheduledTasksPage.cancel')}</button>
+                <button onClick={handleSave} disabled={!form.name.trim()} className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium transition-colors">
+                  {editingTask ? '保存' : t('scheduledTasksPage.add')}
+                </button>
               </div>
             </div>
           </div>

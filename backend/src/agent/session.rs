@@ -162,5 +162,54 @@ impl AgentSession {
         self.messages.push(summary);
         self.messages.extend(back);
         self.compaction_count += 1;
+
+        // 压缩后清理孤立 tool_calls：如果一条 assistant 消息的 tool_calls
+        // 在后续消息中没有完整的 tool 响应，则移除这些 tool_calls
+        Self::strip_orphan_tool_calls(&mut self.messages);
+    }
+
+    /// 扫描并清理孤立 tool_calls — 不完整配对的 tool_calls 会被移除，防止违反 API 协议
+    fn strip_orphan_tool_calls(messages: &mut Vec<AgentMessage>) {
+        let mut tool_call_ids_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut tool_call_ids_missing: Vec<String> = Vec::new();
+
+        // 第一遍：收集所有 tool_call_ids
+        for msg in messages.iter() {
+            if msg.role == "tool" {
+                if let Some(ref id) = msg.tool_call_id {
+                    tool_call_ids_seen.insert(id.clone());
+                }
+            }
+        }
+
+        // 第二遍：找出未匹配的 tool_calls
+        for msg in messages.iter() {
+            if msg.role == "assistant" {
+                if let Some(ref calls) = msg.tool_calls {
+                    for tc in calls {
+                        if !tool_call_ids_seen.contains(&tc.id) {
+                            tool_call_ids_missing.push(tc.id.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        if tool_call_ids_missing.is_empty() {
+            return;
+        }
+
+        // 第三遍：从 assistant 消息中移除缺失的 tool_calls
+        for msg in messages.iter_mut() {
+            if msg.role != "assistant" {
+                continue;
+            }
+            if let Some(ref mut calls) = msg.tool_calls {
+                calls.retain(|tc| !tool_call_ids_missing.contains(&tc.id));
+                if calls.is_empty() {
+                    msg.tool_calls = None;
+                }
+            }
+        }
     }
 }

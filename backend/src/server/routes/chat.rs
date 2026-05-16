@@ -348,7 +348,15 @@ async fn chat_stream(
 
         match result {
             Ok(agent_result) => {
-                let new_messages = &agent_result.messages[history_msg_count..];
+                // 处理上下文压缩导致的 slice 越界问题
+                // 当 history_msg_count > messages.len() 时，说明 run_turn 中触发了
+                // 上下文压缩（COMPACT_THRESHOLD=40），历史消息被压缩到 COMPACT_KEEP_LAST 条
+                let new_messages = if history_msg_count <= agent_result.messages.len() {
+                    &agent_result.messages[history_msg_count..]
+                } else {
+                    // 压缩后保留了末尾 COMPACT_KEEP_LAST 条历史消息，新消息紧随其后
+                    &agent_result.messages[crate::agent::runtime::COMPACT_KEEP_LAST_FALLBACK..]
+                };
 
                 // 持久化消息
                 let now = chrono::Utc::now().to_rfc3339();

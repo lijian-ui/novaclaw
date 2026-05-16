@@ -324,7 +324,8 @@ function CodeBlock({ className, children }: { className?: string; children: stri
   const lang = match ? match[1] : 'text'
 
   const handleCopy = useCallback(() => {
-    navigator.clipboard.writeText(children)
+    const text = Array.isArray(children) ? children.join('') : String(children)
+    navigator.clipboard.writeText(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }, [children])
@@ -396,15 +397,26 @@ function TerminalBlock({
 }) {
   const [expanded, setExpanded] = useState(isExecuting)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const autoCollapsedRef = useRef(false)
   const { isDark } = useTheme()
   const { icon: Icon, color } = getToolMeta(toolName)
   const commandStr = extractToolParams(toolName, argsJson)
   const outputLines = output ? output.split('\n').length : 0
 
-  // 执行中自动展开；执行完成后如果有输出也保持展开
+  // 执行中自动展开
   useEffect(() => {
-    if (isExecuting || output) {
+    if (isExecuting) {
       setExpanded(true)
+      autoCollapsedRef.current = false // 重置折叠标记
+    }
+  }, [isExecuting])
+
+  // 执行完成后自动折叠（延迟 2 秒让用户看到结果）
+  useEffect(() => {
+    if (!isExecuting && output && !autoCollapsedRef.current) {
+      autoCollapsedRef.current = true
+      const timer = setTimeout(() => setExpanded(false), 2000)
+      return () => clearTimeout(timer)
     }
   }, [isExecuting, output])
 
@@ -483,6 +495,25 @@ function TerminalBlock({
         </div>
       </div>
     </div>
+  )
+}
+
+// ─── 复制按钮组件 ────────────────────────────────────────────────────
+function MessageCopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+  return (
+    <button
+      onClick={handleCopy}
+      className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-foreground/10"
+      title="复制"
+    >
+      {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3 text-foreground/40" />}
+    </button>
   )
 }
 
@@ -596,15 +627,18 @@ export function ChatMessages({
   }, [isDark])
 
   return (
-    <div className="px-4 py-4 space-y-3">
+    <div className="px-4 py-4 space-y-6">
       {/* 渲染所有历史消息（包括思考、工具调用、最终回复） */}
       {messages.map(msg => {
         // 用户消息
         if (msg.role === 'user') {
           return (
-            <div key={msg.id} className="flex justify-end">
-              <div className="max-w-[85%] rounded-xl px-4 py-3 bg-green-500/15 border border-green-500/20">
+            <div key={msg.id} className="flex justify-end group">
+              <div className="max-w-[85%] rounded-xl px-4 py-3 bg-green-500/15 border border-green-500/20 relative">
                 <p className="text-sm text-foreground/80 whitespace-pre-wrap">{msg.content}</p>
+                <div className="absolute -bottom-4 right-0 flex items-center gap-1">
+                  <MessageCopyButton text={msg.content} />
+                </div>
               </div>
             </div>
           )
@@ -619,11 +653,14 @@ export function ChatMessages({
           const cleaned = stripThinkTags(msg.content)
           if (cleaned) {
             return (
-              <div key={msg.id} className="flex justify-start animate-fade-in">
-                <div className="w-full rounded-xl px-4 py-4 bg-white/80 dark:bg-foreground/[0.06] border border-foreground/10 shadow-sm">
+              <div key={msg.id} className="flex justify-start animate-fade-in group">
+                <div className="w-full rounded-xl px-4 py-4 bg-white/80 dark:bg-foreground/[0.06] border border-foreground/10 shadow-sm relative">
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                     {cleaned}
                   </ReactMarkdown>
+                  <div className="absolute -bottom-4 left-2 flex items-center gap-1">
+                    <MessageCopyButton text={cleaned} />
+                  </div>
                 </div>
               </div>
             )

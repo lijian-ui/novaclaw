@@ -76,47 +76,50 @@ export function LogsPage({ onBack }: LogsPageProps) {
 
   useEffect(() => { loadHistory() }, [loadHistory])
 
-  // 连接到 WebSocket
+  // 连接到 WebSocket（延迟 100ms 避免 React 严格模式下的重复连接报错）
   useEffect(() => {
-    const ws = new WebSocket(WS_URL)
-    wsRef.current = ws
-
-    ws.onopen = () => setConnected(true)
-    ws.onclose = () => setConnected(false)
-    ws.onerror = () => setConnected(false)
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data)
-        if (msg.type === 'heartbeat' || msg.type === 'connected') return
-
-        if (msg.type === 'log' && msg.data) {
-          const entry = msg.data as {
-            timestamp?: string
-            level?: string
-            message?: string
-            task_id?: string | null
+    let ws: WebSocket | null = null
+    let cancelled = false
+    const timer = setTimeout(() => {
+      if (cancelled) return
+      ws = new WebSocket(WS_URL)
+      wsRef.current = ws
+      ws.onopen = () => setConnected(true)
+      ws.onclose = () => setConnected(false)
+      ws.onerror = () => { /* onclose 会处理 */ }
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data)
+          if (msg.type === 'heartbeat' || msg.type === 'connected') return
+          if (msg.type === 'log' && msg.data) {
+            const entry = msg.data as {
+              timestamp?: string; level?: string; message?: string; task_id?: string | null
+            }
+            if (entry.level && entry.message) {
+              idCounterRef.current += 1
+              const id = idCounterRef.current
+              setLogs(prev => {
+                const newEntry: LogEntry = {
+                  id,
+                  timestamp: entry.timestamp || new Date().toISOString().replace('T', ' ').slice(0, 19),
+                  level: normalizeLevel(entry.level || 'info'),
+                  message: entry.message || '',
+                  task_id: entry.task_id || null,
+                }
+                const updated = [...prev, newEntry]
+                return updated.length > 1000 ? updated.slice(-1000) : updated
+              })
+            }
           }
-          if (entry.level && entry.message) {
-            idCounterRef.current += 1
-            const id = idCounterRef.current
-            setLogs(prev => {
-              const newEntry: LogEntry = {
-                id,
-                timestamp: entry.timestamp || new Date().toISOString().replace('T', ' ').slice(0, 19),
-                level: normalizeLevel(entry.level || 'info'),
-                message: entry.message || '',
-                task_id: entry.task_id || null,
-              }
-              const updated = [...prev, newEntry]
-              return updated.length > 1000 ? updated.slice(-1000) : updated
-            })
-          }
-        }
-      } catch { /* ignore */ }
+        } catch { /* ignore */ }
+      }
+    }, 100)
+
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      if (ws) { ws.close(); ws.onclose = null; wsRef.current = null }
     }
-
-    return () => { ws.close(); wsRef.current = null }
   }, [])
 
   // 挂载时同步后端日志级别（如果之前开启了 Debug）
@@ -157,7 +160,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
   return (
     <div className="h-full flex flex-col bg-mainbg">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+      <div className="flex items-center justify-between px-4 py-3.5 border-b border-border shrink-0">
         <div className="flex items-center gap-3">
           <button onClick={onBack} className="p-1 rounded hover:bg-foreground/10 transition-colors">
             <ArrowLeft className="w-4 h-4 text-foreground/60" />
@@ -177,7 +180,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
       </div>
 
       {/* 日志级别过滤按钮（仅前端过滤） + Debug 模式开关 */}
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-border shrink-0 overflow-x-auto">
+      <div className="flex items-center gap-2 px-4 py-1.5 border-b border-border shrink-0 overflow-x-auto">
         {levels.map(lv => {
           const isActive = filter === lv
           const cfg = levelConfig[lv]

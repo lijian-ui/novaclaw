@@ -13,10 +13,14 @@ pub struct AppConfig {
     pub llm_timeout: u32,
     /// 最大重试次数
     pub max_retries: u32,
-    /// 最大 Agent 迭代次数
+    /// 最大 Agent 迭代次数（0=无限制）
     pub max_iterations: usize,
     /// Agent 温度参数
     pub temperature: f64,
+    /// 上下文压缩阈值（消息数超过此值时触发压缩）
+    pub compact_threshold: usize,
+    /// 上下文压缩保留消息数
+    pub compact_keep: usize,
     /// 允许的来源（CORS）
     pub allowed_origins: Vec<String>,
     /// Prompt 注入保护开关
@@ -54,14 +58,18 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             port: 3000,
-            host: "127.0.0.1".to_string(),
+            host: "0.0.0.0".to_string(),
             llm_timeout: 180,
             max_retries: 3,
-            max_iterations: 30,
+            max_iterations: 0,
             temperature: 0.7,
+            compact_threshold: 40,
+            compact_keep: 20,
             allowed_origins: vec![
                 "http://localhost:1420".to_string(),
                 "http://localhost:5173".to_string(),
+                "http://127.0.0.1:1420".to_string(),
+                "http://127.0.0.1:5173".to_string(),
                 "tauri://localhost".to_string(),
             ],
             prompt_injection_protection: true,
@@ -324,21 +332,21 @@ impl ModelsConfig {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %LOCALAPPDATA%\novaclaw\                   |
+/// | Win    | %USERPROFILE%\Documents\novaclaw\          |
 /// | macOS  | ~/Library/Application Support/novaclaw/    |
 /// | Linux  | ~/.local/share/novaclaw/                   |
 pub fn get_base_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
-        let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("AppData")
-                .join("Local")
-                .display()
-                .to_string()
-        });
-        PathBuf::from(local_app_data).join("novaclaw")
+        // 使用用户文档目录，更友好且非隐藏
+        std::env::var("USERPROFILE")
+            .map(|p| PathBuf::from(p).join("Documents").join("novaclaw"))
+            .unwrap_or_else(|_| {
+                dirs::home_dir()
+                    .unwrap_or_else(|| PathBuf::from("."))
+                    .join("Documents")
+                    .join("novaclaw")
+            })
     }
 
     #[cfg(target_os = "macos")]
@@ -374,7 +382,7 @@ pub fn get_base_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %LOCALAPPDATA%\novaclaw\config\            |
+/// | Win    | %USERPROFILE%\Documents\novaclaw\config\    |
 /// | macOS  | ~/Library/Application Support/novaclaw/config/ |
 /// | Linux  | ~/.config/novaclaw/                        |
 pub fn get_config_dir() -> PathBuf {
@@ -410,7 +418,7 @@ pub fn get_config_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %LOCALAPPDATA%\novaclaw\workspace\         |
+/// | Win    | %USERPROFILE%\Documents\novaclaw\workspace\ |
 /// | macOS  | ~/Library/Application Support/novaclaw/workspace/ |
 /// | Linux  | ~/.local/share/novaclaw/workspace/         |
 pub fn get_workspace_dir() -> PathBuf {
@@ -421,7 +429,7 @@ pub fn get_workspace_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %LOCALAPPDATA%\novaclaw\skills\            |
+/// | Win    | %USERPROFILE%\Documents\novaclaw\skills\    |
 /// | macOS  | ~/Library/Application Support/novaclaw/skills/ |
 /// | Linux  | ~/.local/share/novaclaw/skills/            |
 pub fn get_skills_dir() -> PathBuf {
@@ -432,7 +440,7 @@ pub fn get_skills_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %LOCALAPPDATA%\novaclaw\memories\          |
+/// | Win    | %USERPROFILE%\Documents\novaclaw\memories\ |
 /// | macOS  | ~/Library/Application Support/novaclaw/memories/ |
 /// | Linux  | ~/.local/share/novaclaw/memories/          |
 pub fn get_memories_dir() -> PathBuf {
@@ -443,7 +451,7 @@ pub fn get_memories_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %LOCALAPPDATA%\novaclaw\sessions\          |
+/// | Win    | %USERPROFILE%\Documents\novaclaw\sessions\ |
 /// | macOS  | ~/Library/Application Support/novaclaw/sessions/ |
 /// | Linux  | ~/.local/share/novaclaw/sessions/          |
 pub fn get_sessions_dir() -> PathBuf {
@@ -454,7 +462,7 @@ pub fn get_sessions_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %LOCALAPPDATA%\novaclaw\logs\              |
+/// | Win    | %USERPROFILE%\Documents\novaclaw\logs\     |
 /// | macOS  | ~/Library/Application Support/novaclaw/logs/ |
 /// | Linux  | ~/.local/share/novaclaw/logs/              |
 pub fn get_logs_dir() -> PathBuf {
@@ -465,7 +473,7 @@ pub fn get_logs_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %LOCALAPPDATA%\novaclaw\cron\              |
+/// | Win    | %USERPROFILE%\Documents\novaclaw\cron\     |
 /// | macOS  | ~/Library/Application Support/novaclaw/cron/ |
 /// | Linux  | ~/.local/share/novaclaw/cron/              |
 pub fn get_cron_dir() -> PathBuf {

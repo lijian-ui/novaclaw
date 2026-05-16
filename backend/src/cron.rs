@@ -164,16 +164,14 @@ pub async fn start_scheduler() {
 
 /// 单次 tick：检查到期任务并执行
 async fn tick() -> Result<(), String> {
-    let due_jobs_count = {
-        let store = CRON_STORE.lock().await;
-        store.get_due_jobs().len()
-    };
-    tracing::info!("[Cron] 检查到期任务... 发现 {} 个待执行的定时任务", due_jobs_count);
-
     let due_jobs = {
         let store = CRON_STORE.lock().await;
         store.get_due_jobs()
     };
+
+    if !due_jobs.is_empty() {
+        tracing::info!("[Cron] 检查到 {} 个待执行的定时任务", due_jobs.len());
+    }
 
     for job in due_jobs {
         let permit = CRON_SEMAPHORE.clone().acquire_owned().await;

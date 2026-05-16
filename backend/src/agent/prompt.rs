@@ -50,7 +50,7 @@ impl<'a> SystemPromptBuilder<'a> {
         // 5. 环境信息层
         sections.push(self.build_environment());
 
-        // 6. 技能索引层
+        // 6. 技能索引层（预注入模式：有技能列表时才注入）
         if !self.skill_list.is_empty() {
             sections.push(self.build_skill_index());
         }

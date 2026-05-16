@@ -102,6 +102,7 @@ pub fn run() {
             cmd::list_directory,
             cmd::list_directory_detailed,
             cmd::get_data_dir,
+            cmd::set_data_dir,
             cmd::get_config_dir,
             cmd::get_workspace_dir,
             cmd::get_skills_dir,

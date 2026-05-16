@@ -144,6 +144,7 @@ pub fn register_all(
     tavily_api_key: Option<String>,
     memory_store: crate::memory::store::MemoryStore,
     skills_loader: crate::skills::loader::SkillsLoader,
+    mcp_store: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpStore>>,
 ) {
     let rt = tokio::runtime::Handle::current();
     let registry_clone = registry.clone();
@@ -699,38 +700,11 @@ pub fn register_all(
                 }),
             }).await;
 
-            // skills_list tool - list all available skills
-            let skills_loader_for_list = skills_loader.clone();
-            registry_clone.register(ToolDef {
-                name: "skills_list".to_string(),
-                description: "List all available skills with name and description".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }),
-                handler: std::sync::Arc::new(move |_args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
-                    let skills = skills_loader_for_list.list_skills();
-                    if skills.is_empty() {
-                        return Ok("{\"skills\": []}".to_string());
-                    }
-                    let result: Vec<serde_json::Value> = skills.iter().map(|s| {
-                        serde_json::json!({
-                            "name": s.name,
-                            "description": s.description,
-                            "version": s.version,
-                            "enabled": s.enabled,
-                        })
-                    }).collect();
-                    Ok(serde_json::json!({ "skills": result }).to_string())
-                }),
-            }).await;
-
             // skill_view tool - view full details of a specific skill
             let skills_loader_for_view = skills_loader.clone();
             registry_clone.register(ToolDef {
                 name: "skill_view".to_string(),
-                description: "View the full content of a specific skill. Use skills_list first to see available skills".to_string(),
+                description: "View the full content of a specific skill. The skill_dir field tells you the absolute path to the skill folder, use it to reference scripts or assets. Available skills are listed in the system prompt.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -743,13 +717,28 @@ pub fn register_all(
                 }),
                 handler: std::sync::Arc::new(move |args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let name = args["name"].as_str().ok_or("Missing 'name' parameter - provide the skill name")?;
+                    tracing::info!("[Skill] skill_view 加载技能: {}", name);
                     match skills_loader_for_view.get_skill(name) {
                         Some(skill) => {
+                            // source_path 已经是技能目录（skills/<skill_name>），直接使用
+                            // 兼容多种占位符格式：{SKILL_DIR} / ${SKILL_DIR} / ${HERMES_SKILL_DIR}
+                            let raw = &skill.source_path;
+                            // 根据操作系统归一化路径格式：Windows 用反斜杠，其他平台用正斜杠
+                            let normalized_dir = if cfg!(target_os = "windows") {
+                                raw.replace('/', "\\")
+                            } else {
+                                raw.replace('\\', "/")
+                            };
+                            let content = skill.content
+                                .replace("{SKILL_DIR}", &normalized_dir)
+                                .replace("${SKILL_DIR}", &normalized_dir)
+                                .replace("${HERMES_SKILL_DIR}", &normalized_dir);
                             Ok(serde_json::json!({
                                 "name": skill.name,
                                 "description": skill.description,
                                 "version": skill.version,
-                                "content": skill.content,
+                                "content": content,
+                                "skill_dir": normalized_dir,
                             }).to_string())
                         }
                         None => {
@@ -1232,6 +1221,7 @@ pub fn register_all(
                     let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60).min(300);
                     let workdir_str = args.get("workdir").and_then(|v| v.as_str()).unwrap_or(".");
                     let resolved_workdir = resolve_path(workdir_str, &args);
+                    tracing::info!("[Execute] 执行命令: {} | 工作目录: {}", command, resolved_workdir.display());
 
                     if !resolved_workdir.exists() {
                         return Err(format!("Working directory not found: {}", resolved_workdir.display()));
@@ -1429,6 +1419,60 @@ pub fn register_all(
                         }
                         _ => Err(format!("未知操作: {}", action)),
                     }
+                }),
+            }).await;
+
+            // mcp_call_tool tool - proxy calls to MCP servers
+            let mcp_store_for_tool = mcp_store.clone();
+            registry_clone.register(ToolDef {
+                name: "mcp_call_tool".to_string(),
+                description: "Call a tool on an MCP (Model Context Protocol) server. Params: server_name (required), tool_name (required), arguments (optional JSON object)".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server_name": {
+                            "type": "string",
+                            "description": "Name of the MCP server to call"
+                        },
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Name of the tool to invoke on the MCP server"
+                        },
+                        "arguments": {
+                            "type": "object",
+                            "description": "JSON arguments to pass to the tool (optional)"
+                        }
+                    },
+                    "required": ["server_name", "tool_name"]
+                }),
+                handler: std::sync::Arc::new(move |args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
+                    let server_name = args["server_name"].as_str().ok_or("Missing 'server_name' parameter")?.to_string();
+                    let tool_name = args["tool_name"].as_str().ok_or("Missing 'tool_name' parameter")?.to_string();
+                    let tool_args = args.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
+                    let store_clone = mcp_store_for_tool.clone();
+
+                    let store_guard = std::thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new()
+                            .map_err(|e| format!("Runtime error: {}", e))?;
+
+                        rt.block_on(async move {
+                            let server = {
+                                let guard = store_clone.lock().await;
+                                guard.get(&server_name).cloned()
+                            };
+                            let server = match server {
+                                Some(s) => s,
+                                None => return Err(format!("MCP 服务器 '{}' 未找到", server_name)),
+                            };
+                            if !server.enabled {
+                                return Err(format!("MCP 服务器 '{}' 已禁用", server_name));
+                            }
+                            crate::mcp::call_tool(&server, &tool_name, tool_args).await
+                        })
+                    }).join()
+                    .map_err(|_| "MCP tool call thread crashed".to_string())??;
+
+                    Ok(store_guard)
                 }),
             }).await;
 

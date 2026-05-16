@@ -4,7 +4,7 @@ echo ==============================
 echo  Start NovaClaw Frontend + Backend
 echo ==============================
 
-start "NovaClaw-Frontend" cmd /k "cd /d C:\project\NovaClaw && npm run dev"
+start "NovaClaw-Frontend" cmd /k "cd /d d:\Project\novaclaw && npm run dev"
 
 
 echo.
