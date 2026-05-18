@@ -179,8 +179,7 @@ pub async fn initialize() {
 
     tracing::info!("IMGateway 初始化完成 ({} 个渠道配置)", im_config.channels.len());
 
-    // ─── 初始化 MCP 常驻连接 ──────────────────────────
-    crate::mcp::initialize_connections().await;
+    // MCP 连接改为惰性初始化：首次工具调用时自动连接，启动时不阻塞
 }
 
 /// 启动 Axum HTTP/WebSocket 服务器（供桌面版调用）

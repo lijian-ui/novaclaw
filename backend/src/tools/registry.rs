@@ -391,6 +391,20 @@ impl ToolRegistry {
         cbs.retain(|k, _| !k.starts_with(prefix));
     }
 
+    /// 列出所有名称以指定前缀开头的工具名称
+    pub async fn list_names_by_prefix(&self, prefix: &str) -> Vec<String> {
+        let tools = self.tools.read().await;
+        tools.keys().filter(|k| k.starts_with(prefix)).cloned().collect()
+    }
+
+    /// 移除指定名称的工具
+    pub async fn remove_by_name(&self, name: &str) {
+        let mut tools = self.tools.write().await;
+        let mut cbs = self.circuit_breakers.write().await;
+        tools.remove(name);
+        cbs.remove(name);
+    }
+
     /// 手动重置指定工具的熔断器（恢复 CLOSED 状态）
     pub async fn reset_circuit_breaker(&self, name: &str) -> bool {
         let cbs = self.circuit_breakers.read().await;

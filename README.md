@@ -416,6 +416,638 @@ novaclaw/
 
 ---
 
+## 📡 API 接口文档
+
+NovaClaw 后端提供完整的 RESTful API 接口，支持聊天、会话管理、文件操作、MCP 服务器管理、技能系统、定时任务、日志管理等功能。所有接口统一前缀为 `/api`。
+
+### 基础信息
+
+| 项目 | 说明 |
+|------|------|
+| **Base URL** | `http://localhost:3000/api` (本地开发) |
+| **数据格式** | JSON |
+| **认证方式** | 无（内部使用） |
+| **错误响应** | `{ "success": false, "message": "错误信息" }` |
+| **成功响应** | `{ "success": true, "data": {...} }` |
+
+### 聊天相关 API
+
+#### 1. 发送聊天消息（非流式）
+```
+POST /api/chat
+```
+**请求体：**
+```json
+{
+  "session_id": "可选的会话ID",
+  "message": "用户消息内容",
+  "model": "可选的模型名称"
+}
+```
+**响应：**
+```json
+{
+  "success": true,
+  "data": {
+    "session_id": "会话ID",
+    "content": "助手回复内容"
+  }
+}
+```
+
+#### 2. 发送聊天消息（流式 SSE）
+```
+POST /api/chat/stream
+```
+**请求体：**
+```json
+{
+  "session_id": "可选的会话ID",
+  "message": "用户消息内容",
+  "model": "可选的模型名称",
+  "workspace": "可选的工作目录路径"
+}
+```
+**SSE 事件流：**
+- `type: chunk` - 文本块增量
+- `type: agent_step` - Agent 执行步骤（思考、工具调用等）
+- `type: approval_required` - 需要用户确认
+- `type: done` - 完成
+- `type: error` - 错误
+
+#### 3. 取消聊天流
+```
+POST /api/chat/cancel
+```
+**请求体：**
+```json
+{
+  "session_id": "会话ID"
+}
+```
+
+#### 4. 测试模型连接
+```
+POST /api/chat/test
+```
+**请求体：**
+```json
+{
+  "api_key": "API密钥",
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o"
+}
+```
+
+#### 5. 工具执行确认（流式 SSE）
+```
+POST /api/chat/approve
+```
+**请求体：**
+```json
+{
+  "approval_id": "确认ID",
+  "session_id": "会话ID",
+  "approved": true
+}
+```
+**功能：** 用户确认后自动继续 Agent 执行，支持流式输出
+
+---
+
+### 会话管理 API
+
+#### 1. 列出所有会话
+```
+GET /api/sessions
+```
+**响应：**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "会话ID",
+      "name": "会话名称",
+      "model": "模型",
+      "created_at": "创建时间",
+      "updated_at": "更新时间"
+    }
+  ]
+}
+```
+
+#### 2. 创建新会话
+```
+POST /api/sessions
+```
+**请求体：**
+```json
+{
+  "name": "会话名称",
+  "model": "可选的模型"
+}
+```
+
+#### 3. 获取会话消息
+```
+GET /api/session?session_id=xxx&limit=50
+```
+**查询参数：**
+- `session_id` (必需): 会话 ID
+- `limit` (可选): 消息数量限制，默认 100
+
+#### 4. 删除会话
+```
+DELETE /api/session?session_id=xxx
+```
+
+---
+
+### 模型配置 API
+
+#### 1. 列出所有模型
+```
+GET /api/models
+```
+**响应：**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "openai/gpt-4o",
+      "name": "gpt-4o",
+      "provider": "openai",
+      "context_window": 128000,
+      "max_tokens": 4096
+    }
+  ]
+}
+```
+
+#### 2. 获取指定模型
+```
+GET /api/models/{id}
+```
+**路径参数：** `id` 格式为 `provider/model`，如 `openai/gpt-4o`
+
+#### 3. 获取模型配置
+```
+GET /api/models-config
+```
+
+#### 4. 保存模型配置
+```
+PUT /api/models-config
+```
+**请求体：** 完整的 models.json 配置对象
+
+#### 5. 设置默认模型
+```
+PUT /api/default-model
+```
+**请求体：**
+```json
+{
+  "model": "gpt-4o"
+}
+```
+
+---
+
+### 项目配置 API
+
+#### 1. 获取项目配置
+```
+GET /api/config
+```
+**响应：** config.json 的完整内容
+
+#### 2. 更新项目配置
+```
+PUT /api/config
+```
+**请求体：** 完整的 config.json 配置对象
+
+---
+
+### 文件操作 API
+
+#### 1. 读取文件
+```
+POST /api/files/read
+```
+**请求体：**
+```json
+{
+  "path": "/path/to/file.txt"
+}
+```
+
+#### 2. 写入文件
+```
+POST /api/files/write
+```
+**请求体：**
+```json
+{
+  "path": "/path/to/file.txt",
+  "content": "文件内容"
+}
+```
+
+#### 3. 列出目录
+```
+POST /api/files/list
+```
+**请求体：**
+```json
+{
+  "path": "/path/to/directory"
+}
+```
+
+#### 4. 复制文件/目录
+```
+POST /api/files/copy
+```
+**请求体：**
+```json
+{
+  "source": "/source/path",
+  "dest": "/destination/path"
+}
+```
+
+#### 5. 重命名/移动
+```
+POST /api/files/rename
+```
+**请求体：**
+```json
+{
+  "old_path": "/old/path",
+  "new_path": "/new/path"
+}
+```
+
+#### 6. 删除文件/目录
+```
+POST /api/files/delete
+```
+**请求体：**
+```json
+{
+  "path": "/path/to/delete"
+}
+```
+
+#### 7. 创建目录
+```
+POST /api/files/mkdir
+```
+**请求体：**
+```json
+{
+  "path": "/path/to/create"
+}
+```
+
+#### 8. 获取布局配置
+```
+GET /api/files/layout
+```
+
+#### 9. 保存布局配置
+```
+POST /api/files/layout
+```
+
+#### 10. 清空缓存
+```
+POST /api/files/cache
+```
+**功能：** 删除 sessions 和 memories 目录内容
+
+#### 11. 获取所有目录路径
+```
+GET /api/files/paths
+```
+**响应：**
+```json
+{
+  "success": true,
+  "data": {
+    "config_dir": "配置目录路径",
+    "data_dir": "数据目录路径",
+    "workspace_dir": "工作目录路径",
+    "sessions_dir": "会话目录路径",
+    "memories_dir": "记忆目录路径",
+    "skills_dir": "技能目录路径",
+    "logs_dir": "日志目录路径"
+  }
+}
+```
+
+---
+
+### MCP 服务器管理 API
+
+#### 1. 列出所有 MCP 服务器
+```
+GET /api/mcp
+```
+**响应：**
+```json
+{
+  "servers": [
+    {
+      "name": "服务器名称",
+      "transport_type": "stdio",
+      "status": "connected",
+      "tools": ["tool1", "tool2"]
+    }
+  ]
+}
+```
+
+#### 2. 创建 MCP 服务器
+```
+POST /api/mcp
+```
+**请求体：**
+```json
+{
+  "name": "服务器名称",
+  "transport_type": "stdio",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/path"],
+  "description": "可选描述"
+}
+```
+
+#### 3. 删除 MCP 服务器
+```
+DELETE /api/mcp/{name}
+```
+
+#### 4. 切换启用状态
+```
+POST /api/mcp/{name}/toggle
+```
+
+#### 5. 发现工具
+```
+POST /api/mcp/{name}/discover
+```
+
+#### 6. 手动连接
+```
+POST /api/mcp/{name}/connect
+```
+
+#### 7. 断开连接
+```
+POST /api/mcp/{name}/disconnect
+```
+
+---
+
+### 技能系统 API
+
+#### 1. 列出所有技能
+```
+GET /api/skills
+```
+**响应：**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "skill-name",
+      "name": "技能名称",
+      "description": "技能描述",
+      "version": "1.0.0",
+      "enabled": true,
+      "content": "技能内容"
+    }
+  ]
+}
+```
+
+#### 2. 获取指定技能
+```
+GET /api/skills/{id}
+```
+
+#### 3. 上传技能包
+```
+POST /api/skills/upload
+```
+**请求体：** multipart/form-data，字段 `file` 为 .zip 格式的技能包
+
+#### 4. 删除技能
+```
+DELETE /api/skills/{id}
+```
+
+---
+
+### 定时任务 API
+
+#### 1. 列出所有定时任务
+```
+GET /api/cron-jobs
+```
+**响应：**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "任务ID",
+      "name": "任务名称",
+      "schedule": "0 * * * *",
+      "enabled": true,
+      "next_run_at": "下次执行时间",
+      "last_run_at": "上次执行时间",
+      "run_count": 5
+    }
+  ]
+}
+```
+
+#### 2. 创建定时任务
+```
+POST /api/cron-jobs
+```
+**请求体：**
+```json
+{
+  "name": "任务名称",
+  "schedule": "0 * * * *",
+  "payload": "任务消息内容",
+  "session_id": "可选关联的会话ID"
+}
+```
+
+#### 3. 获取指定任务
+```
+GET /api/cron-jobs/{id}
+```
+
+#### 4. 更新定时任务
+```
+PUT /api/cron-jobs/{id}
+```
+**请求体：**
+```json
+{
+  "name": "新名称",
+  "schedule": "0 0 * * *",
+  "enabled": false
+}
+```
+
+#### 5. 删除定时任务
+```
+DELETE /api/cron-jobs/{id}
+```
+
+#### 6. 切换启用状态
+```
+POST /api/cron-jobs/{id}/toggle
+```
+
+#### 7. 立即执行任务
+```
+POST /api/cron-jobs/{id}/run
+```
+
+---
+
+### 日志管理 API
+
+#### 1. 获取系统日志
+```
+GET /api/logs?level=info
+```
+**查询参数：** `level` (可选)，如 `trace`, `debug`, `info`, `warn`, `error`
+
+**响应：**
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "timestamp": "2024-01-01T12:00:00Z",
+      "level": "info",
+      "message": "日志内容",
+      "target": "模块路径"
+    }
+  ]
+}
+```
+
+#### 2. 动态切换日志级别
+```
+POST /api/logs/level
+```
+**请求体：**
+```json
+{
+  "level": "debug"
+}
+```
+
+#### 3. 列出任务日志
+```
+GET /api/logs/tasks
+```
+**响应：** 所有有日志的任务 ID 列表
+
+#### 4. 获取任务日志
+```
+GET /api/logs/tasks/{task_id}
+```
+
+#### 5. 删除任务日志
+```
+DELETE /api/logs/tasks/{task_id}
+```
+
+---
+
+### IM 渠道配置 API
+
+#### 1. 获取 IM 渠道配置
+```
+GET /api/config/im_channels
+```
+**响应：**
+```json
+{
+  "success": true,
+  "channels": [
+    {
+      "id": "dingtalk",
+      "enabled": true,
+      "webhook": "https://oapi.dingtalk.com/robot/send?access_token=xxx",
+      "secret": "可选的加密密钥"
+    }
+  ]
+}
+```
+
+#### 2. 保存 IM 渠道配置
+```
+POST /api/config/im_channels
+```
+**请求体：**
+```json
+{
+  "channels": [
+    {
+      "id": "dingtalk",
+      "enabled": true,
+      "webhook": "https://..."
+    }
+  ]
+}
+```
+
+#### 3. 获取支持的渠道类型
+```
+GET /api/config/im_channel_types
+```
+**响应：**
+```json
+{
+  "success": true,
+  "types": [
+    {
+      "id": "dingtalk",
+      "name": "钉钉",
+      "fields": ["webhook", "secret"]
+    },
+    {
+      "id": "feishu",
+      "name": "飞书",
+      "fields": ["webhook", "secret", "app_id"]
+    },
+    {
+      "id": "wecom",
+      "name": "企业微信",
+      "fields": ["webhook"]
+    }
+  ]
+}
+```
+
+---
+
 ## 🤝 贡献指南
 
 欢迎提交 Issue 和 PR！项目使用标准 GitHub 工作流。

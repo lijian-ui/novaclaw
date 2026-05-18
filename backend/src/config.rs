@@ -58,7 +58,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             port: 3000,
-            host: "0.0.0.0".to_string(),
+            host: "127.0.0.1".to_string(),
             llm_timeout: 30,
             max_retries: 1,
             max_iterations: 0,

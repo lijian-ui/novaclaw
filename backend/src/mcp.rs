@@ -12,7 +12,7 @@ use rmcp::RoleClient;
 use rmcp::service::RunningService;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -315,6 +315,15 @@ pub async fn discover_tools(server: &McpServerConfig) -> Result<Vec<McpToolInfo>
 pub async fn call_tool(server: &McpServerConfig, tool_name: &str, args: serde_json::Value) -> Result<String, String> {
     match server.transport_type.as_str() {
         "stdio" => {
+            // 惰性连接：工具调用时自动连接（如尚未连接）
+            {
+                let mgr = MCP_CONNECTIONS.lock().await;
+                if !mgr.has_stdio(&server.name) {
+                    drop(mgr);
+                    tracing::info!("{}惰性连接 MCP: {}", LOG_PREFIX, server.name);
+                    connect_server(server).await?;
+                }
+            }
             let output = {
                 let mgr = MCP_CONNECTIONS.lock().await;
                 let conn = mgr.stdio.get(&server.name).ok_or_else(|| format!("MCP 连接未建立: {}", server.name))?;
@@ -401,6 +410,8 @@ async fn sse_call_tool_with_client(client: &reqwest::Client, url: &str, tool_nam
 ///
 /// 命名格式: `mcp__{server_name}__{tool_name}`
 /// LLM 可直接调用每个 MCP 工具，handler 自动路由到对应服务器
+///
+/// 采用**差异更新**策略：只注册新增的、移除已删除的，已存在的工具不重复注册。
 pub async fn register_tools(registry: &crate::tools::registry::ToolRegistry) {
     use crate::tools::registry::ToolDef;
     use std::sync::Arc;
@@ -409,38 +420,44 @@ pub async fn register_tools(registry: &crate::tools::registry::ToolRegistry) {
     let guard = store.lock().await;
 
     // 收集所有启用的 MCP 服务器中已发现的工具
-    let entries: Vec<(String, String, String, String, serde_json::Value)> = guard
-        .servers
-        .iter()
-        .filter(|s| s.enabled)
-        .flat_map(|server| {
-            server.tools.iter().map(move |tool| {
-                let entry_name = format!("mcp__{}__{}", server.name, tool.name);
-                let params = if tool.input_schema.is_null() {
-                    serde_json::json!({"type": "object"})
-                } else {
-                    tool.input_schema.clone()
-                };
-                (
-                    entry_name,
-                    tool.description.clone(),
-                    server.name.clone(),
-                    tool.name.clone(),
-                    params,
-                )
-            })
-        })
-        .collect();
+    let mut entry_map: HashMap<String, (String, String, String, serde_json::Value)> = HashMap::new();
+    for server in &guard.servers {
+        if !server.enabled {
+            continue;
+        }
+        for tool in &server.tools {
+            let entry_name = format!("mcp__{}__{}", server.name, tool.name);
+            let params = if tool.input_schema.is_null() {
+                serde_json::json!({"type": "object"})
+            } else {
+                tool.input_schema.clone()
+            };
+            entry_map.insert(entry_name, (
+                tool.description.clone(),
+                server.name.clone(),
+                tool.name.clone(),
+                params,
+            ));
+        }
+    }
     drop(guard);
 
-    let entries_count = entries.len();
+    let current_tools: HashSet<String> = entry_map.keys().cloned().collect();
+    let registered_tools: HashSet<String> = registry.list_names_by_prefix("mcp__").await.into_iter().collect();
 
-    // 先移除旧的 MCP 工具
-    registry.remove_by_prefix("mcp__").await;
+    // 差异更新：移除不再存在的工具
+    for removed in registered_tools.difference(&current_tools) {
+        tracing::debug!("[MCP] 移除已删除工具: {}", removed);
+        registry.remove_by_name(removed).await;
+    }
 
-    // 注册每个 MCP 工具为独立的 ToolDef
+    // 差异更新：只注册新增的工具
+    let to_add: Vec<String> = current_tools.difference(&registered_tools).cloned().collect();
+    let to_add_count = to_add.len();
+
     let store_arc = get_store();
-    for (entry_name, description, server_name, tool_name, input_schema) in entries {
+    for entry_name in &to_add {
+        let (description, server_name, tool_name, input_schema) = entry_map.remove(entry_name).unwrap();
         let srv_name = server_name.clone();
         let t_name = tool_name.clone();
         let store_clone = store_arc.clone();
@@ -476,9 +493,16 @@ pub async fn register_tools(registry: &crate::tools::registry::ToolRegistry) {
             },
         );
 
+        // 在描述末尾追加服务器信息，提示 LLM 同一服务器的工具可配合使用
+        let full_description = if description.is_empty() {
+            format!("(MCP 服务器: {})", server_name)
+        } else {
+            format!("{} (MCP 服务器: {})", description, server_name)
+        };
+
         let tool_def = ToolDef {
-            name: entry_name,
-            description,
+            name: entry_name.clone(),
+            description: full_description,
             parameters: input_schema,
             handler,
         };
@@ -486,5 +510,11 @@ pub async fn register_tools(registry: &crate::tools::registry::ToolRegistry) {
         registry.register(tool_def).await;
     }
 
-    tracing::info!("[MCP] 已注册 {} 个 MCP 工具到 ToolRegistry", entries_count);
+    if to_add_count > 0 {
+        tracing::info!("[MCP] 新增 {} 个 MCP 工具到 ToolRegistry", to_add_count);
+    }
+    let removed_count = registered_tools.difference(&current_tools).count();
+    if removed_count > 0 {
+        tracing::info!("[MCP] 移除了 {} 个 MCP 工具", removed_count);
+    }
 }
