@@ -112,7 +112,13 @@ async fn upload_skill(
 
         // 构建目标路径
         let target_dir = skills_dir.join(skill_name);
-        let target_path = target_dir.join(path.file_name().unwrap());
+        let target_path = match path.file_name() {
+            Some(name) => target_dir.join(name),
+            None => {
+                tracing::warn!("[Skills] 跳过无效文件名: {:?}", path);
+                continue;
+            }
+        };
 
         // 创建目录
         std::fs::create_dir_all(target_dir).ok();

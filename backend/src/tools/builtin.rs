@@ -144,7 +144,6 @@ pub fn register_all(
     tavily_api_key: Option<String>,
     memory_store: crate::memory::store::MemoryStore,
     skills_loader: crate::skills::loader::SkillsLoader,
-    mcp_store: std::sync::Arc<tokio::sync::Mutex<crate::mcp::McpStore>>,
 ) {
     let rt = tokio::runtime::Handle::current();
     let registry_clone = registry.clone();
@@ -927,10 +926,10 @@ pub fn register_all(
                 }),
             }).await;
 
-            // delete_file tool
+            // delete_file tool - requires user confirmation
             registry_clone.register(ToolDef {
                 name: "delete_file".to_string(),
-                description: "Delete a file or directory (recursive). Params: path (required)".to_string(),
+                description: "Delete a file or directory (recursive). User confirmation is required before deletion. Params: path (required)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
@@ -943,21 +942,13 @@ pub fn register_all(
                 }),
                 handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let path_str = args["path"].as_str().ok_or("Missing 'path' parameter")?;
-                    let resolved = resolve_path(path_str, &args);
-
-                    if !resolved.exists() {
-                        return Err(format!("Path not found: {}", resolved.display()));
-                    }
-
-                    if resolved.is_dir() {
-                        std::fs::remove_dir_all(&resolved)
-                            .map_err(|e| format!("Failed to delete directory: {}", e))?;
-                        Ok(format!("Deleted directory: {}", resolved.display()))
-                    } else {
-                        std::fs::remove_file(&resolved)
-                            .map_err(|e| format!("Failed to delete file: {}", e))?;
-                        Ok(format!("Deleted file: {}", resolved.display()))
-                    }
+                    let approval = crate::tools::approval::build_delete_file_approval(path_str, &args)
+                        .ok_or("构建确认信息失败")?;
+                    // 序列化为特殊 JSON 格式，execute() 会解析为 ToolResult::PendingApproval
+                    Ok(serde_json::to_string(&serde_json::json!({
+                        "__type": "PendingApproval",
+                        "approval": approval,
+                    })).map_err(|e| format!("序列化失败: {}", e))?)
                 }),
             }).await;
 
@@ -1419,60 +1410,6 @@ pub fn register_all(
                         }
                         _ => Err(format!("未知操作: {}", action)),
                     }
-                }),
-            }).await;
-
-            // mcp_call_tool tool - proxy calls to MCP servers
-            let mcp_store_for_tool = mcp_store.clone();
-            registry_clone.register(ToolDef {
-                name: "mcp_call_tool".to_string(),
-                description: "Call a tool on an MCP (Model Context Protocol) server. Params: server_name (required), tool_name (required), arguments (optional JSON object)".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "server_name": {
-                            "type": "string",
-                            "description": "Name of the MCP server to call"
-                        },
-                        "tool_name": {
-                            "type": "string",
-                            "description": "Name of the tool to invoke on the MCP server"
-                        },
-                        "arguments": {
-                            "type": "object",
-                            "description": "JSON arguments to pass to the tool (optional)"
-                        }
-                    },
-                    "required": ["server_name", "tool_name"]
-                }),
-                handler: std::sync::Arc::new(move |args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
-                    let server_name = args["server_name"].as_str().ok_or("Missing 'server_name' parameter")?.to_string();
-                    let tool_name = args["tool_name"].as_str().ok_or("Missing 'tool_name' parameter")?.to_string();
-                    let tool_args = args.get("arguments").cloned().unwrap_or(serde_json::Value::Null);
-                    let store_clone = mcp_store_for_tool.clone();
-
-                    let store_guard = std::thread::spawn(move || {
-                        let rt = tokio::runtime::Runtime::new()
-                            .map_err(|e| format!("Runtime error: {}", e))?;
-
-                        rt.block_on(async move {
-                            let server = {
-                                let guard = store_clone.lock().await;
-                                guard.get(&server_name).cloned()
-                            };
-                            let server = match server {
-                                Some(s) => s,
-                                None => return Err(format!("MCP 服务器 '{}' 未找到", server_name)),
-                            };
-                            if !server.enabled {
-                                return Err(format!("MCP 服务器 '{}' 已禁用", server_name));
-                            }
-                            crate::mcp::call_tool(&server, &tool_name, tool_args).await
-                        })
-                    }).join()
-                    .map_err(|_| "MCP tool call thread crashed".to_string())??;
-
-                    Ok(store_guard)
                 }),
             }).await;
 

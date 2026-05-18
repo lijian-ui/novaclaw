@@ -7,6 +7,7 @@ pub mod chat;
 pub mod files;
 pub mod logs;
 pub mod mcp;
+pub mod im;
 
 use axum::{response::IntoResponse, Router};
 
@@ -22,6 +23,7 @@ pub fn build() -> Router {
         .merge(files::routes())
         .merge(logs::routes())
         .merge(mcp::routes())
+        .merge(im::routes())
         .fallback(|req: axum::extract::Request| async move {
             tracing::warn!("未匹配路由: {} {}", req.method(), req.uri());
             (axum::http::StatusCode::NOT_FOUND, "route not found").into_response()

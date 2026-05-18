@@ -10,6 +10,8 @@ interface IMChannel {
   config: {
     webhook?: string
     secret?: string
+    clientId?: string
+    clientSecret?: string
     appId?: string
     appSecret?: string
     agentId?: string
@@ -29,6 +31,8 @@ const channelTypes = [
 const emptyForm = {
   webhook: '',
   secret: '',
+  clientId: '',
+  clientSecret: '',
   appId: '',
   appSecret: '',
   agentId: '',
@@ -266,6 +270,15 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                           </div>
                         </div>
                       )}
+                      {channel.config.clientId && (
+                        <div className="flex items-start gap-2">
+                          <Shield className="w-3.5 h-3.5 text-foreground/30 mt-0.5" />
+                          <div className="min-w-0">
+                            <p className="text-[10px] text-foreground/40">Client ID</p>
+                            <p className="text-xs text-foreground/60 font-mono truncate">{channel.config.clientId}</p>
+                          </div>
+                        </div>
+                      )}
                       {channel.config.corpId && (
                         <div className="flex items-start gap-2">
                           <Shield className="w-3.5 h-3.5 text-foreground/30 mt-0.5" />
@@ -338,6 +351,11 @@ export function IMSettings({ onBack }: IMSettingsProps) {
 
                 {selectedChannelType === 'dingtalk' && (
                   <>
+                    {/* Webhook 模式 */}
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50 font-mono">Webhook</span>
+                      <span className="text-[10px] text-foreground/30">简单发送消息</span>
+                    </div>
                     <div>
                       <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.webhook')}</label>
                       <input
@@ -353,6 +371,31 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                         value={form.secret}
                         onChange={e => setForm(f => ({ ...f, secret: e.target.value }))}
                         placeholder={t('imSettings.secretPlaceholder')}
+                        className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
+                      />
+                    </div>
+
+                    {/* Stream 模式 */}
+                    <div className="flex items-center gap-2 mb-2 mt-4 pt-3 border-t border-border/50">
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 font-mono">Stream</span>
+                      <span className="text-[10px] text-foreground/30">双向 WebSocket 长连接</span>
+                    </div>
+                    <div>
+                      <label className="text-xs text-foreground/50 mb-1 block">Client ID</label>
+                      <input
+                        value={form.clientId || ''}
+                        onChange={e => setForm(f => ({ ...f, clientId: e.target.value }))}
+                        placeholder="应用 Client ID（从钉钉开放平台获取）"
+                        className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-foreground/50 mb-1 block">Client Secret</label>
+                      <input
+                        value={form.clientSecret || ''}
+                        onChange={e => setForm(f => ({ ...f, clientSecret: e.target.value }))}
+                        type="password"
+                        placeholder="应用 Client Secret"
                         className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
                       />
                     </div>

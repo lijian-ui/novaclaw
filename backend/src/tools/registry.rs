@@ -261,7 +261,7 @@ impl ToolRegistry {
 
     /// 执行工具（受熔断器 + 超时 + spawn_blocking 保护）
     /// `chunk_tx` 可选：用于流式输出（如 execute_command 的实时终端输出）
-    pub async fn execute(&self, name: &str, mut args: Value, workspace: Option<&str>, chunk_tx: Option<mpsc::UnboundedSender<String>>) -> Result<String, String> {
+    pub async fn execute(&self, name: &str, mut args: Value, workspace: Option<&str>, chunk_tx: Option<mpsc::UnboundedSender<String>>) -> Result<super::types::ToolResult, String> {
         let (handler, circuit_breaker) = {
             let tools = self.tools.read().await;
             let cbs = self.circuit_breakers.read().await;
@@ -298,16 +298,46 @@ impl ToolRegistry {
         let h = handler.clone();
         let spawned = tokio::task::spawn_blocking(move || (h)(args, chunk_tx));
 
-        let result = match tokio::time::timeout(timeout, spawned).await {
+        let raw_result = match tokio::time::timeout(timeout, spawned).await {
             Ok(Ok(Ok(output))) => Ok(output),
             Ok(Ok(Err(e))) => Err(e),
             Ok(Err(join_err)) => Err(format!("Tool execution panicked: {}", join_err)),
             Err(_) => Err(format!("Tool '{}' timed out after {}s", name, timeout_secs)),
         };
 
+        // 将 String 结果转换为 ToolResult
+        // 特殊的 JSON 格式 `{"__type":"PendingApproval",...}` 表示需要确认
+        let result = match raw_result {
+            Ok(s) => {
+                if let Ok(val) = serde_json::from_str::<Value>(&s) {
+                    if val.get("__type").and_then(|v| v.as_str()) == Some("PendingApproval") {
+                        if let Some(approval) = val.get("approval") {
+                            if let Ok(apr) = serde_json::from_value::<super::types::ApprovalRequired>(approval.clone()) {
+                                Ok(super::types::ToolResult::PendingApproval(apr))
+                            } else {
+                                Ok(super::types::ToolResult::Success(s))
+                            }
+                        } else {
+                            Ok(super::types::ToolResult::Success(s))
+                        }
+                    } else {
+                        Ok(super::types::ToolResult::Success(s))
+                    }
+                } else {
+                    Ok(super::types::ToolResult::Success(s))
+                }
+            }
+            Err(e) => Err(e),
+        };
+
         // 记录执行结果到熔断器
         if let Some(ref cb) = circuit_breaker {
-            cb.after_call(result.is_ok());
+            let is_success = match &result {
+                Ok(super::types::ToolResult::Success(_)) => true,
+                Ok(super::types::ToolResult::PendingApproval(_)) => true, // 确认请求不算失败
+                Err(_) => false,
+            };
+            cb.after_call(is_success);
         }
 
         result
@@ -351,6 +381,14 @@ impl ToolRegistry {
     pub async fn all_circuit_breaker_states(&self) -> Vec<(String, CircuitBreakerSnapshot)> {
         let cbs = self.circuit_breakers.read().await;
         cbs.iter().map(|(name, cb)| (name.clone(), cb.snapshot())).collect()
+    }
+
+    /// 移除所有名称以指定前缀开头的工具
+    pub async fn remove_by_prefix(&self, prefix: &str) {
+        let mut tools = self.tools.write().await;
+        let mut cbs = self.circuit_breakers.write().await;
+        tools.retain(|k, _| !k.starts_with(prefix));
+        cbs.retain(|k, _| !k.starts_with(prefix));
     }
 
     /// 手动重置指定工具的熔断器（恢复 CLOSED 状态）

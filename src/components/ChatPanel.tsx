@@ -82,9 +82,10 @@ import {
   Clock,
   FileText,
   Folder,
+  AlertTriangle,
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
-import { startChatStream, cancelChatStream, useApi } from '@/hooks/useApi'
+import { startChatStream, cancelChatStream, approveChatStream, useApi } from '@/hooks/useApi'
 import { useChat } from '@/contexts/ChatContext'
 import { useTranslation } from 'react-i18next'
 
@@ -441,6 +442,14 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const hasFlushedFirstReasoningRef = useRef(false) // 标记是否已刷新第一次思考内容
   const streamingJustEndedRef = useRef(false) // 标记流式刚结束，阻止 contextMessages 覆盖
   const [isRethinking, setIsRethinking] = useState(false) // 标记是否处于二次思考阶段
+  // 工具确认对话框状态
+  const [approvalDialog, setApprovalDialog] = useState<{
+    open: boolean
+    approvalId: string
+    title: string
+    message: string
+    sessionId: string
+  } | null>(null)
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -779,12 +788,22 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
               }
             }])
           }
+          // 处理工具确认请求
+          if (step.approval && step.approvalId && sessionIdRef.current) {
+            setApprovalDialog({
+              open: true,
+              approvalId: step.approvalId,
+              title: step.approval.title || '工具执行确认',
+              message: step.approval.message || '是否允许执行此操作？',
+              sessionId: sessionIdRef.current,
+            })
+          }
         },
       },
     )
 
     abortRef.current = ac
-  }, [selectedModel, abortRef, workspacePath])
+  }, [selectedModel, abortRef, workspacePath, setApprovalDialog])
 
   const handleSend = useCallback(() => {
     if (!input.trim() || isStreaming) return
@@ -815,6 +834,127 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     // 不要在收到后端 stopped 响应前关闭 SSE 连接！
     // abortRef 由 startChatStream 内部管理，SSE 流结束后自动清理
   }, [])
+
+  // 处理工具确认
+  const handleApprove = useCallback(async () => {
+    if (approvalDialog) {
+      setApprovalDialog(null)
+      
+      // 使用流式 API 来继续 Agent 执行
+      approveChatStream(approvalDialog.approvalId, approvalDialog.sessionId, true, {
+        onChunk: (text) => {
+          streamingContentRef.current += text
+          setStreamingContent(streamingContentRef.current)
+        },
+        onAgentStep: (step) => {
+          if (step.stepType === 'approval_required' && step.approval && step.approvalId) {
+            setApprovalDialog({
+              open: true,
+              approvalId: step.approvalId,
+              title: step.approval?.operation_type || '需要确认',
+              message: step.approval?.message || '',
+              sessionId: approvalDialog.sessionId,
+            })
+            return
+          }
+          
+          const stepData: MessageData = {
+            id: `step_${Date.now()}_${Math.random()}`,
+            role: 'agent_step',
+            content: step.content,
+            agentStep: step,
+          }
+          setMessages(prev => [...prev, stepData])
+        },
+        onApprovalResult: (result) => {
+          const msg: MessageData = {
+            id: `approval_result_${Date.now()}`,
+            role: 'agent_step',
+            content: result.message,
+            agentStep: {
+              stepType: 'tool_result',
+              content: result.output || result.message,
+              toolName: result.toolName,
+              toolResult: result.output || '',
+              turn: 0,
+              maxTurns: 20,
+            },
+          }
+          setMessages(prev => [...prev, msg])
+        },
+        onDone: (result) => {
+          setIsStreaming(false)
+          const content = result.content
+          if (content) {
+            setMessages(prev => {
+              const lastIdx = prev.length - 1
+              const last = prev[lastIdx]
+              if (last && last.role === 'assistant' && !last.id.includes('final_')) {
+                const updated = [...prev]
+                updated[lastIdx] = {
+                  ...last,
+                  content,
+                }
+                return updated
+              } else {
+                return [
+                  ...prev,
+                  {
+                    id: `final_${Date.now()}`,
+                    role: 'assistant',
+                    content,
+                  },
+                ]
+              }
+            })
+          }
+          if (result.sessionId) {
+            refreshSessionList()
+          }
+        },
+        onError: (err) => {
+          setIsStreaming(false)
+          setStreamError(err)
+        },
+      })
+    }
+  }, [approvalDialog, refreshSessionList])
+
+  // 处理工具取消
+  const handleCancel = useCallback(async () => {
+    if (approvalDialog) {
+      setApprovalDialog(null)
+      
+      // 使用流式 API 发送取消
+      approveChatStream(approvalDialog.approvalId, approvalDialog.sessionId, false, {
+        onChunk: () => {},
+        onAgentStep: () => {},
+        onApprovalResult: (result) => {
+          const msg: MessageData = {
+            id: `approval_cancel_${Date.now()}`,
+            role: 'agent_step',
+            content: result.message,
+            agentStep: {
+              stepType: 'tool_result',
+              content: result.message,
+              toolName: '取消操作',
+              toolResult: '已取消',
+              turn: 0,
+              maxTurns: 20,
+            },
+          }
+          setMessages(prev => [...prev, msg])
+        },
+        onDone: () => {
+          setIsStreaming(false)
+        },
+        onError: (err) => {
+          setIsStreaming(false)
+          setStreamError(err)
+        },
+      })
+    }
+  }, [approvalDialog])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1040,6 +1180,34 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           <p className="text-base font-medium text-foreground/40 select-none">
             NovaClaw AI Agent
           </p>
+        </div>
+      )}
+
+      {/* 工具确认条 - 窄条显示在输入框上方 */}
+      {approvalDialog && (
+        <div className="px-3 pb-1 shrink-0">
+          <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-amber-500/[0.08] border border-amber-500/20">
+            <div className="flex items-center gap-2 min-w-0 flex-1">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <p className="text-xs text-amber-300/90 truncate leading-relaxed">
+                {approvalDialog.message}
+              </p>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                onClick={handleCancel}
+                className="px-2.5 py-1 text-xs text-foreground/50 hover:text-foreground/70 bg-foreground/5 hover:bg-foreground/10 rounded-md transition-colors"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleApprove}
+                className="px-2.5 py-1 text-xs text-white bg-red-500 hover:bg-red-400 rounded-md transition-colors"
+              >
+                确认执行
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

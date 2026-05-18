@@ -64,25 +64,23 @@ async fn get_model(Path(id): Path<String>) -> Json<serde_json::Value> {
     }))
 }
 
-/// 获取完整的模型配置
+/// 获取完整的模型配置（直接从内存读取，不重新加载磁盘文件）
 async fn get_models_config() -> Json<serde_json::Value> {
-    let fresh_config = ModelsConfig::reload();
-
-    {
-        let mut state = APP_STATE.write().await;
-        state.models_config = fresh_config;
-    }
-
     let state = APP_STATE.read().await;
-    tracing::info!(
+    let config = state.models_config.clone();
+    let provider_count = config.providers.len();
+    let default_model = config.default_model.clone();
+    drop(state);
+
+    tracing::debug!(
         "加载模型配置: {} 个提供商, 默认模型: {:?}",
-        state.models_config.providers.len(),
-        state.models_config.default_model
+        provider_count,
+        default_model,
     );
 
     Json(serde_json::json!({
         "success": true,
-        "data": state.models_config,
+        "data": config,
     }))
 }
 

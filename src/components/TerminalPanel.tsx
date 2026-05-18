@@ -92,7 +92,6 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
     { id: createTabId(), name: 'Terminal 1', sessionId: '', config: DEFAULT_TERMINAL_CONFIG },
   ])
   const [activeTabId, setActiveTabId] = useState(tabs[0]?.id || '')
-  useState(false)
 
   const {
     connected,

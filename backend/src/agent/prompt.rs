@@ -1,4 +1,5 @@
 use crate::config::AppConfig;
+use crate::soul::SoulManager;
 
 /// System Prompt 构建器
 /// 参考 claw-code 的 SystemPromptBuilder 和 hermes-agent 的 8 层组装模式
@@ -8,6 +9,7 @@ pub struct SystemPromptBuilder<'a> {
     os_name: String,
     workspace: Option<String>,
     skill_list: Vec<String>,
+    soul_manager: Option<SoulManager>,
 }
 
 impl<'a> SystemPromptBuilder<'a> {
@@ -22,7 +24,14 @@ impl<'a> SystemPromptBuilder<'a> {
             os_name: os_name.into(),
             workspace: workspace.map(|s| s.into()),
             skill_list: Vec::new(),
+            soul_manager: None,
         }
+    }
+
+    /// 创建带 SoulManager 的 Prompt 构建器
+    pub fn with_soul_manager(mut self, soul_manager: SoulManager) -> Self {
+        self.soul_manager = Some(soul_manager);
+        self
     }
 
     /// 设置可用技能列表
@@ -32,11 +41,11 @@ impl<'a> SystemPromptBuilder<'a> {
     }
 
     /// 构建完整的系统提示词
-    pub fn build(&self) -> String {
+    pub async fn build(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
 
-        // 1. 身份定义层
-        sections.push(self.build_identity());
+        // 1. SOUL.md 身份层（最高优先级）
+        sections.push(self.build_identity().await);
 
         // 2. 系统规则层
         sections.push(self.build_system_rules());
@@ -58,22 +67,46 @@ impl<'a> SystemPromptBuilder<'a> {
         sections.join("\n\n")
     }
 
-    /// Identity definition
-    fn build_identity(&self) -> String {
-        r#"# Identity
+    /// Identity definition - 从 SOUL.md 加载或使用默认身份
+    async fn build_identity(&self) -> String {
+        // 1. 尝试从 SoulManager 加载 SOUL.md
+        if let Some(ref soul_manager) = self.soul_manager {
+            match soul_manager.get_current_soul().await {
+                Ok(soul_info) => {
+                    tracing::info!("[SOUL] Loaded soul for agent '{}'", soul_info.name);
+                    return soul_info.content;
+                }
+                Err(e) => {
+                    tracing::debug!("[SOUL] Failed to load soul: {:?}, using default identity", e);
+                }
+            }
+        }
 
-You are NovaClaw, an enterprise-grade AI Agent assistant. You can help users with various tasks including:
-- Code writing, analysis, and refactoring
+        // 2. 回退到默认身份定义
+        r#"# NovaClaw Agent
+
+You are NovaClaw, a general-purpose AI Agent. You help users with various tasks through natural language interaction and tool usage.
+
+## Core Principles
+
+- Be helpful, accurate, and efficient
+- Use tools when they improve results
+- Be honest about limitations
+- Prioritize user goals
+
+## Capabilities
+
+- Code development and debugging
 - File operations and management
-- Data query and analysis
-- System operations and tool execution
-- Research and problem solving
+- Information search and analysis
+- Task automation
+- Problem solving
 
-You must be professional, accurate, and efficient. When uncertain, state it clearly.
-Always use tools to obtain real data rather than guessing.
+## Guidelines
 
-## Language Requirement
-You MUST ALWAYS respond to the user in Chinese (中文). All your answers, explanations, and outputs must be in Chinese unless the user explicitly asks otherwise."#.to_string()
+- Use tools to get real data, not guess
+- Keep responses clear and concise
+- Verify results before presenting"#.to_string()
     }
 
     /// System rules
@@ -88,6 +121,9 @@ You MUST ALWAYS respond to the user in Chinese (中文). All your answers, expla
 - Do not create files unless required to complete the request.
 - If a method fails, diagnose the cause before switching strategies.
 - Be careful not to introduce security vulnerabilities (command injection, XSS, SQL injection, etc.).
+
+## Language Requirement (SYSTEM)
+You MUST ALWAYS respond to the user in Chinese (中文). All your answers, explanations, and outputs must be in Chinese unless the user explicitly asks otherwise.
 
 ## Tool Call Termination Rules (CRITICAL)
 

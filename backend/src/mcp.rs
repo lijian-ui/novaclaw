@@ -1,4 +1,15 @@
+//! MCP (Model Context Protocol) 客户端
+//!
+//! ## 连接生命周期
+//!
+//! 1. 用户在前端保存 MCP 配置 → 立即初始化连接（无需重启）
+//! 2. 前端实时显示每个服务的连接状态
+//! 3. 项目关闭时统一清理
+
 use rmcp::model::{CallToolRequestParams, RawContent};
+use rmcp::transport::child_process::TokioChildProcess;
+use rmcp::RoleClient;
+use rmcp::service::RunningService;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -8,9 +19,25 @@ use tokio::sync::Mutex;
 
 const LOG_PREFIX: &str = "[MCP] ";
 
+// ─── 连接状态 ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ConnectionStatus {
+    Disconnected,
+    Connecting,
+    Connected,
+    #[serde(rename = "failed")]
+    Failed(String),
+}
+
+impl Default for ConnectionStatus {
+    fn default() -> Self {
+        ConnectionStatus::Disconnected
+    }
+}
+
 // ─── 类型定义 ────────────────────────────────────────────────
 
-/// MCP 服务器配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpServerConfig {
     pub name: String,
@@ -30,11 +57,11 @@ pub struct McpServerConfig {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<McpToolInfo>,
+    #[serde(default, skip_serializing)]
+    pub status: ConnectionStatus,
 }
 
-fn default_enabled() -> bool {
-    true
-}
+fn default_enabled() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpToolInfo {
@@ -45,7 +72,7 @@ pub struct McpToolInfo {
     pub input_schema: serde_json::Value,
 }
 
-// ─── 存储 ────────────────────────────────────────────────────
+// ─── 持久化存储 ──────────────────────────────────────────
 
 pub struct McpStore {
     path: PathBuf,
@@ -82,385 +109,382 @@ impl McpStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        if let Ok(content) = serde_json::to_string_pretty(&self.servers) {
+        #[derive(Serialize)]
+        struct ServerForSave {
+            name: String,
+            #[serde(rename = "transport_type", default)]
+            transport_type: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            command: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            args: Option<Vec<String>>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            url: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            headers: Option<HashMap<String, String>>,
+            #[serde(default)]
+            description: String,
+            #[serde(default = "default_enabled")]
+            enabled: bool,
+            #[serde(default, skip_serializing_if = "Vec::is_empty")]
+            tools: Vec<McpToolInfo>,
+        }
+        let save_servers: Vec<ServerForSave> = self.servers.iter().map(|s| ServerForSave {
+            name: s.name.clone(), transport_type: s.transport_type.clone(),
+            command: s.command.clone(), args: s.args.clone(), url: s.url.clone(),
+            headers: s.headers.clone(), description: s.description.clone(),
+            enabled: s.enabled, tools: s.tools.clone(),
+        }).collect();
+        if let Ok(content) = serde_json::to_string_pretty(&save_servers) {
             if let Err(e) = std::fs::write(&self.path, content) {
                 tracing::warn!("{}保存 MCP 配置文件失败: {:?}, 错误: {}", LOG_PREFIX, self.path, e);
-            } else {
-                tracing::debug!("{}保存 MCP 配置文件成功: {:?}", LOG_PREFIX, self.path);
             }
         }
     }
 
     pub fn list(&self) -> &[McpServerConfig] { &self.servers }
-    pub fn get(&self, name: &str) -> Option<&McpServerConfig> {
-        self.servers.iter().find(|s| s.name == name)
-    }
-    pub fn get_mut(&mut self, name: &str) -> Option<&mut McpServerConfig> {
-        self.servers.iter_mut().find(|s| s.name == name)
-    }
-    pub fn add(&mut self, server: McpServerConfig) {
-        self.servers.push(server);
-        self.save();
-    }
+    pub fn get(&self, name: &str) -> Option<&McpServerConfig> { self.servers.iter().find(|s| s.name == name) }
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut McpServerConfig> { self.servers.iter_mut().find(|s| s.name == name) }
+    pub fn add(&mut self, server: McpServerConfig) { self.servers.push(server); self.save(); }
     pub fn remove(&mut self, name: &str) -> bool {
-        let len = self.servers.len();
-        self.servers.retain(|s| s.name != name);
-        let removed = self.servers.len() < len;
-        if removed { self.save(); }
-        removed
+        let len = self.servers.len(); self.servers.retain(|s| s.name != name);
+        let removed = self.servers.len() < len; if removed { self.save(); } removed
     }
     pub fn toggle(&mut self, name: &str) -> bool {
-        if let Some(server) = self.get_mut(name) {
-            server.enabled = !server.enabled;
-            self.save();
-            true
-        } else { false }
+        if let Some(s) = self.get_mut(name) { s.enabled = !s.enabled; self.save(); true } else { false }
     }
     pub fn update_tools(&mut self, name: &str, tools: Vec<McpToolInfo>) -> bool {
-        if let Some(server) = self.get_mut(name) {
-            server.tools = tools;
-            self.save();
-            true
-        } else { false }
+        if let Some(s) = self.get_mut(name) { s.tools = tools; self.save(); true } else { false }
     }
 }
-
-// ─── 全局管理器 ──────────────────────────────────────────────
 
 static MCP_STORE: once_cell::sync::Lazy<Arc<Mutex<McpStore>>> =
     once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(McpStore::load())));
 
 pub fn get_store() -> Arc<Mutex<McpStore>> { MCP_STORE.clone() }
 
-// ─── 工具 ────────────────────────────────────────────────────
+// ─── 长驻连接管理器 ──────────────────────────────────────
 
-/// 连接 MCP 服务器并发现工具
+/// stdio 连接 — 存储 RunningService，通过 Arc<Mutex> 提供 &mut self 能力
+struct StdioConnection {
+    /// Arc 允许多个引用共享；Mutex 允许 close() 时获得 &mut self
+    running: Arc<Mutex<Option<RunningService<RoleClient, ()>>>>,
+    #[allow(dead_code)]
+    name: String,
+}
+
+pub struct McpConnectionManager {
+    stdio: HashMap<String, StdioConnection>,
+    http_client: reqwest::Client,
+}
+
+impl McpConnectionManager {
+    fn new() -> Self {
+        Self {
+            stdio: HashMap::new(),
+            http_client: reqwest::Client::builder()
+                .pool_max_idle_per_host(10).timeout(std::time::Duration::from_secs(30))
+                .build().expect("创建 HTTP 客户端失败"),
+        }
+    }
+
+    pub async fn connect_stdio(&mut self, server: &McpServerConfig) -> Result<(), String> {
+        if self.stdio.contains_key(&server.name) {
+            return Ok(());
+        }
+        tracing::info!("{}启动 MCP 常驻进程: {}", LOG_PREFIX, server.name);
+        let cmd = server.command.as_deref().ok_or("缺少启动命令")?;
+        let args: Vec<&str> = server.args.as_ref().map(|a| a.iter().map(|s| s.as_str()).collect()).unwrap_or_default();
+        let mut command = tokio::process::Command::new(cmd);
+        command.args(&args);
+        let transport = TokioChildProcess::new(command).map_err(|e| format!("创建 MCP 子进程失败: {}", e))?;
+        let running = rmcp::service::serve_client((), transport).await.map_err(|e| format!("MCP 连接失败: {}", e))?;
+        self.stdio.insert(server.name.clone(), StdioConnection {
+            running: Arc::new(Mutex::new(Some(running))),
+            name: server.name.clone(),
+        });
+        tracing::info!("{}MCP 常驻进程已启动: {}", LOG_PREFIX, server.name);
+        Ok(())
+    }
+
+    pub async fn disconnect_stdio(&mut self, name: &str) {
+        if let Some(conn) = self.stdio.remove(name) {
+            if let Some(mut running) = conn.running.lock().await.take() {
+                let _ = running.close().await;
+            }
+            tracing::info!("{}MCP 连接已断开: {}", LOG_PREFIX, name);
+        }
+    }
+
+    pub fn has_stdio(&self, name: &str) -> bool { self.stdio.contains_key(name) }
+    pub fn connected_stdio_names(&self) -> Vec<String> { self.stdio.keys().cloned().collect() }
+
+    pub async fn shutdown_all(&mut self) {
+        for (name, conn) in self.stdio.drain() {
+            if let Some(mut running) = conn.running.lock().await.take() {
+                let _ = running.close().await;
+            }
+            tracing::info!("{}MCP 连接已关闭: {}", LOG_PREFIX, name);
+        }
+    }
+}
+
+static MCP_CONNECTIONS: once_cell::sync::Lazy<Arc<Mutex<McpConnectionManager>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(McpConnectionManager::new())));
+
+pub fn get_connection_manager() -> Arc<Mutex<McpConnectionManager>> { MCP_CONNECTIONS.clone() }
+
+pub async fn get_all_servers_with_status() -> Vec<McpServerConfig> {
+    let store = MCP_STORE.lock().await;
+    let mgr = MCP_CONNECTIONS.lock().await;
+    let connected = mgr.connected_stdio_names();
+    let mut result: Vec<McpServerConfig> = store.list().to_vec();
+    for server in &mut result {
+        server.status = if connected.contains(&server.name) { ConnectionStatus::Connected }
+            else { ConnectionStatus::Disconnected };
+    }
+    result
+}
+
+pub async fn connect_server(server: &McpServerConfig) -> Result<(), String> {
+    {
+        let mut store = MCP_STORE.lock().await;
+        if let Some(s) = store.get_mut(&server.name) { s.status = ConnectionStatus::Connecting; }
+    }
+    let result = match server.transport_type.as_str() {
+        "stdio" => { let mut mgr = MCP_CONNECTIONS.lock().await; mgr.connect_stdio(server).await }
+        _ => Err(format!("传输类型 {} 暂不支持按需连接", server.transport_type)),
+    };
+    {
+        let mut store = MCP_STORE.lock().await;
+        if let Some(s) = store.get_mut(&server.name) {
+            s.status = match &result { Ok(_) => ConnectionStatus::Connected, Err(e) => ConnectionStatus::Failed(e.clone()) };
+        }
+    }
+    result
+}
+
+pub async fn disconnect_server(name: &str) {
+    let mut mgr = MCP_CONNECTIONS.lock().await;
+    mgr.disconnect_stdio(name).await;
+    let mut store = MCP_STORE.lock().await;
+    if let Some(s) = store.get_mut(name) { s.status = ConnectionStatus::Disconnected; }
+}
+
+pub async fn initialize_connections() {
+    let store = MCP_STORE.lock().await;
+    let enabled: Vec<_> = store.list().iter().filter(|s| s.enabled && s.transport_type == "stdio").cloned().collect();
+    drop(store);
+    if enabled.is_empty() { tracing::info!("{}没有需要初始化的 MCP 连接", LOG_PREFIX); return; }
+    for server in &enabled {
+        tracing::info!("{}正在初始化 MCP: {}", LOG_PREFIX, server.name);
+        if let Err(e) = connect_server(server).await { tracing::error!("{}初始化 MCP 失败 ({}): {}", LOG_PREFIX, server.name, e); }
+    }
+}
+
+pub async fn shutdown_all_connections() {
+    let mut mgr = MCP_CONNECTIONS.lock().await;
+    mgr.shutdown_all().await;
+}
+
+// ─── 工具发现 ────────────────────────────────────────────
+
 pub async fn discover_tools(server: &McpServerConfig) -> Result<Vec<McpToolInfo>, String> {
-    tracing::info!("{}开始发现 MCP 服务器工具: {}, 传输类型: {}", LOG_PREFIX, server.name, server.transport_type);
-    
     match server.transport_type.as_str() {
         "stdio" => {
-            use rmcp::ServiceExt;
-            let cmd = server.command.as_deref().ok_or("缺少启动命令")?;
-            let args: Vec<&str> = server.args.as_ref()
-                .map(|a| a.iter().map(|s| s.as_str()).collect())
-                .unwrap_or_default();
-            tracing::debug!("{}创建 MCP 子进程: {} {:?}", LOG_PREFIX, cmd, args);
-            
-            let mut command = tokio::process::Command::new(cmd);
-            command.args(&args);
-            let transport = rmcp::transport::child_process::TokioChildProcess::new(command)
-                .map_err(|e| {
-                    let err = format!("创建 MCP 子进程失败: {}", e);
-                    tracing::error!("{}{}", LOG_PREFIX, err);
-                    err
-                })?;
-            let peer = ().serve(transport).await.map_err(|e| {
-                let err = format!("连接失败: {}", e);
-                tracing::error!("{}{}", LOG_PREFIX, err);
-                err
-            })?;
-            tracing::debug!("{}MCP 服务器连接成功: {}", LOG_PREFIX, server.name);
-            
-            let r = peer.list_all_tools().await.map_err(|e| {
-                let err = format!("获取工具列表失败: {}", e);
-                tracing::error!("{}{}", LOG_PREFIX, err);
-                err
-            })?;
-            let _ = peer.cancel().await;
-            
-            let tools: Vec<McpToolInfo> = r.into_iter().map(|t| McpToolInfo {
+            let tools = {
+                let mgr = MCP_CONNECTIONS.lock().await;
+                let conn = mgr.stdio.get(&server.name).ok_or_else(|| format!("MCP 连接未建立: {}", server.name))?;
+                let running = conn.running.lock().await;
+                let running = running.as_ref().ok_or_else(|| format!("MCP 连接已关闭: {}", server.name))?;
+                running.peer().list_all_tools().await.map_err(|e| format!("获取工具列表失败: {}", e))?
+            };
+            Ok(tools.into_iter().map(|t| McpToolInfo {
                 name: t.name.to_string(),
                 description: t.description.map(|d| d.to_string()).unwrap_or_default(),
                 input_schema: serde_json::to_value(&*t.input_schema).unwrap_or_default(),
-            }).collect();
-            tracing::info!("{}发现 MCP 服务器工具完成: {}, 共 {} 个工具", LOG_PREFIX, server.name, tools.len());
-            Ok(tools)
+            }).collect())
         }
-        "streamable-http" => {
-            let err = "streamable-http 传输类型暂不支持，请使用 stdio 或 sse 类型".to_string();
-            tracing::warn!("{}{}", LOG_PREFIX, err);
-            Err(err)
-        }
-        "sse" => {
-            let url = server.url.as_deref().ok_or("缺少 URL")?;
-            sse_list_tools(url).await
-        }
-        t => {
-            let err = format!("不支持的传输类型: {}", t);
-            tracing::error!("{}{}", LOG_PREFIX, err);
-            Err(err)
-        }
+        "sse" => { let url = server.url.as_deref().ok_or("缺少 URL")?; sse_list_tools(url).await }
+        t => Err(format!("不支持的传输类型: {}", t)),
     }
 }
 
-/// 调用 MCP 工具
-pub async fn call_tool(
-    server: &McpServerConfig,
-    tool_name: &str,
-    args: serde_json::Value,
-) -> Result<String, String> {
-    tracing::info!("{}开始调用 MCP 工具: {} -> {}", LOG_PREFIX, server.name, tool_name);
-    tracing::debug!("{}调用参数: {}", LOG_PREFIX, args);
-    
+// ─── 工具调用 ────────────────────────────────────────────
+
+pub async fn call_tool(server: &McpServerConfig, tool_name: &str, args: serde_json::Value) -> Result<String, String> {
     match server.transport_type.as_str() {
         "stdio" => {
-            use rmcp::ServiceExt;
-            let cmd = server.command.as_deref().ok_or("缺少启动命令")?;
-            let args_list: Vec<&str> = server.args.as_ref()
-                .map(|a| a.iter().map(|s| s.as_str()).collect())
-                .unwrap_or_default();
-            
-            let mut command = tokio::process::Command::new(cmd);
-            command.args(&args_list);
-            let transport = rmcp::transport::child_process::TokioChildProcess::new(command)
-                .map_err(|e| {
-                    let err = format!("创建 MCP 子进程失败: {}", e);
-                    tracing::error!("{}{}", LOG_PREFIX, err);
-                    err
-                })?;
-            let peer = ().serve(transport).await.map_err(|e| {
-                let err = format!("连接失败: {}", e);
-                tracing::error!("{}{}", LOG_PREFIX, err);
-                err
-            })?;
-
-            let json_object: serde_json::Map<String, serde_json::Value> = match args {
-                serde_json::Value::Object(map) => map,
-                other => {
-                    let mut map = serde_json::Map::new();
-                    map.insert("value".to_string(), other);
-                    map
+            let output = {
+                let mgr = MCP_CONNECTIONS.lock().await;
+                let conn = mgr.stdio.get(&server.name).ok_or_else(|| format!("MCP 连接未建立: {}", server.name))?;
+                let running = conn.running.lock().await;
+                let running = running.as_ref().ok_or_else(|| format!("MCP 连接已关闭: {}", server.name))?;
+                let json_object: serde_json::Map<String, serde_json::Value> = match args {
+                    serde_json::Value::Object(map) => map,
+                    other => { let mut map = serde_json::Map::new(); map.insert("value".to_string(), other); map }
+                };
+                let result = running.peer().call_tool(
+                    CallToolRequestParams::new(tool_name.to_string()).with_arguments(json_object),
+                ).await.map_err(|e| format!("调用工具失败: {}", e))?;
+                let mut output = String::new();
+                for content in result.content {
+                    match content.raw { RawContent::Text(t) => { output.push_str(&t.text); output.push('\n'); } _ => {} }
                 }
+                output.trim().to_string()
             };
-            let result = peer.call_tool(
-                CallToolRequestParams::new(tool_name.to_string()).with_arguments(json_object),
-            ).await.map_err(|e| {
-                let err = format!("调用工具失败: {}", e);
-                tracing::error!("{}{}", LOG_PREFIX, err);
-                err
-            })?;
-            let _ = peer.cancel().await;
-
-            let mut output = String::new();
-            for content in result.content {
-                match content.raw {
-                    RawContent::Text(t) => { output.push_str(&t.text); output.push('\n'); }
-                    _ => {}
-                }
-            }
-            let output_str = output.trim().to_string();
-            tracing::info!("{}MCP 工具调用完成: {} -> {}, 结果长度: {} 字符", LOG_PREFIX, server.name, tool_name, output_str.len());
-            tracing::debug!("{}调用结果: {}", LOG_PREFIX, output_str);
-            Ok(output_str)
-        }
-        "streamable-http" => {
-            let err = "streamable-http 传输类型暂不支持，请使用 stdio 或 sse 类型".to_string();
-            tracing::warn!("{}{}", LOG_PREFIX, err);
-            Err(err)
+            Ok(output)
         }
         "sse" => {
             let url = server.url.as_deref().ok_or("缺少 URL")?;
-            sse_call_tool(url, tool_name, args).await
+            let mgr = MCP_CONNECTIONS.lock().await;
+            sse_call_tool_with_client(&mgr.http_client, url, tool_name, args).await
         }
-        t => {
-            let err = format!("不支持的传输类型: {}", t);
-            tracing::error!("{}{}", LOG_PREFIX, err);
-            Err(err)
-        }
+        t => Err(format!("不支持的传输类型: {}", t)),
     }
 }
 
-// ─── SSE 传输（传统 MCP SSE 协议）─────────────────────────────
+// ─── SSE 传输 ───────────────────────────────────────────
 
-/// 通过 SSE 协议向 MCP 服务器发送请求并等待响应
-async fn sse_request(
-    url: &str,
-    method: &str,
-    params: Option<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    tracing::debug!("{}SSE 请求: {} -> {}", LOG_PREFIX, url, method);
-    
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| {
-            let err = format!("创建 HTTP 客户端失败: {}", e);
-            tracing::error!("{}{}", LOG_PREFIX, err);
-            err
-        })?;
-
+async fn sse_request(client: &reqwest::Client, url: &str, method: &str, params: Option<serde_json::Value>) -> Result<serde_json::Value, String> {
     let request_id = uuid::Uuid::new_v4().to_string();
-
-    // 构造 JSON-RPC 请求
-    let mut req_body = json!({
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "method": method,
-    });
-    if let Some(p) = params {
-        req_body["params"] = p;
-    }
-
-    // 发送 POST 请求
-    let resp = client
-        .post(url)
-        .header("Content-Type", "application/json")
-        .json(&req_body)
-        .send()
-        .await
-        .map_err(|e| {
-            let err = format!("SSE POST 请求失败: {}", e);
-            tracing::error!("{}{}", LOG_PREFIX, err);
-            err
-        })?;
-
-    let _content_type = resp
-        .headers()
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("")
-        .to_string();
-
-    // 如果是 SSE 响应（或直接 JSON 响应），尝试解析
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| {
-            let err = format!("读取响应失败: {}", e);
-            tracing::error!("{}{}", LOG_PREFIX, err);
-            err
-        })?;
-
-    if body.is_empty() {
-        let err = "SSE 返回空响应".to_string();
-        tracing::warn!("{}{}", LOG_PREFIX, err);
-        return Err(err);
-    }
-
-    // 先尝试直接解析为 JSON（某些服务器直接返回 JSON-RPC 响应体）
+    let mut req_body = json!({"jsonrpc": "2.0", "id": request_id, "method": method});
+    if let Some(p) = params { req_body["params"] = p; }
+    let resp = client.post(url).header("Content-Type", "application/json").json(&req_body).send().await
+        .map_err(|e| format!("SSE POST 请求失败: {}", e))?;
+    let body = resp.bytes().await.map_err(|e| format!("读取响应失败: {}", e))?;
+    if body.is_empty() { return Err("SSE 返回空响应".to_string()); }
     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body) {
         if val.get("jsonrpc").is_some() {
-            if let Some(err) = val.get("error") {
-                let err_msg = format!(
-                    "MCP 错误: {}",
-                    err.get("message").and_then(|m| m.as_str()).unwrap_or("未知错误")
-                );
-                tracing::error!("{}{}", LOG_PREFIX, err_msg);
-                return Err(err_msg);
-            }
-            tracing::debug!("{}SSE 请求成功: {} -> {}", LOG_PREFIX, url, method);
+            if let Some(err) = val.get("error") { return Err(format!("MCP 错误: {}", err.get("message").and_then(|m| m.as_str()).unwrap_or("未知错误"))); }
             return Ok(val.get("result").cloned().unwrap_or(val));
         }
     }
-
-    // 尝试按 SSE 格式解析（event: message\ndata: {...}\n\n）
     let text = String::from_utf8_lossy(&body);
-    let mut data_parts: Vec<&str> = Vec::new();
-    let mut in_data = false;
-
+    let mut data_parts: Vec<&str> = Vec::new(); let mut in_data = false;
     for line in text.lines() {
-        if line.starts_with("data: ") {
-            let data = line.trim_start_matches("data: ");
-            // 如果 data 不是完整的 JSON，可能是分块的
-            data_parts.push(data);
-            in_data = true;
-        } else if in_data && !line.starts_with("event:") && !line.is_empty() {
-            // 多行 data 的续行
-            data_parts.push(line.trim());
-        } else if line.is_empty() && in_data {
-            // 消息结束，尝试解析
-            let data_str = data_parts.join("");
-            data_parts.clear();
-            in_data = false;
-
+        if line.starts_with("data: ") { data_parts.push(line.trim_start_matches("data: ")); in_data = true; }
+        else if in_data && !line.starts_with("event:") && !line.is_empty() { data_parts.push(line.trim()); }
+        else if line.is_empty() && in_data {
+            let data_str = data_parts.join(""); data_parts.clear(); in_data = false;
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&data_str) {
-                if let Some(err) = val.get("error") {
-                    let err_msg = format!(
-                        "MCP 错误: {}",
-                        err.get("message").and_then(|m| m.as_str()).unwrap_or("未知错误")
-                    );
-                    tracing::error!("{}{}", LOG_PREFIX, err_msg);
-                    return Err(err_msg);
-                }
-                tracing::debug!("{}SSE 请求成功: {} -> {}", LOG_PREFIX, url, method);
+                if let Some(err) = val.get("error") { return Err(format!("MCP 错误: {}", err.get("message").and_then(|m| m.as_str()).unwrap_or("未知错误"))); }
                 return Ok(val.get("result").cloned().unwrap_or(val));
             }
         }
     }
-
-    // 兜底：如果解析到任何 JSON 就返回
-    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body) {
-        return Ok(val);
-    }
-
-    let err = format!("无法解析 SSE 响应: {}", &text[..text.len().min(200)]);
-    tracing::error!("{}{}", LOG_PREFIX, err);
-    Err(err)
+    if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body) { return Ok(val); }
+    Err(format!("无法解析响应: {}", &text[..text.len().min(200)]))
 }
 
-/// 通过 SSE 协议调用 MCP 工具列表
 async fn sse_list_tools(url: &str) -> Result<Vec<McpToolInfo>, String> {
-    tracing::debug!("{}SSE 发现工具: {}", LOG_PREFIX, url);
-    
-    let result = sse_request(url, "tools/list", None).await?;
+    let client = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().map_err(|e| format!("创建 HTTP 客户端失败: {}", e))?;
+    let result = sse_request(&client, url, "tools/list", None).await?;
+    let tools = result.get("tools").and_then(|t| t.as_array()).ok_or_else(|| "返回结果缺少 tools 字段".to_string())?;
+    Ok(tools.iter().map(|t| McpToolInfo {
+        name: t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+        description: t.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string(),
+        input_schema: t.get("inputSchema").or_else(|| t.get("input_schema")).cloned().unwrap_or(json!({"type": "object"})),
+    }).collect())
+}
 
-    let tools = result
-        .get("tools")
-        .and_then(|t| t.as_array())
-        .ok_or_else(|| {
-            let err = "返回结果缺少 tools 字段".to_string();
-            tracing::error!("{}{}", LOG_PREFIX, err);
-            err
-        })?;
+async fn sse_call_tool_with_client(client: &reqwest::Client, url: &str, tool_name: &str, args: serde_json::Value) -> Result<String, String> {
+    let params = json!({"name": tool_name, "arguments": args});
+    let result = sse_request(client, url, "tools/call", Some(params)).await?;
+    Ok(result.get("content").and_then(|c| c.as_array()).map(|arr| arr.iter()
+        .filter_map(|item| item.get("text").and_then(|t| t.as_str())).collect::<Vec<&str>>().join("\n")).unwrap_or_default())
+}
 
-    let tool_list: Vec<McpToolInfo> = tools
+// ─── 注册到 ToolRegistry ──────────────────────────────
+
+/// 将所有已发现的 MCP 工具注册为独立的 ToolDef
+///
+/// 命名格式: `mcp__{server_name}__{tool_name}`
+/// LLM 可直接调用每个 MCP 工具，handler 自动路由到对应服务器
+pub async fn register_tools(registry: &crate::tools::registry::ToolRegistry) {
+    use crate::tools::registry::ToolDef;
+    use std::sync::Arc;
+
+    let store = get_store();
+    let guard = store.lock().await;
+
+    // 收集所有启用的 MCP 服务器中已发现的工具
+    let entries: Vec<(String, String, String, String, serde_json::Value)> = guard
+        .servers
         .iter()
-        .map(|t| McpToolInfo {
-            name: t.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
-            description: t
-                .get("description")
-                .and_then(|d| d.as_str())
-                .unwrap_or("")
-                .to_string(),
-            input_schema: t
-                .get("inputSchema")
-                .or_else(|| t.get("input_schema"))
-                .cloned()
-                .unwrap_or(json!({"type": "object"})),
+        .filter(|s| s.enabled)
+        .flat_map(|server| {
+            server.tools.iter().map(move |tool| {
+                let entry_name = format!("mcp__{}__{}", server.name, tool.name);
+                let params = if tool.input_schema.is_null() {
+                    serde_json::json!({"type": "object"})
+                } else {
+                    tool.input_schema.clone()
+                };
+                (
+                    entry_name,
+                    tool.description.clone(),
+                    server.name.clone(),
+                    tool.name.clone(),
+                    params,
+                )
+            })
         })
         .collect();
-    
-    tracing::debug!("{}SSE 发现工具完成: {} 个工具", LOG_PREFIX, tool_list.len());
-    Ok(tool_list)
-}
+    drop(guard);
 
-/// 通过 SSE 协议调用 MCP 工具
-async fn sse_call_tool(
-    url: &str,
-    tool_name: &str,
-    args: serde_json::Value,
-) -> Result<String, String> {
-    tracing::debug!("{}SSE 调用工具: {} -> {}", LOG_PREFIX, url, tool_name);
-    
-    let params = json!({
-        "name": tool_name,
-        "arguments": args,
-    });
+    let entries_count = entries.len();
 
-    let result = sse_request(url, "tools/call", Some(params)).await?;
+    // 先移除旧的 MCP 工具
+    registry.remove_by_prefix("mcp__").await;
 
-    let content = result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|item| item.get("text").and_then(|t| t.as_str()))
-                .collect::<Vec<&str>>()
-                .join("\n")
-        })
-        .unwrap_or_default();
+    // 注册每个 MCP 工具为独立的 ToolDef
+    let store_arc = get_store();
+    for (entry_name, description, server_name, tool_name, input_schema) in entries {
+        let srv_name = server_name.clone();
+        let t_name = tool_name.clone();
+        let store_clone = store_arc.clone();
 
-    tracing::debug!("{}SSE 调用工具完成: {} -> {}, 结果长度: {} 字符", LOG_PREFIX, url, tool_name, content.len());
-    Ok(content)
+        let handler = Arc::new(
+            move |args: serde_json::Value,
+                  _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>|
+                  -> Result<String, String> {
+                let srv_name = srv_name.clone();
+                let t_name = t_name.clone();
+                let store_clone = store_clone.clone();
+                let tool_args = args;
+
+                let result = std::thread::spawn(move || {
+                    let rt = tokio::runtime::Runtime::new()
+                        .map_err(|e| format!("Runtime error: {}", e))?;
+                    rt.block_on(async move {
+                        let guard = store_clone.lock().await;
+                        let server = guard.get(&srv_name).cloned();
+                        drop(guard);
+                        let server = server
+                            .ok_or_else(|| format!("MCP server '{}' not found", srv_name))?;
+                        if !server.enabled {
+                            return Err(format!("MCP server '{}' is disabled", srv_name));
+                        }
+                        crate::mcp::call_tool(&server, &t_name, tool_args).await
+                    })
+                })
+                .join()
+                .map_err(|_| "MCP tool call crashed".to_string())??;
+
+                Ok(result)
+            },
+        );
+
+        let tool_def = ToolDef {
+            name: entry_name,
+            description,
+            parameters: input_schema,
+            handler,
+        };
+
+        registry.register(tool_def).await;
+    }
+
+    tracing::info!("[MCP] 已注册 {} 个 MCP 工具到 ToolRegistry", entries_count);
 }

@@ -126,7 +126,7 @@ export function Settings() {
                 value={localConfig.llm?.timeout ?? config.llm.timeout}
                 onChange={(e) => setLocalConfig(prev => ({
                   ...prev,
-                  llm: { ...prev.llm as LlmConfig, timeout: parseInt(e.target.value) || 60 }
+                  llm: { ...prev.llm as LlmConfig, timeout: parseInt(e.target.value) || 30 }
                 }))}
               />
             </div>

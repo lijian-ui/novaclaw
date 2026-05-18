@@ -244,8 +244,20 @@ async fn handle_terminal_socket(socket: WebSocket) {
     if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
         let mut session_lock = session.lock().await;
         
-        let stdout = session_lock.child.stdout.take().ok_or("Failed to get stdout").unwrap();
-        let stderr = session_lock.child.stderr.take().ok_or("Failed to get stderr").unwrap();
+        let stdout = match session_lock.child.stdout.take() {
+            Some(s) => s,
+            None => {
+                tracing::error!("[Terminal] stdout 已被占用，无法启动终端会话 {}", session_id);
+                return;
+            }
+        };
+        let stderr = match session_lock.child.stderr.take() {
+            Some(s) => s,
+            None => {
+                tracing::error!("[Terminal] stderr 已被占用，无法启动终端会话 {}", session_id);
+                return;
+            }
+        };
 
         let ws_clone1 = ws_sender.clone();
         let ws_clone2 = ws_sender.clone();

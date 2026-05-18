@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::error::AppError;
@@ -183,7 +184,7 @@ impl SessionStore {
         Ok(messages)
     }
 
-    /// 追加消息（JSONL 格式增量写入）
+    /// 追加消息（JSONL 格式增量写入，OpenClaw 风格：只追加不重读）
     pub fn append_message(&self, session_id: &str, message: &Message) -> Result<(), AppError> {
         let path = self.messages_path(session_id);
         if let Some(parent) = path.parent() {
@@ -191,10 +192,12 @@ impl SessionStore {
         }
 
         let line = serde_json::to_string(message)?;
-        let mut content = fs::read_to_string(&path).unwrap_or_default();
-        content.push_str(&line);
-        content.push('\n');
-        fs::write(&path, content)?;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        writeln!(file, "{}", line)?;
+        file.flush()?;
 
         // 更新会话时间戳
         let now = chrono::Utc::now().to_rfc3339();

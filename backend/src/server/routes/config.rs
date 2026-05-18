@@ -2,18 +2,15 @@ use axum::{routing::{get, put}, Json, Router};
 use crate::APP_STATE;
 use crate::config::AppConfig;
 
-/// 获取当前配置（从文件重新加载，确保页面刷新后数据最新）
+/// 获取当前配置（从内存读取，不重新加载磁盘文件）
 async fn get_config() -> Json<serde_json::Value> {
-    let fresh_config = AppConfig::reload();
-
-    {
-        let mut state = APP_STATE.write().await;
-        state.config = fresh_config.clone();
-    }
+    let state = APP_STATE.read().await;
+    let config = state.config.clone();
+    drop(state);
 
     Json(serde_json::json!({
         "success": true,
-        "data": fresh_config,
+        "data": config,
     }))
 }
 

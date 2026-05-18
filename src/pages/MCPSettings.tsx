@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, Plug, X, ChevronRight, ChevronDown, Wrench, ArrowLeft, RefreshCw } from 'lucide-react'
+import { Plus, Trash2, Plug, X, ChevronRight, ChevronDown, Wrench, ArrowLeft, RefreshCw, Power, PowerOff, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 const API = 'http://127.0.0.1:3000/api/mcp'
@@ -14,13 +14,24 @@ interface McpConnection {
   name: string
   command: string
   args: string[]
+  url?: string
+  header?: Record<string, string>
   description: string
   enabled: boolean
   tools: McpTool[]
+  transport_type: string
+  status: 'disconnected' | 'connecting' | 'connected' | 'failed'
 }
 
 interface MCPSettingsProps {
   onBack?: () => void
+}
+
+const statusConfig: Record<string, { color: string; bg: string; label: string; dot: string }> = {
+  connected: { color: 'text-green-400', bg: 'bg-green-500/10', label: '已连接', dot: 'bg-green-400' },
+  connecting: { color: 'text-yellow-400', bg: 'bg-yellow-500/10', label: '连接中', dot: 'bg-yellow-400' },
+  disconnected: { color: 'text-foreground/30', bg: 'bg-foreground/5', label: '未连接', dot: 'bg-foreground/20' },
+  failed: { color: 'text-red-400', bg: 'bg-red-500/10', label: '连接失败', dot: 'bg-red-400' },
 }
 
 export function MCPSettings({ onBack }: MCPSettingsProps) {
@@ -32,6 +43,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
   const [form, setForm] = useState({ name: '', transportType: 'stdio', command: '', args: '', url: '', headers: '', description: '' })
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const [discovering, setDiscovering] = useState<string | null>(null)
+  const [connectingName, setConnectingName] = useState<string | null>(null)
 
   const loadServers = useCallback(async () => {
     setLoading(true)
@@ -51,10 +63,30 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
     } catch {}
   }, [loadServers])
 
+  const handleConnect = useCallback(async (name: string) => {
+    setConnectingName(name)
+    try {
+      await fetch(`${API}/${encodeURIComponent(name)}/connect`, { method: 'POST' })
+      loadServers()
+    } catch {}
+    setConnectingName(null)
+  }, [loadServers])
+
+  const handleDisconnect = useCallback(async (name: string) => {
+    try {
+      await fetch(`${API}/${encodeURIComponent(name)}/disconnect`, { method: 'POST' })
+      loadServers()
+    } catch {}
+  }, [loadServers])
+
   const handleDiscover = useCallback(async (name: string) => {
     setDiscovering(name)
     try {
-      await fetch(`${API}/${encodeURIComponent(name)}/discover`, { method: 'POST' })
+      const res = await fetch(`${API}/${encodeURIComponent(name)}/discover`, { method: 'POST' })
+      const data = await res.json()
+      if (!data.success) {
+        console.warn('Discover failed:', data.message)
+      }
       loadServers()
     } catch {}
     setDiscovering(null)
@@ -65,6 +97,8 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
     const isStdio = form.transportType === 'stdio'
     if (isStdio && !form.command.trim()) return
     if (!isStdio && !form.url.trim()) return
+
+    setShowModal(false)
 
     const headers: Record<string, string> = {}
     if (form.headers.trim()) {
@@ -90,7 +124,6 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
           description: form.description.trim() || undefined,
         }),
       })
-      setShowModal(false)
       setForm({ name: '', transportType: 'stdio', command: '', args: '', url: '', headers: '', description: '' })
       loadServers()
     } catch {}
@@ -112,6 +145,20 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
       else next.add(name)
       return next
     })
+  }
+
+  const renderStatusBadge = (server: McpConnection) => {
+    const cfg = statusConfig[server.status] || statusConfig.disconnected
+    return (
+      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium ${cfg.color} ${cfg.bg}`}>
+        {server.status === 'connecting' ? (
+          <Loader2 className="w-2.5 h-2.5 animate-spin" />
+        ) : (
+          <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
+        )}
+        {cfg.label}
+      </span>
+    )
   }
 
   return (
@@ -153,12 +200,35 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-foreground/90">{server.name}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50">{t('mcpSettings.toolsCount', { count: server.tools.length })}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50">
+                        {t('mcpSettings.toolsCount', { count: server.tools.length })}
+                      </span>
+                      {renderStatusBadge(server)}
                     </div>
-                    <p className="text-xs text-foreground/40 mt-0.5 font-mono truncate">{server.command} {server.args.join(' ')}</p>
+                    <p className="text-xs text-foreground/40 mt-0.5 font-mono truncate">
+                      {server.transport_type === 'stdio'
+                        ? `${server.command} ${server.args?.join(' ') || ''}`
+                        : server.url}
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
+                  {server.transport_type === 'stdio' && (
+                    server.status === 'connected' ? (
+                      <button onClick={() => handleDisconnect(server.name)}
+                        className="p-1 rounded hover:bg-foreground/10 transition-colors" title="断开">
+                        <PowerOff className="w-3.5 h-3.5 text-red-400/60" />
+                      </button>
+                    ) : (
+                      <button onClick={() => handleConnect(server.name)} disabled={connectingName === server.name}
+                        className="p-1 rounded hover:bg-foreground/10 transition-colors" title="连接">
+                        {connectingName === server.name
+                          ? <Loader2 className="w-3.5 h-3.5 text-foreground/40 animate-spin" />
+                          : <Power className="w-3.5 h-3.5 text-green-400/60" />
+                        }
+                      </button>
+                    )
+                  )}
                   <button onClick={() => handleDiscover(server.name)} disabled={discovering === server.name}
                     className="p-1 rounded hover:bg-foreground/10 transition-colors" title={t('mcpSettings.discoverTools')}>
                     <RefreshCw className={`w-3.5 h-3.5 text-foreground/40 ${discovering === server.name ? 'animate-spin' : ''}`} />
@@ -204,6 +274,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
               <div className="px-4 py-4 space-y-3">
                 <div>
                   <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.name')}</label>
+                  <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="my-server" className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono" />
                 </div>
                 <div>
                   <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.transportType')}</label>
@@ -241,8 +312,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                     <div>
                       <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.headers')}</label>
                       <textarea value={form.headers} onChange={e => setForm(f => ({ ...f, headers: e.target.value }))}
-                        placeholder={t('mcpSettings.placeholderHeaders')}
-                        rows={3}
+                        placeholder={t('mcpSettings.placeholderHeaders')} rows={3}
                         className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono resize-none" />
                     </div>
                   </>
@@ -252,6 +322,12 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                   <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.mcpDescription')}</label>
                   <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} placeholder={t('mcpSettings.placeholderDescription')} className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors" />
                 </div>
+
+                {form.transportType === 'stdio' && (
+                  <div className="px-3 py-2 rounded-lg bg-blue-500/5 border border-blue-500/20 text-[11px] text-blue-400/70">
+                    保存后将自动连接并发现工具，无需重启服务
+                  </div>
+                )}
               </div>
               <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
                 <button onClick={() => setShowModal(false)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('mcpSettings.cancel')}</button>

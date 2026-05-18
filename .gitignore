@@ -42,6 +42,9 @@ picoclaw/
 codex/
 hermes-agent/
 openclaw/
+dingtalk-stream-sdk-rust/
+
+
 
 # 其他临时文件
 对话.json

@@ -50,7 +50,10 @@ impl LlmClient {
     /// 创建新的 LLM 客户端
     pub fn new(provider: ProviderConfig, timeout_secs: u32) -> Self {
         let http = Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs as u64 + 30))
+            // 连接超时：连接不上时快速失败，不等完整 timeout
+            .connect_timeout(std::time::Duration::from_secs(10))
+            // 请求总超时（含连接、发送、等待响应）
+            .timeout(std::time::Duration::from_secs(timeout_secs as u64))
             .build()
             .expect("Failed to create HTTP client");
 

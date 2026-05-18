@@ -36,6 +36,7 @@ interface AppConfig {
   max_iterations: number
   compact_threshold: number
   compact_keep: number
+  temperature?: number
   [key: string]: unknown
 }
 

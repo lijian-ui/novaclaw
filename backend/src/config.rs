@@ -59,8 +59,8 @@ impl Default for AppConfig {
         Self {
             port: 3000,
             host: "0.0.0.0".to_string(),
-            llm_timeout: 180,
-            max_retries: 3,
+            llm_timeout: 30,
+            max_retries: 1,
             max_iterations: 0,
             temperature: 0.7,
             compact_threshold: 40,

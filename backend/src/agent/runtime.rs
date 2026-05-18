@@ -182,7 +182,7 @@ impl AgentRuntime {
             );
         }
 
-        let system_prompt = self.build_system_prompt();
+        let system_prompt = self.build_system_prompt().await;
 
         loop {
             iterations += 1;
@@ -286,6 +286,8 @@ impl AgentRuntime {
                             tool_result: None,
                             turn: iterations,
                             max_turns: self.max_iterations,
+                            approval: None,
+                            approval_id: None,
                         })
                         .await;
                 }
@@ -321,14 +323,16 @@ impl AgentRuntime {
                             while let Some(chunk) = rx.recv().await {
                                 if let Some(ref tx) = fwd_tx {
                                     let _ = tx
-                                        .send(AgentStep {
-                                            step_type: "tool_chunk".to_string(),
-                                            content: chunk,
-                                            tool_name: Some(spawn_name.clone()),
-                                            tool_result: None,
-                                            turn: iterations,
-                                            max_turns: max_iterations,
-                                        })
+                                                .send(AgentStep {
+                                                    step_type: "tool_chunk".to_string(),
+                                                    content: chunk,
+                                                    tool_name: Some(spawn_name.clone()),
+                                                    tool_result: None,
+                                                    turn: iterations,
+                                                    max_turns: max_iterations,
+                                                    approval: None,
+                                                    approval_id: None,
+                                                })
                                         .await;
                                 }
                             }
@@ -350,8 +354,8 @@ impl AgentRuntime {
                 let key = Self::tool_call_dedup_key(&tc_name, &tc_args_json);
                 self.executed_tools.insert(key.clone());
 
-                let tool_result = match result {
-                    Ok(output) => {
+                match result {
+                    Ok(crate::tools::types::ToolResult::Success(output)) => {
                         let truncated = if output.len() > 8000 {
                             // 安全截断，避免 UTF-8 字符边界溢出
                             let mut end = 8000;
@@ -393,11 +397,60 @@ impl AgentRuntime {
                                     }),
                                     turn: iterations,
                                     max_turns: self.max_iterations,
+                                    approval: None,
+                                    approval_id: None,
                                 })
                                 .await;
                         }
 
-                        truncated
+                        // 明确标注工具返回的是真实数据，避免小模型误判为帮助信息
+                        let contextualized = format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, truncated);
+                        self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
+
+                        // 累加重试计数（同 key 递增，用于跨迭代硬限制）
+                        *self.tool_retry_count.entry(key.clone()).or_insert(0) += 1;
+                        if *self.tool_retry_count.get(&key).unwrap_or(&0) >= 2 {
+                            tracing::warn!("[Agent] 工具 {} 同一参数已执行超过2次，后续调用将被强制跳过", tc_name);
+                        }
+                    }
+                    Ok(crate::tools::types::ToolResult::PendingApproval(approval)) => {
+                        // 生成确认 ID
+                        let approval_id = format!("approval_{}", uuid::Uuid::new_v4().to_string());
+                        
+                        tracing::info!("[Agent] 工具 {} 需要用户确认，ID: {}", tc_name, approval_id);
+
+                        // 保存到全局状态
+                        {
+                            let state = crate::APP_STATE.read().await;
+                            state.approval_manager.add_pending(
+                                approval_id.clone(),
+                                approval.clone(),
+                                self.session.id.clone(),
+                                tc_name.clone(),
+                                tc_args_json.clone(),
+                            ).await;
+                        }
+
+                        // 发送确认事件到前端
+                        if let Some(ref tx) = step_tx {
+                            let _ = tx
+                                .send(AgentStep {
+                                    step_type: "approval_required".to_string(),
+                                    content: approval.message.clone(),
+                                    tool_name: Some(tc_name.clone()),
+                                    tool_result: None,
+                                    turn: iterations,
+                                    max_turns: self.max_iterations,
+                                    approval: Some(approval),
+                                    approval_id: Some(approval_id.clone()),
+                                })
+                                .await;
+                        }
+
+                        // 告诉 LLM 正在等待用户确认
+                        let wait_msg = format!("Waiting for user approval to proceed with {} operation.", tc_name);
+                        let contextualized = format!("← {} 工具等待用户确认:\n{}", tc_name, wait_msg);
+                        self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
                     }
                     Err(e) => {
                         let err_msg = format!("工具执行错误: {}", e);
@@ -412,23 +465,23 @@ impl AgentRuntime {
                                     tool_result: None,
                                     turn: iterations,
                                     max_turns: self.max_iterations,
+                                    approval: None,
+                                    approval_id: None,
                                 })
                                 .await;
                         }
 
-                        err_msg
+                        // 明确标注工具返回的是真实数据，避免小模型误判为帮助信息
+                        let contextualized = format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, err_msg);
+                        self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
+
+                        // 累加重试计数（同 key 递增，用于跨迭代硬限制）
+                        *self.tool_retry_count.entry(key.clone()).or_insert(0) += 1;
+                        if *self.tool_retry_count.get(&key).unwrap_or(&0) >= 2 {
+                            tracing::warn!("[Agent] 工具 {} 同一参数已执行超过2次，后续调用将被强制跳过", tc_name);
+                        }
                     }
                 };
-
-                // 明确标注工具返回的是真实数据，避免小模型误判为帮助信息
-                let contextualized = format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, tool_result);
-                self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
-
-                // 累加重试计数（同 key 递增，用于跨迭代硬限制）
-                *self.tool_retry_count.entry(key.clone()).or_insert(0) += 1;
-                if *self.tool_retry_count.get(&key).unwrap_or(&0) >= 2 {
-                    tracing::warn!("[Agent] 工具 {} 同一参数已执行超过2次，后续调用将被强制跳过", tc_name);
-                }
             }
 
             // doom-loop 检测：连续同一工具+参数调用超过 3 次时熔断
@@ -569,6 +622,8 @@ impl AgentRuntime {
                             tool_result: None,
                             turn: 0,
                             max_turns: self.max_iterations,
+                            approval: None,
+                            approval_id: None,
                         }).await;
                     }
                     tokio::time::sleep(Duration::from_secs(wait_secs)).await;
@@ -692,6 +747,8 @@ impl AgentRuntime {
                                 tool_result: None,
                                 turn: 0,
                                 max_turns: self.max_iterations,
+                                approval: None,
+                                approval_id: None,
                             })
                             .await;
                     }
@@ -707,6 +764,8 @@ impl AgentRuntime {
                                 tool_result: None,
                                 turn: 0,
                                 max_turns: self.max_iterations,
+                                approval: None,
+                                approval_id: None,
                             })
                             .await;
                     }
@@ -791,6 +850,8 @@ impl AgentRuntime {
                             tool_result: None,
                             turn: 0,
                             max_turns: self.max_iterations,
+                            approval: None,
+                            approval_id: None,
                         })
                         .await;
                 }
@@ -807,6 +868,8 @@ impl AgentRuntime {
                             tool_result: None,
                             turn: 0,
                             max_turns: self.max_iterations,
+                            approval: None,
+                            approval_id: None,
                         })
                         .await;
                 }
@@ -860,7 +923,7 @@ impl AgentRuntime {
         Ok((agent_msg, reasoning_blocks, was_cancelled, input_tokens, output_tokens))
     }
 
-    fn build_system_prompt(&self) -> String {
+    async fn build_system_prompt(&self) -> String {
         if let Some(ref override_prompt) = self.session.system_prompt_override {
             return override_prompt.clone();
         }
@@ -873,6 +936,9 @@ impl AgentRuntime {
             "Linux"
         };
 
+        // 从全局状态获取 SoulManager
+        let soul_manager = crate::APP_STATE.read().await.soul_manager.clone();
+
         crate::agent::prompt::SystemPromptBuilder::new(
             &self.config,
             os_name,
@@ -881,7 +947,9 @@ impl AgentRuntime {
         .with_skills(self.skills.iter().map(|s| {
             format!("{}: {}", s.name, s.description)
         }).collect())
+        .with_soul_manager(soul_manager)
         .build()
+        .await
     }
 
     pub fn session(&self) -> &AgentSession {

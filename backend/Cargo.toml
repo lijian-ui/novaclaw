@@ -76,6 +76,9 @@ windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Fou
 # URL 编码
 urlencoding = "2"
 
+# 异步 trait 支持
+async-trait = "0.1"
+
 # PTY 伪终端（命令执行工具）
 portable-pty = "0.8"
 

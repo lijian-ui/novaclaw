@@ -32,6 +32,9 @@ pub enum AppError {
     #[error("Agent 错误: {0}")]
     AgentError(String),
 
+    #[error("外部服务错误: {0}")]
+    External(String),
+
     #[error("IO 错误: {0}")]
     Io(#[from] std::io::Error),
 
@@ -53,6 +56,7 @@ impl IntoResponse for AppError {
             AppError::LlmError(msg) => (StatusCode::BAD_GATEWAY, format!("LLM 错误: {}", msg)),
             AppError::ToolError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, format!("工具错误: {}", msg)),
             AppError::AgentError(msg) => (StatusCode::INTERNAL_SERVER_ERROR, format!("Agent 错误: {}", msg)),
+            AppError::External(msg) => (StatusCode::BAD_GATEWAY, format!("外部服务错误: {}", msg)),
             AppError::Io(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("IO 错误: {}", e)),
             AppError::Serde(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("序列化错误: {}", e)),
             AppError::Anyhow(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("错误: {}", e)),
