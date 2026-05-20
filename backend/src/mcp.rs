@@ -126,14 +126,12 @@ impl McpStore {
             description: String,
             #[serde(default = "default_enabled")]
             enabled: bool,
-            #[serde(default, skip_serializing_if = "Vec::is_empty")]
-            tools: Vec<McpToolInfo>,
         }
         let save_servers: Vec<ServerForSave> = self.servers.iter().map(|s| ServerForSave {
             name: s.name.clone(), transport_type: s.transport_type.clone(),
             command: s.command.clone(), args: s.args.clone(), url: s.url.clone(),
             headers: s.headers.clone(), description: s.description.clone(),
-            enabled: s.enabled, tools: s.tools.clone(),
+            enabled: s.enabled,
         }).collect();
         if let Ok(content) = serde_json::to_string_pretty(&save_servers) {
             if let Err(e) = std::fs::write(&self.path, content) {
@@ -383,7 +381,7 @@ async fn sse_request(client: &reqwest::Client, url: &str, method: &str, params: 
         }
     }
     if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&body) { return Ok(val); }
-    Err(format!("无法解析响应: {}", &text[..text.len().min(200)]))
+    Err(format!("无法解析响应: {}", text.chars().take(200).collect::<String>()))
 }
 
 async fn sse_list_tools(url: &str) -> Result<Vec<McpToolInfo>, String> {
@@ -402,6 +400,11 @@ async fn sse_call_tool_with_client(client: &reqwest::Client, url: &str, tool_nam
     let result = sse_request(client, url, "tools/call", Some(params)).await?;
     Ok(result.get("content").and_then(|c| c.as_array()).map(|arr| arr.iter()
         .filter_map(|item| item.get("text").and_then(|t| t.as_str())).collect::<Vec<&str>>().join("\n")).unwrap_or_default())
+}
+
+/// 清理工具名中的特殊字符（DeepSeek 要求只含 [a-zA-Z0-9_-]）
+fn sanitize_mcp_name(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect()
 }
 
 // ─── 注册到 ToolRegistry ──────────────────────────────
@@ -426,7 +429,7 @@ pub async fn register_tools(registry: &crate::tools::registry::ToolRegistry) {
             continue;
         }
         for tool in &server.tools {
-            let entry_name = format!("mcp__{}__{}", server.name, tool.name);
+            let entry_name = format!("mcp__{}__{}", sanitize_mcp_name(&server.name), sanitize_mcp_name(&tool.name));
             let params = if tool.input_schema.is_null() {
                 serde_json::json!({"type": "object"})
             } else {

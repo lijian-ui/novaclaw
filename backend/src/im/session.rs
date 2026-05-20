@@ -67,55 +67,71 @@ pub struct IMSessionManager {
     mapping: RwLock<HashMap<SessionSource, String>>,
     /// 会话持久化存储
     session_store: SessionStore,
-    /// 默认模型名称
-    default_model: String,
 }
 
 impl IMSessionManager {
-    pub fn new(session_store: SessionStore, default_model: String) -> Self {
+    pub fn new(session_store: SessionStore) -> Self {
         Self {
             mapping: RwLock::new(HashMap::new()),
             session_store,
-            default_model,
         }
     }
 
-    /// 获取或创建会话
+    /// 获取或创建会话（使用确定性 session_id，重启后仍能恢复同一会话）
     pub async fn get_or_create(
         &self,
         source: &SessionSource,
         msg: &IncomingMessage,
     ) -> Result<AgentSession, AppError> {
-        // 检查映射
-        let sid = {
+        // 每次从 APP_STATE 读取最新的默认模型（支持前端切换后即时生效）
+        let current_default_model = {
+            let state = crate::APP_STATE.read().await;
+            state.models_config.default_model.clone()
+        };
+
+        // 生成确定性 session_id：基于 platform + conversation_id 的哈希
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        format!("{}_{}", source.platform, source.conversation_id).hash(&mut hasher);
+        let sid = format!("im_{:x}", hasher.finish());
+
+        // 检查映射（内存缓存）
+        let cached = {
             let map = self.mapping.read().await;
             map.get(source).cloned()
         };
 
-        // 尝试恢复已有会话
-        if let Some(ref sid) = sid {
-            if let Ok(existing) = self.session_store.get_session(sid) {
-                let history = self.session_store.get_messages(sid).unwrap_or_default();
-                let mut session = AgentSession::new(&existing.name, &existing.model, None);
-                session.id = existing.id.clone();
-                for m in &history {
-                    session.push_message(AgentMessage {
-                        role: m.role.clone(),
-                        content: m.content.clone(),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        tool_name: None,
-                        first_reasoning: None,
-                        again_reasonings: None,
-                        reasoning: None,
-                    });
-                }
-                tracing::debug!("恢复 IM 会话: {} ({})", sid, source);
-                return Ok(session);
+        // 尝试恢复已有会话（先查缓存，再查磁盘）
+        let existing_session = cached.and_then(|id| self.session_store.get_session(&id).ok())
+            .or_else(|| self.session_store.get_session(&sid).ok());
+
+        if let Some(existing) = existing_session {
+            let history = self.session_store.get_messages(&existing.id).unwrap_or_default();
+            let mut session = AgentSession::new(&existing.name, &existing.model, None);
+            session.id = existing.id.clone();
+            for m in &history {
+                session.push_message(AgentMessage {
+                    role: m.role.clone(),
+                    content: m.content.clone(),
+                    tool_calls: None,
+                    tool_call_id: None,
+                    tool_name: None,
+                    first_reasoning: None,
+                    again_reasonings: None,
+                    reasoning: None,
+                    images: None,
+                });
             }
+            // 刷新缓存
+            {
+                let mut map = self.mapping.write().await;
+                map.insert(source.clone(), session.id.clone());
+            }
+            tracing::debug!("恢复 IM 会话: {} ({})", session.id, source);
+            return Ok(session);
         }
 
-        // 创建新会话
+        // 没有已有会话，创建新的
         let conv_type_label = match msg.conversation_type {
             ConversationType::Private => "私聊".to_string(),
             ConversationType::Group => {
@@ -132,16 +148,17 @@ impl IMSessionManager {
             conv_type_label,
         );
 
-        // SessionStore.create_session 自动生成 UUID，复用该 ID
-        let stored = self.session_store.create_session(
+        // 使用确定性 ID 创建（确保重启后同一来源恢复同一会话）
+        let stored = self.session_store.create_session_with_id(
             &session_name,
-            Some(&self.default_model),
+            Some(&current_default_model),
+            &sid,
         )?;
 
-        let mut session = AgentSession::new(&session_name, &self.default_model, None);
-        session.id = stored.id; // 使用持久化存储中的 ID
+        let mut session = AgentSession::new(&session_name, &current_default_model, None);
+        session.id = stored.id;
 
-        // 存入映射
+        // 存入内存映射
         {
             let mut map = self.mapping.write().await;
             map.insert(source.clone(), session.id.clone());

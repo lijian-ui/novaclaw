@@ -32,6 +32,20 @@ export interface Message {
   again_reasonings?: string[]
   /** 兼容旧字段：完整的推理内容 */
   reasoning?: string
+  /** 输入 Token 用量（后端存储） */
+  input_tokens?: number
+  /** 输出 Token 用量（后端存储） */
+  output_tokens?: number
+  /** 输入 Token 用量（前端流式消息使用） */
+  inputTokens?: number
+  /** 输出 Token 用量（前端流式消息使用） */
+  outputTokens?: number
+  /** 缓存 Token 用量（前端流式消息使用） */
+  cachedTokens?: number
+  /** 最后一次请求输入 Token（"本次输入"，区别于累计值） */
+  lastInputTokens?: number
+  /** 最后一次请求输出 Token（"本次输出"，区别于累计值） */
+  lastOutputTokens?: number
 }
 
 export interface Model {

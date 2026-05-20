@@ -229,6 +229,8 @@
     "mcpDescription": "连接描述",
     "placeholderDescription": "连接描述",
     "confirmDelete": "确认删除",
+    "edit": "编辑",
+    "editMcpConnection": "编辑 MCP 连接",
     "deleteMcpWarning": "确定要删除此 MCP 连接吗？",
     "cancel": "取消",
     "add": "添加"
@@ -248,6 +250,8 @@
     "addChannel": "添加渠道",
     "editChannel": "编辑渠道",
     "channelType": "渠道类型",
+    "botName": "机器人名称",
+    "botNamePlaceholder": "例如：我的钉钉机器人",
     "noChannels": "暂无 IM 渠道",
     "addChannelHint": "点击右上角添加钉钉或飞书渠道",
     "enabled": "已启用",

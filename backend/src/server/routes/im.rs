@@ -35,13 +35,10 @@ async fn save_im_channels(Json(body): Json<serde_json::Value>) -> Json<serde_jso
 
     match crate::im::config::save(&config) {
         Ok(()) => {
-            tracing::info!("IM 渠道配置已更新，共 {} 个渠道", config.channels.len());
+            tracing::info!("IM 渠道配置已保存，共 {} 个渠道，正在热加载...", config.channels.len());
 
-            // 如果 IM Gateway 已初始化，尝试根据新配置重启适配器
-            let gateway_guard = crate::IM_GATEWAY.read().await;
-            if let Some(_gateway) = gateway_guard.as_ref() {
-                tracing::info!("IM Gateway 已运行，新配置将在下次连接时生效");
-            }
+            // 热加载：重建所有 IM 连接
+            crate::im::reload::reload_gateway().await;
 
             Json(serde_json::json!({
                 "success": true,

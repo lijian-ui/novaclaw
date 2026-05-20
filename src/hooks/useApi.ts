@@ -36,7 +36,7 @@ api.interceptors.response.use(
 /** SSE 事件回调类型 */
 export type SseCallbacks = {
   onChunk: (text: string) => void
-  onDone: (result: { content?: string; sessionId?: string }) => void
+  onDone: (result: { content?: string; sessionId?: string; inputTokens?: number; outputTokens?: number; cachedTokens?: number; lastInputTokens?: number; lastOutputTokens?: number }) => void
   onError: (err: string) => void
   onAgentStep?: (step: {
     stepType: string
@@ -45,20 +45,12 @@ export type SseCallbacks = {
     toolResult?: string
     turn: number
     maxTurns: number
-    approval?: any
-    approvalId?: string
-  }) => void
-  onApprovalResult?: (result: {
-    approved: boolean
-    toolName?: string
-    output?: string
-    message: string
   }) => void
 }
 
 /** 发起 SSE 流式聊天请求，返回 AbortController 用于取消 */
 export function startChatStream(
-  params: { message: string; model?: string; session_id?: string; workspace?: string },
+  params: { message: string; model?: string; session_id?: string; workspace?: string; images?: string[] },
   callbacks: SseCallbacks,
 ): AbortController {
   const abortController = new AbortController()
@@ -123,13 +115,16 @@ export function startChatStream(
                 toolResult: payload?.tool_result,
                 turn: payload?.turn || 0,
                 maxTurns: payload?.max_turns || 20,
-                approval: payload?.approval,
-                approvalId: payload?.approval_id,
               })
             } else if (parsed.type === 'done') {
               onDone({
                 content: payload?.content || '',
                 sessionId: payload?.session_id || undefined,
+                inputTokens: payload?.input_tokens,
+                outputTokens: payload?.output_tokens,
+                cachedTokens: payload?.cached_tokens,
+                lastInputTokens: payload?.last_input_tokens,
+                lastOutputTokens: payload?.last_output_tokens,
               })
             } else if (parsed.type === 'stopped') {
               onDone({
@@ -171,98 +166,7 @@ export async function cancelChatStream(sessionId: string): Promise<boolean> {
   }
 }
 
-/** 确认或取消工具执行 - 支持流式输出（自动继续 Agent 执行） */
-export function approveChatStream(
-  approvalId: string,
-  sessionId: string,
-  approved: boolean,
-  callbacks: SseCallbacks
-): AbortController {
-  const abortController = new AbortController()
 
-  ;(async () => {
-    try {
-      const response = await fetch(`${API_BASE}/chat/approve`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approval_id: approvalId, session_id: sessionId, approved }),
-        signal: abortController.signal,
-      })
-
-      if (!response.ok) {
-        throw new Error(`请求失败: ${response.status}`)
-      }
-
-      const reader = response.body?.getReader()
-      if (!reader) {
-        throw new Error('无法获取响应流')
-      }
-
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (!line.trim()) continue
-
-          let data = line
-          if (data.startsWith('data: ')) {
-            data = data.slice(6)
-          }
-
-          try {
-            const parsed = JSON.parse(data)
-            const type = parsed.type
-
-            if (type === 'chunk') {
-              callbacks.onChunk?.(parsed.data)
-            } else if (type === 'agent_step') {
-              callbacks.onAgentStep?.(parsed.data)
-            } else if (type === 'approval_result') {
-              callbacks.onApprovalResult?.(parsed.data)
-            } else if (type === 'done') {
-              callbacks.onDone?.(parsed.data)
-            } else if (type === 'error') {
-              callbacks.onError?.(parsed.data?.message || '未知错误')
-            }
-          } catch {
-            // 忽略解析错误
-          }
-        }
-      }
-    } catch (err: unknown) {
-      if (err instanceof DOMException && err.name === 'AbortError') {
-        // 用户取消，忽略
-        return
-      }
-      callbacks.onError(err instanceof Error ? err.message : '连接失败')
-    }
-  })()
-
-  return abortController
-}
-
-/** 旧的非流式确认接口（保留兼容性） */
-export async function approveChat(approvalId: string, sessionId: string, approved: boolean): Promise<boolean> {
-  try {
-    const response = await fetch(`${API_BASE}/chat/approve`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ approval_id: approvalId, session_id: sessionId, approved }),
-    })
-    const data = await response.json()
-    return data.success === true
-  } catch {
-    return false
-  }
-}
 
 export function useApi() {
   const [loading, setLoading] = useState(false)

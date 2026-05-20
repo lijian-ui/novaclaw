@@ -31,6 +31,7 @@ impl crate::dingtalk::handler::CallbackHandler for IMGatewayCallbackHandler {
                 .clone()
                 .unwrap_or_else(|| msg.sender_id.clone().unwrap_or_default()),
             sender_id: msg.sender_id.clone(),
+            sender_staff_id: msg.sender_staff_id.clone(),
             sender_name: msg.sender_nick.clone(),
             text: msg.text.as_ref().map(|t| t.content.clone()).unwrap_or_default(),
             media_urls: Vec::new(),

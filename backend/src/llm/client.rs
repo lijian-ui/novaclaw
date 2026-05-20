@@ -107,7 +107,7 @@ impl LlmClient {
         }
 
         let chat_response = serde_json::from_str::<ChatResponse>(&body).map_err(|e| {
-            AppError::LlmError(format!("解析响应失败: {} — body: {}", e, &body[..body.len().min(500)]))
+            AppError::LlmError(format!("解析响应失败: {} — body: {}", e, body.chars().take(500).collect::<String>()))
         })?;
 
         Ok(chat_response)
@@ -265,10 +265,12 @@ impl LlmClient {
                                         if let Some(ref usage) = resp.usage {
                                             let pt = usage.prompt_tokens.unwrap_or(0) as u64;
                                             let ct = usage.completion_tokens.unwrap_or(0) as u64;
-                                            if pt > 0 || ct > 0 {
+                                            let cached = usage.cached_tokens.unwrap_or(0) as u64;
+                                            if pt > 0 || ct > 0 || cached > 0 {
                                                 if !send_event(&tx, StreamEvent::Usage {
                                                     prompt_tokens: pt,
                                                     completion_tokens: ct,
+                                                    cached_tokens: cached,
                                                 }).await {
                                                     return;
                                                 }

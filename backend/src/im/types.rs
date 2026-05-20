@@ -124,8 +124,10 @@ pub struct IncomingMessage {
     pub platform: PlatformType,
     /// 会话 ID
     pub conversation_id: String,
-    /// 发送者 ID
+    /// 发送者 ID（平台内部格式，如钉钉 Stream ID）
     pub sender_id: Option<String>,
+    /// 发送者员工 ID（钉钉真实用户 ID，用于卡片投放）
+    pub sender_staff_id: Option<String>,
     /// 发送者昵称
     pub sender_name: Option<String>,
     /// 消息文本内容

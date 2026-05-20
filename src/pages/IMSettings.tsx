@@ -1,11 +1,14 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, ArrowLeft, Shield, Webhook } from 'lucide-react'
+import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, ArrowLeft, Webhook } from 'lucide-react'
 import { API_BASE } from '@/hooks/useApi'
 import { useTranslation } from 'react-i18next'
+import dingtalkIcon from '@/assets/dingtalk.png'
+import feishuIcon from '@/assets/feishu.png'
 
 interface IMChannel {
   id: string
   name: string
+  channel_type: string
   enabled: boolean
   config: {
     webhook?: string
@@ -24,11 +27,24 @@ interface IMSettingsProps {
 }
 
 const channelTypes = [
-  { id: 'dingtalk', name: '钉钉', icon: '🔔', color: 'text-blue-400' },
-  { id: 'feishu', name: '飞书', icon: '📮', color: 'text-green-400' },
+  { id: 'dingtalk', name: '钉钉', icon: dingtalkIcon, color: 'text-blue-400' },
+  { id: 'feishu', name: '飞书', icon: feishuIcon, color: 'text-green-400' },
 ]
 
-const emptyForm = {
+interface FormState {
+  name: string
+  webhook: string
+  secret: string
+  clientId: string
+  clientSecret: string
+  appId: string
+  appSecret: string
+  agentId: string
+  corpId: string
+}
+
+const emptyForm: FormState = {
+  name: '',
   webhook: '',
   secret: '',
   clientId: '',
@@ -39,22 +55,23 @@ const emptyForm = {
   corpId: '',
 }
 
+// 从通道配置推断所属平台类型
+function detectChannelType(channel: IMChannel): string {
+  if (channel.config.appId || channel.config.appSecret) return 'feishu'
+  return 'dingtalk'
+}
+
 export function IMSettings({ onBack }: IMSettingsProps) {
   const { t } = useTranslation()
 
   const [channels, setChannels] = useState<IMChannel[]>([])
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const [expandedTypes, setExpandedTypes] = useState<Set<string>>(new Set(['dingtalk', 'feishu']))
   const [showModal, setShowModal] = useState(false)
   const [editingChannel, setEditingChannel] = useState<string | null>(null)
   const [selectedChannelType, setSelectedChannelType] = useState('dingtalk')
   const [form, setForm] = useState(emptyForm)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
-
-  useEffect(() => {
-    // 初始化配置（IM 设置使用配置目录）
-    fetch(`${API_BASE}/paths`).then(r => r.json()).catch(() => {})
-  }, [])
 
   const loadChannels = useCallback(async () => {
     try {
@@ -93,26 +110,17 @@ export function IMSettings({ onBack }: IMSettingsProps) {
     }
   }, [])
 
-  const toggleExpanded = (id: string) => {
-    setExpandedIds(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
-
-  const openAddModal = (channelType?: string) => {
+  const openAddModal = () => {
     setEditingChannel(null)
-    setSelectedChannelType(channelType || 'dingtalk')
+    setSelectedChannelType('dingtalk')
     setForm(emptyForm)
     setShowModal(true)
   }
 
   const openEditModal = (channel: IMChannel) => {
     setEditingChannel(channel.id)
-    setSelectedChannelType(channel.id)
-    setForm({ ...emptyForm, ...channel.config })
+    setSelectedChannelType(detectChannelType(channel))
+    setForm({ ...emptyForm, name: channel.name, ...channel.config })
     setShowModal(true)
   }
 
@@ -122,7 +130,8 @@ export function IMSettings({ onBack }: IMSettingsProps) {
 
     const newChannel: IMChannel = {
       id: editingChannel || `im_${Date.now()}`,
-      name: selectedType.name,
+      name: form.name || `${selectedType.name} 机器人`,
+      channel_type: selectedChannelType,
       enabled: true,
       config: form,
     }
@@ -131,10 +140,6 @@ export function IMSettings({ onBack }: IMSettingsProps) {
     if (editingChannel) {
       updated = channels.map(c => c.id === editingChannel ? newChannel : c)
     } else {
-      if (channels.some(c => c.id === selectedChannelType)) {
-        setSaveError('该渠道已存在')
-        return
-      }
       updated = [...channels, newChannel]
     }
 
@@ -157,15 +162,29 @@ export function IMSettings({ onBack }: IMSettingsProps) {
     }
   }
 
-  const channelColors: Record<string, string> = {
+  // 获取渠道在列表中显示的标识名称：优先用用户填的机器人名称
+  const getChannelDisplayName = (ch: IMChannel): string => {
+    if (ch.name && !channelTypes.some(ct => ct.name === ch.name)) return ch.name
+    if (ch.config.clientId) return ch.config.clientId.slice(0, 24)
+    if (ch.config.webhook) {
+      const match = ch.config.webhook.match(/access_token=([^&\s]+)/)
+      return match ? `token:${match[1].slice(0, 12)}...` : ch.config.webhook.slice(0, 30)
+    }
+    return `bot_${ch.id.slice(-6)}`
+  }
+
+  const providerColors: Record<string, string> = {
     dingtalk: 'text-blue-400',
     feishu: 'text-green-400',
   }
 
-  const getChannelIcon = (id: string) => {
-    const channel = channelTypes.find(c => c.id === id)
-    return channel?.icon || '💬'
-  }
+  // 按平台类型分组（只渲染有渠道的平台）
+  const channelsByType = channelTypes
+    .map(ct => ({
+      ...ct,
+      channels: channels.filter(c => detectChannelType(c) === ct.id),
+    }))
+    .filter(g => g.channels.length > 0)
 
   return (
     <div className="h-full flex flex-col bg-mainbg">
@@ -177,7 +196,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
           <span className="text-sm font-medium text-foreground/90">{t('imSettings.title')}</span>
         </div>
         <button
-          onClick={() => openAddModal()}
+          onClick={openAddModal}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
@@ -195,123 +214,101 @@ export function IMSettings({ onBack }: IMSettingsProps) {
             <p className="text-xs text-foreground/30">{t('imSettings.addChannelHint')}</p>
           </div>
         ) : (
-          channels.map((channel) => {
-            const isExpanded = expandedIds.has(channel.id)
-
-            return (
+          channelsByType.map((group) => (
+            <div key={group.id} className="rounded-xl border border-border overflow-hidden">
+              {/* Provider Header */}
               <div
-                key={channel.id}
-                className="rounded-xl border border-border bg-foreground/[0.02] hover:bg-foreground/[0.04] transition-colors"
+                className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-foreground/[0.04] transition-colors"
+                onClick={() => {
+                  setExpandedTypes(prev => {
+                    const next = new Set(prev)
+                    if (next.has(group.id)) next.delete(group.id)
+                    else next.add(group.id)
+                    return next
+                  })
+                }}
               >
-                <div className="flex items-center justify-between px-4 py-3">
-                  <div className="flex items-center gap-3">
-                    <button
-                      onClick={() => toggleExpanded(channel.id)}
-                      className="p-0.5 rounded hover:bg-foreground/10 transition-colors"
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="w-4 h-4 text-foreground/40" />
-                      ) : (
-                        <ChevronRight className="w-4 h-4 text-foreground/40" />
-                      )}
-                    </button>
-                    <span className="text-lg">{getChannelIcon(channel.id)}</span>
-                    <div className="flex items-center gap-2">
-                      <span className={`text-sm font-semibold ${channelColors[channel.id] || 'text-foreground/80'}`}>
-                        {channel.name}
-                      </span>
-                      {channel.enabled && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">
-                          {t('imSettings.enabled')}
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => openEditModal(channel)}
-                      className="p-1.5 rounded hover:bg-foreground/10 transition-colors"
-                      title={t('imSettings.edit')}
-                    >
-                      <Pencil className="w-3.5 h-3.5 text-foreground/40" />
-                    </button>
-                    <button
-                      onClick={() => toggleEnabled(channel.id)}
-                      className={`relative w-9 h-5 rounded-full transition-colors ${
-                        channel.enabled ? 'bg-green-500' : 'bg-foreground/20'
-                      }`}
-                      title={channel.enabled ? t('imSettings.disable') : t('imSettings.enable')}
-                    >
-                      <div
-                        className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
-                          channel.enabled ? 'translate-x-4.5' : 'translate-x-0.5'
-                        }`}
-                      />
-                    </button>
-                    <button
-                      onClick={() => setShowDeleteConfirm(channel.id)}
-                      className="p-1.5 rounded hover:bg-red-500/10 transition-colors"
-                      title={t('imSettings.delete')}
-                    >
-                      <Trash2 className="w-3.5 h-3.5 text-foreground/40 hover:text-red-400" />
-                    </button>
-                  </div>
+                <div className="flex items-center gap-3">
+                  <button className="p-0.5 rounded hover:bg-foreground/10 transition-colors">
+                    {expandedTypes.has(group.id) ? (
+                      <ChevronDown className="w-4 h-4 text-foreground/40" />
+                    ) : (
+                      <ChevronRight className="w-4 h-4 text-foreground/40" />
+                    )}
+                  </button>
+                  <img src={group.icon} alt={group.name} className="w-5 h-5" />
+                  <span className={`text-sm font-semibold ${providerColors[group.id] || 'text-foreground/80'}`}>
+                    {group.name}
+                  </span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50">
+                    {group.channels.length} 个
+                  </span>
                 </div>
-
-                {isExpanded && (
-                  <div className="px-4 pb-4 border-t border-border/50">
-                    <div className="pt-3 space-y-2">
-                      {channel.config.webhook && (
-                        <div className="flex items-start gap-2">
-                          <Webhook className="w-3.5 h-3.5 text-foreground/30 mt-0.5" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] text-foreground/40">{t('imSettings.webhook')}</p>
-                            <p className="text-xs text-foreground/60 font-mono truncate">{channel.config.webhook}</p>
-                          </div>
-                        </div>
-                      )}
-                      {channel.config.clientId && (
-                        <div className="flex items-start gap-2">
-                          <Shield className="w-3.5 h-3.5 text-foreground/30 mt-0.5" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] text-foreground/40">Client ID</p>
-                            <p className="text-xs text-foreground/60 font-mono truncate">{channel.config.clientId}</p>
-                          </div>
-                        </div>
-                      )}
-                      {channel.config.corpId && (
-                        <div className="flex items-start gap-2">
-                          <Shield className="w-3.5 h-3.5 text-foreground/30 mt-0.5" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] text-foreground/40">{t('imSettings.corpId')}</p>
-                            <p className="text-xs text-foreground/60 font-mono truncate">{channel.config.corpId}</p>
-                          </div>
-                        </div>
-                      )}
-                      {channel.config.agentId && (
-                        <div className="flex items-start gap-2">
-                          <Shield className="w-3.5 h-3.5 text-foreground/30 mt-0.5" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] text-foreground/40">{t('imSettings.agentId')}</p>
-                            <p className="text-xs text-foreground/60 font-mono truncate">{channel.config.agentId}</p>
-                          </div>
-                        </div>
-                      )}
-                      {channel.config.appId && (
-                        <div className="flex items-start gap-2">
-                          <Shield className="w-3.5 h-3.5 text-foreground/30 mt-0.5" />
-                          <div className="min-w-0">
-                            <p className="text-[10px] text-foreground/40">{t('imSettings.appId')}</p>
-                            <p className="text-xs text-foreground/60 font-mono truncate">{channel.config.appId}</p>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
-            )
-          })
+
+              {/* Sub-items */}
+              {expandedTypes.has(group.id) && group.channels.length > 0 && (
+                <div className="border-t border-border/50">
+                  {group.channels.map((ch) => (
+                    <div
+                      key={ch.id}
+                      className="flex items-center justify-between px-4 py-2.5 pl-14 hover:bg-foreground/[0.03] transition-colors border-b border-border/30 last:border-b-0"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <span className="text-xs font-mono text-foreground/70 truncate">
+                          {getChannelDisplayName(ch)}
+                        </span>
+                        {ch.enabled ? (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/10 text-green-400 shrink-0">
+                            {t('imSettings.enabled')}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/40 shrink-0">
+                            {t('imSettings.disabled')}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openEditModal(ch) }}
+                          className="p-1 rounded hover:bg-foreground/10 transition-colors"
+                          title={t('imSettings.edit')}
+                        >
+                          <Pencil className="w-3.5 h-3.5 text-foreground/40" />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleEnabled(ch.id) }}
+                          className={`relative w-9 h-5 rounded-full transition-colors ${
+                            ch.enabled ? 'bg-green-500' : 'bg-foreground/20'
+                          }`}
+                          title={ch.enabled ? t('imSettings.disable') : t('imSettings.enable')}
+                        >
+                          <div
+                            className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                              ch.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
+                            }`}
+                          />
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setShowDeleteConfirm(ch.id) }}
+                          className="p-1 rounded hover:bg-red-500/10 transition-colors"
+                          title={t('imSettings.delete')}
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-foreground/40 hover:text-red-400" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {expandedTypes.has(group.id) && group.channels.length === 0 && (
+                <div className="px-4 py-3 border-t border-border/50">
+                  <p className="text-xs text-foreground/30 text-center">{t('imSettings.noChannels')}</p>
+                </div>
+              )}
+            </div>
+          ))
         )}
       </div>
 
@@ -331,6 +328,15 @@ export function IMSettings({ onBack }: IMSettingsProps) {
 
               <div className="px-4 py-4 space-y-3">
                 <div>
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.botName')}</label>
+                  <input
+                    value={form.name}
+                    onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                    placeholder={t('imSettings.botNamePlaceholder')}
+                    className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors"
+                  />
+                </div>
+                <div>
                   <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.channelType')}</label>
                   <div className="relative">
                     <select
@@ -340,8 +346,8 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                       className="w-full appearance-none px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 outline-none focus:border-foreground/20 transition-colors cursor-pointer disabled:opacity-50"
                     >
                       {channelTypes.map((c) => (
-                        <option key={c.id} value={c.id} className="bg-card text-foreground/80">
-                          {c.icon} {c.name}
+                        <option key={c.id} value={c.id}>
+                          {c.name}
                         </option>
                       ))}
                     </select>
@@ -351,7 +357,6 @@ export function IMSettings({ onBack }: IMSettingsProps) {
 
                 {selectedChannelType === 'dingtalk' && (
                   <>
-                    {/* Webhook 模式 */}
                     <div className="flex items-center gap-2 mb-2">
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50 font-mono">Webhook</span>
                       <span className="text-[10px] text-foreground/30">简单发送消息</span>
@@ -359,7 +364,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                     <div>
                       <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.webhook')}</label>
                       <input
-                        value={form.webhook}
+                        value={form.webhook || ''}
                         onChange={e => setForm(f => ({ ...f, webhook: e.target.value }))}
                         placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx"
                         className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
@@ -368,14 +373,13 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                     <div>
                       <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.secret')}</label>
                       <input
-                        value={form.secret}
+                        value={form.secret || ''}
                         onChange={e => setForm(f => ({ ...f, secret: e.target.value }))}
                         placeholder={t('imSettings.secretPlaceholder')}
                         className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
                       />
                     </div>
 
-                    {/* Stream 模式 */}
                     <div className="flex items-center gap-2 mb-2 mt-4 pt-3 border-t border-border/50">
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 font-mono">Stream</span>
                       <span className="text-[10px] text-foreground/30">双向 WebSocket 长连接</span>
@@ -407,7 +411,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                     <div>
                       <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.appId')}</label>
                       <input
-                        value={form.appId}
+                        value={form.appId || ''}
                         onChange={e => setForm(f => ({ ...f, appId: e.target.value }))}
                         placeholder={t('imSettings.appIdPlaceholder')}
                         className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
@@ -416,7 +420,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                     <div>
                       <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.appSecret')}</label>
                       <input
-                        value={form.appSecret}
+                        value={form.appSecret || ''}
                         onChange={e => setForm(f => ({ ...f, appSecret: e.target.value }))}
                         type="password"
                         placeholder={t('imSettings.appSecretPlaceholder')}
@@ -426,7 +430,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                     <div>
                       <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.agentId')}</label>
                       <input
-                        value={form.agentId}
+                        value={form.agentId || ''}
                         onChange={e => setForm(f => ({ ...f, agentId: e.target.value }))}
                         placeholder={t('imSettings.agentIdPlaceholder')}
                         className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
@@ -435,7 +439,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                     <div>
                       <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.corpId')}</label>
                       <input
-                        value={form.corpId}
+                        value={form.corpId || ''}
                         onChange={e => setForm(f => ({ ...f, corpId: e.target.value }))}
                         placeholder={t('imSettings.corpIdPlaceholder')}
                         className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"

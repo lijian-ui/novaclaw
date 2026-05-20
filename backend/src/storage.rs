@@ -61,6 +61,26 @@ pub struct Message {
     /// 兼容旧字段：完整的推理内容
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// Token 用量（仅 assistant 消息）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    /// 缓存 Token 用量（仅 assistant 消息）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
+    /// 最后一次请求的输入 Token（"本次输入"，仅 assistant 消息）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_input_tokens: Option<u64>,
+    /// 最后一次请求的输出 Token（"本次输出"，仅 assistant 消息）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_output_tokens: Option<u64>,
+    /// 图片引用路径列表（仅 user 消息）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_paths: Option<Vec<String>>,
+    /// 消息类型标记（"compaction" 或 None 普通消息）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<String>,
 }
 
 /// 会话存储管理
@@ -109,13 +129,17 @@ impl SessionStore {
         Ok(sessions)
     }
 
-    /// 创建新会话
+    /// 创建新会话（自动生成 UUID）
     pub fn create_session(&self, name: &str, model: Option<&str>) -> Result<Session, AppError> {
+        self.create_session_with_id(name, model, &uuid::Uuid::new_v4().to_string())
+    }
+
+    /// 创建新会话（使用指定 ID，用于 IM 会话持久化映射）
+    pub fn create_session_with_id(&self, name: &str, model: Option<&str>, id: &str) -> Result<Session, AppError> {
         let now = chrono::Utc::now().to_rfc3339();
-        let id = uuid::Uuid::new_v4().to_string();
 
         let session = Session {
-            id: id.clone(),
+            id: id.to_string(),
             name: name.to_string(),
             created_at: now.clone(),
             updated_at: now,
@@ -155,6 +179,21 @@ impl SessionStore {
         let msg_path = self.messages_path(id);
         if msg_path.exists() {
             fs::remove_file(&msg_path)?;
+        }
+
+        // 删除关联图片目录
+        let images_path = self.messages_dir.parent()
+            .map(|p| p.join("images").join(id))
+            .unwrap_or_else(|| {
+                let base = &self.messages_dir;
+                let parent = base.parent().unwrap_or(base);
+                parent.join("images").join(id)
+            });
+        if images_path.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&images_path) {
+                tracing::warn!("删除图片目录失败 ({}): {}", images_path.display(), e);
+                // 不阻塞主流程，仅记录警告
+            }
         }
 
         tracing::info!("删除会话: {}", id);

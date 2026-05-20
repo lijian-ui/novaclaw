@@ -144,12 +144,14 @@ pub fn register_all(
     tavily_api_key: Option<String>,
     memory_store: crate::memory::store::MemoryStore,
     skills_loader: crate::skills::loader::SkillsLoader,
+    session_store: crate::storage::SessionStore,
 ) {
     let rt = tokio::runtime::Handle::current();
     let registry_clone = registry.clone();
     // 将 memory_store 和 skills_loader 包装为 Arc，安全地传入多个 handler 闭包
     let memory_store = std::sync::Arc::new(memory_store);
     let skills_loader = std::sync::Arc::new(skills_loader);
+    let session_store_for_tools = std::sync::Arc::new(session_store);
 
     // 注册时不需要阻塞等待，使用 spawn_blocking 方式
     // 由于初始化在 tokio 上下文中，可以直接 block_on
@@ -426,81 +428,131 @@ pub fn register_all(
             let memory_store_for_memory = memory_store.clone();
             registry_clone.register(ToolDef {
                 name: "memory".to_string(),
-                description: "Persistent memory management. Params: action (required, enum: add/query/remove), content (required for add/remove), query (for find)".to_string(),
+                description: "Save and search persistent facts. Use this whenever the user states a preference, shares personal details, or says to remember something. Also use it when you notice recurring patterns or conventions.\n\nActions:\n- action='add': Save a fact. content is the text of what to remember.\n- action='search': Find past memories. query is the keyword.\n- action='replace': Update a memory. content must be 'old text | new text'.\n- action='remove': Delete a memory. content is the text to remove.\n\nDo NOT save temporary info (task progress, commit hashes). Use session_search for that.".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "action": {
                             "type": "string",
-                            "enum": ["add", "query", "remove"],
-                            "description": "Action type"
+                            "enum": ["add", "search", "replace", "remove"],
+                            "description": "Action: add=save fact, search=find memories, replace=update, remove=delete"
                         },
                         "content": {
                             "type": "string",
-                            "description": "Memory content (used for add/remove)"
+                            "description": "The fact text (for add/replace/remove). Use declarative statements like 'User prefers Golang'"
                         },
                         "query": {
                             "type": "string",
-                            "description": "Search keyword (used for query)"
+                            "description": "Search keyword (used for search action)"
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": "Optional category label (e.g. 'preference', 'convention', 'environment')"
                         }
                     },
                     "required": ["action"]
                 }),
                 handler: std::sync::Arc::new(move |args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
-                    let action = args["action"].as_str().ok_or("Missing 'action' parameter (add/query/remove)")?;
+                    let action = args["action"].as_str().ok_or("Missing 'action' parameter. Valid: add, search, replace, remove")?;
                     match action {
                         "add" => {
-                            let content = args["content"].as_str().ok_or("Missing 'content' parameter for add action")?;
+                            let content = args["content"].as_str().ok_or("Missing 'content' parameter for add")?;
                             let category = args.get("category").and_then(|v| v.as_str()).unwrap_or("general");
                             memory_store_for_memory.add_memory(content, category)
-                                .map_err(|e| format!("Memory add failed: {}", e))?;
-                            Ok("Memory saved".to_string())
+                                .map_err(|e| format!("添加失败: {}", e))?;
+                            Ok(format!("已保存: \"{}\"", content))
                         }
-                        "query" => {
+                        "search" => {
                             let query = args["query"].as_str().unwrap_or("");
-                            let memories = memory_store_for_memory.query_memories(query)
-                                .map_err(|e| format!("Memory query failed: {}", e))?;
-                            if memories.is_empty() {
-                                Ok("No relevant memories found".to_string())
+                            let results = memory_store_for_memory.search_memories(query);
+                            if results.is_empty() {
+                                Ok("未找到相关记忆".to_string())
                             } else {
-                                Ok(memories.join("\n---\n"))
+                                Ok(format!("找到 {} 条相关记忆:\n\n{}", results.len(), results.join("\n---\n")))
                             }
                         }
-                        "remove" => {
-                            let content = args["content"].as_str().ok_or("Missing 'content' parameter for remove action")?;
-                            memory_store_for_memory.remove_memory(content)
-                                .map_err(|e| format!("Memory remove failed: {}", e))?;
-                            Ok("Memory removed".to_string())
+                        "replace" => {
+                            let content = args["content"].as_str().ok_or("Missing 'content' parameter. Format: 'old text | new text'")?;
+                            let parts: Vec<&str> = content.splitn(2, '|').collect();
+                            if parts.len() != 2 {
+                                return Err("replace 需要 '旧内容 | 新内容' 格式，用 | 分隔".to_string());
+                            }
+                            memory_store_for_memory.replace_memory(parts[0], parts[1])
                         }
-                        _ => Err(format!("Unknown action '{}'. Supported: add, query, remove", action)),
+                        "remove" => {
+                            let content = args["content"].as_str().ok_or("Missing 'content' parameter for remove")?;
+                            memory_store_for_memory.remove_memory(content)
+                                .map_err(|e| format!("删除失败: {}", e))?;
+                            Ok(format!("已删除: \"{}\"", content))
+                        }
+                        "list" => {
+                            let all = memory_store_for_memory.list_memories();
+                            if all.is_empty() {
+                                Ok("暂无记忆".to_string())
+                            } else {
+                                Ok(format!("所有记忆:\n\n{}", all))
+                            }
+                        }
+                        _ => Err(format!("不支持的操作 '{}'。可用: add, search, replace, remove, list", action)),
                     }
                 }),
             }).await;
 
             // session_search tool
+            let session_store_for_search = session_store_for_tools.clone();
             registry_clone.register(ToolDef {
                 name: "session_search".to_string(),
-                description: "Search historical session messages".to_string(),
+                description: "Search the current session's transcript (JSONL) for temporal information like task progress, bug details, or past decisions. Use this instead of memory/search for session-specific or temporary info. Params: query (required, search keyword), limit (optional, max results, default 5)".to_string(),
                 parameters: json!({
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search keyword"
+                            "description": "Search keyword or phrase"
                         },
                         "limit": {
                             "type": "integer",
-                            "description": "Maximum number of results"
+                            "description": "Maximum number of results to return (default 5)"
                         }
                     },
                     "required": ["query"]
                 }),
-                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
+                handler: std::sync::Arc::new(move |args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
                     let query = args["query"].as_str().ok_or("Missing 'query' parameter")?;
-                    let _limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
+                    let query_lower = query.to_lowercase();
 
-                    // 简单的文本匹配搜索
-                    Ok(format!("Search '{}' completed (session search feature in development)", query))
+                    // 从 args 中获取当前 session_id
+                    let session_id = args["_session_id"].as_str().unwrap_or("");
+                    if session_id.is_empty() {
+                        return Err("无法获取当前会话 ID".to_string());
+                    }
+
+                    // 读取 JSONL 并搜索
+                    let messages = session_store_for_search.get_messages(session_id)
+                        .map_err(|e| format!("读取会话历史失败: {}", e))?;
+
+                    let mut results: Vec<String> = Vec::new();
+                    for msg in messages.iter().rev() {
+                        if msg.content.to_lowercase().contains(&query_lower) {
+                            let role_icon = match msg.role.as_str() {
+                                "user" => "👤",
+                                "assistant" => "🤖",
+                                "tool" => "🔧",
+                                _ => "💬",
+                            };
+                            let preview: String = msg.content.chars().take(200).collect();
+                            let suffix = if msg.content.len() > 200 { "..." } else { "" };
+                            results.push(format!("{} [{}] {}{}", role_icon, msg.role, preview, suffix));
+                            if results.len() >= limit { break; }
+                        }
+                    }
+
+                    if results.is_empty() {
+                        Ok(format!("在会话历史中未找到与 '{}' 相关的消息", query))
+                    } else {
+                        Ok(format!("找到 {} 条相关历史消息:\n\n{}", results.len(), results.join("\n\n")))
+                    }
                 }),
             }).await;
 
@@ -923,32 +975,6 @@ pub fn register_all(
                     } else {
                         Ok(entries.join("\n"))
                     }
-                }),
-            }).await;
-
-            // delete_file tool - requires user confirmation
-            registry_clone.register(ToolDef {
-                name: "delete_file".to_string(),
-                description: "Delete a file or directory (recursive). User confirmation is required before deletion. Params: path (required)".to_string(),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "File or directory path to delete"
-                        }
-                    },
-                    "required": ["path"]
-                }),
-                handler: std::sync::Arc::new(|args: serde_json::Value, _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>| -> Result<String, String> {
-                    let path_str = args["path"].as_str().ok_or("Missing 'path' parameter")?;
-                    let approval = crate::tools::approval::build_delete_file_approval(path_str, &args)
-                        .ok_or("构建确认信息失败")?;
-                    // 序列化为特殊 JSON 格式，execute() 会解析为 ToolResult::PendingApproval
-                    Ok(serde_json::to_string(&serde_json::json!({
-                        "__type": "PendingApproval",
-                        "approval": approval,
-                    })).map_err(|e| format!("序列化失败: {}", e))?)
                 }),
             }).await;
 

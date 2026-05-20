@@ -43,8 +43,12 @@ codex/
 hermes-agent/
 openclaw/
 dingtalk-stream-sdk-rust/
+dingtalk-openclaw-connector/
+ether-claw/
+tencent-weixin-openclaw-weixin-2.4.3/
 
 
 
 # 其他临时文件
 对话.json
+vite.config.ts.timestamp-*.mjs

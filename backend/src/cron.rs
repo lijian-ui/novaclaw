@@ -263,7 +263,7 @@ async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
     );
 
     tracing::info!("[Cron] 开始通过 Agent 执行 payload...");
-    let result = agent.run_turn(&job.payload, None, None).await
+    let result = agent.run_turn(&job.payload, None, None, &[]).await
         .map_err(|e| format!("Agent 执行失败: {}", e))?;
 
     tracing::info!("[Cron] Agent 执行完成: {} 字符", result.content.len());
@@ -285,6 +285,13 @@ async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
                 first_reasoning: None,
                 again_reasonings: None,
                 reasoning: None,
+                input_tokens: None,
+                output_tokens: None,
+                cached_tokens: None,
+                last_input_tokens: None,
+                last_output_tokens: None,
+                image_paths: None,
+                message_type: None,
             };
             let store = crate::APP_STATE.read().await;
             let _ = store.session_store.append_message(sid, &cron_msg);

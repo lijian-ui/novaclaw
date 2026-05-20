@@ -49,9 +49,9 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           setCurrentSession(latest)
           setMessages([])
           try {
-            const messages = await getMessages(latest.id)
-            if (Array.isArray(messages)) {
-              setMessages(messages)
+            const rawMessages = await getMessages(latest.id)
+            if (Array.isArray(rawMessages)) {
+              setMessages(rawMessages.map(m => ({ ...m, inputTokens: (m as any).input_tokens, outputTokens: (m as any).output_tokens })))
             }
           } catch {
             // 忽略消息加载错误
@@ -89,11 +89,11 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   const handleSelectSession = async (session: Session) => {
     setCurrentSession(session)
-    setMessages([]) // 先清除旧消息，避免 ChatPanel 同步到旧数据
+    setMessages([])
     try {
-      const messages = await getMessages(session.id)
-      if (Array.isArray(messages)) {
-        setMessages(messages)
+      const rawMessages = await getMessages(session.id)
+      if (Array.isArray(rawMessages)) {
+        setMessages(rawMessages.map(m => ({ ...m, inputTokens: (m as any).input_tokens, outputTokens: (m as any).output_tokens })))
       } else {
         setMessages([])
       }

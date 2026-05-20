@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 /// OpenAI 兼容的聊天消息
+/// content: String "hello" 或数组 [{"type":"text","text":"hello"},{"type":"image_url",...}]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -135,6 +136,17 @@ pub struct Usage {
     pub prompt_tokens: Option<i64>,
     pub completion_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
+    /// 缓存 Token 数量（部分 LLM 支持，如 DeepSeek）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<i64>,
+}
+
+/// Token 用量信息（内部传递用）
+#[derive(Debug, Clone)]
+pub struct TokenUsage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cached_tokens: u64,
 }
 
 /// SSE 流式事件
@@ -152,6 +164,7 @@ pub enum StreamEvent {
     Usage {
         prompt_tokens: u64,
         completion_tokens: u64,
+        cached_tokens: u64,
     },
     Done(String),
     Error(String),

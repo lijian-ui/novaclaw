@@ -288,7 +288,7 @@ impl ToolRegistry {
         let timeout_secs = match name {
             "read_file" | "grep" | "search_replace" => 120u64,
             "write_file" | "edit_file" => 60,
-            "glob" | "list_dir" | "delete_file" | "rename_file" => 30,
+            "glob" | "list_dir" | "rename_file" => 30,
             "web_search" => 60,
             "execute_command" => 300, // 命令执行最多 5 分钟
             _ => 120,

@@ -509,10 +509,10 @@ function MessageCopyButton({ text }: { text: string }) {
   return (
     <button
       onClick={handleCopy}
-      className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 rounded hover:bg-foreground/10"
+      className="opacity-60 hover:opacity-100 transition-opacity p-1 rounded hover:bg-foreground/10"
       title="复制"
     >
-      {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3 text-foreground/40" />}
+      {copied ? <span className="text-xs text-green-500 font-medium">已复制</span> : <Copy className="w-4 h-4 text-foreground/50" />}
     </button>
   )
 }
@@ -532,6 +532,15 @@ export interface MessageData {
   role: 'user' | 'assistant' | 'agent_step'
   content: string
   agentStep?: AgentStepInfo
+  inputTokens?: number
+  outputTokens?: number
+  cachedTokens?: number
+  lastInputTokens?: number
+  lastOutputTokens?: number
+  /** 流式消息中的临时 base64 图片 */
+  images?: string[]
+  /** 历史消息中的图片文件路径引用 */
+  imagePaths?: string[]
 }
 
 interface ChatMessagesProps {
@@ -627,16 +636,33 @@ export function ChatMessages({
   }, [isDark])
 
   return (
-    <div className="px-4 py-4 space-y-6">
+    <div className="px-4 py-4 space-y-8">
       {/* 渲染所有历史消息（包括思考、工具调用、最终回复） */}
       {messages.map(msg => {
         // 用户消息
         if (msg.role === 'user') {
           return (
-            <div key={msg.id} className="flex justify-end group">
-              <div className="max-w-[85%] rounded-xl px-4 py-3 bg-green-500/15 border border-green-500/20 relative">
+            <div key={msg.id} className="flex justify-end">
+              <div className="max-w-[85%] rounded-xl px-4 py-3 pb-2 bg-green-500/15 border border-green-500/20">
+                {/* 图片显示：base64（流式）或 imagePaths（历史） */}
+                {((msg.images && msg.images.length > 0) || (msg.imagePaths && msg.imagePaths.length > 0)) && (
+                  <div className="flex gap-1.5 mb-2 flex-wrap">
+                    {(msg.images ?? []).map((url, i) => (
+                      <img key={`img-${i}`} src={url} className="max-w-[200px] max-h-[160px] rounded-lg object-cover border border-border/30" alt="" />
+                    ))}
+                    {(msg.imagePaths ?? []).map((imgPath, i) => (
+                      <img
+                        key={`hp-${i}`}
+                        src={`/api/files/image/${(msg as any).sessionId || '_'}/${imgPath}`}
+                        className="max-w-[200px] max-h-[160px] rounded-lg object-cover border border-border/30"
+                        alt=""
+                        onError={(e) => { e.currentTarget.style.display = 'none' }}
+                      />
+                    ))}
+                  </div>
+                )}
                 <p className="text-sm text-foreground/80 whitespace-pre-wrap">{msg.content}</p>
-                <div className="absolute -bottom-4 right-0 flex items-center gap-1">
+                <div className="flex items-center justify-end gap-1 mt-2">
                   <MessageCopyButton text={msg.content} />
                 </div>
               </div>
@@ -653,13 +679,18 @@ export function ChatMessages({
           const cleaned = stripThinkTags(msg.content)
           if (cleaned) {
             return (
-              <div key={msg.id} className="flex justify-start animate-fade-in group">
-                <div className="w-full rounded-xl px-4 py-4 bg-white/80 dark:bg-foreground/[0.06] border border-foreground/10 shadow-sm relative">
+              <div key={msg.id} className="flex justify-start animate-fade-in">
+                <div className="w-full rounded-xl px-4 py-4 pb-2 bg-white/80 dark:bg-foreground/[0.06] border border-foreground/10 shadow-sm">
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                     {cleaned}
                   </ReactMarkdown>
-                  <div className="absolute -bottom-4 left-2 flex items-center gap-1">
+                  <div className="flex items-center gap-1 mt-3 pt-2 border-t border-foreground/5">
                     <MessageCopyButton text={cleaned} />
+                    {msg.inputTokens !== undefined && (
+                      <span className="ml-auto text-[10px] text-foreground/60 font-mono whitespace-nowrap">
+                        {msg.lastInputTokens !== undefined && msg.lastInputTokens > 0 ? `本次输入 ${msg.lastInputTokens} / 输出 ${msg.lastOutputTokens ?? 0} / ` : ''}累计输入 {msg.inputTokens} / 输出 {msg.outputTokens ?? 0}{msg.cachedTokens !== undefined && msg.cachedTokens > 0 && ` / 缓存 ${msg.cachedTokens}`}
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>

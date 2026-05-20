@@ -76,7 +76,7 @@ pub async fn initialize() {
     }
 
     // 先读取需要的配置值，然后释放写锁，再注册工具（避免 register_all 内部死锁）
-    let (tinyfish_api_key, tavily_api_key, mut tool_registry, memory_store, skills_loader) = {
+    let (tinyfish_api_key, tavily_api_key, mut tool_registry, memory_store, skills_loader, session_store) = {
         let state = APP_STATE.read().await;
         (
             state.config.tinyfish_api_key.clone(),
@@ -84,6 +84,7 @@ pub async fn initialize() {
             state.tool_registry.clone(),
             state.memory_store.clone(),
             state.skills_loader.clone(),
+            state.session_store.clone(),
         )
     };
 
@@ -94,6 +95,7 @@ pub async fn initialize() {
         tavily_api_key,
         memory_store,
         skills_loader,
+        session_store,
     );
 
     // 注册 MCP 已发现的工具（从持久化的 mcp.json 加载）
@@ -135,12 +137,18 @@ pub async fn initialize() {
             continue;
         }
 
-        match channel.id.as_str() {
+        match channel.channel_type.as_str() {
             "dingtalk" => {
                 if channel.use_stream_mode() {
                     tracing::info!("正在连接钉钉 Stream 模式...");
-                    let cid = channel.config.client_id.as_ref().unwrap();
-                    let cs = channel.config.client_secret.as_ref().unwrap();
+                    let cid = match channel.config.client_id.as_ref() {
+                        Some(c) => c,
+                        None => { tracing::warn!("钉钉渠道 '{}' 缺少 client_id，跳过", channel.name); continue; }
+                    };
+                    let cs = match channel.config.client_secret.as_ref() {
+                        Some(c) => c,
+                        None => { tracing::warn!("钉钉渠道 '{}' 缺少 client_secret，跳过", channel.name); continue; }
+                    };
                     let dt_client = Arc::new(dingtalk::DingTalkClient::new(cid.clone(), cs.clone()).await);
 
                     let dt_adapter = Arc::new(dingtalk::adapter::DingTalkAdapter::new(dt_client.clone()));
@@ -159,14 +167,14 @@ pub async fn initialize() {
                     tracing::info!("钉钉 Stream 模式已注册到 IMGateway");
                 } else if channel.use_webhook_mode() {
                     tracing::info!("钉钉 Webhook 模式已配置 (webhook={})", 
-                        channel.config.webhook.as_ref().map(|s| &s[..s.len().min(40)]).unwrap_or("?"));
+                        channel.config.webhook.as_ref().map(|s| s.chars().take(40).collect::<String>()).unwrap_or("?".to_string()));
                     // Webhook 模式不需要注册适配器，由 HTTP 调用直接发送
                 } else {
                     tracing::warn!("钉钉渠道 '{}' 没有有效的配置（需要 webhook 或 client_id+client_secret）", channel.name);
                 }
             }
             _ => {
-                tracing::warn!("不支持的 IM 渠道类型: {}", channel.id);
+                tracing::warn!("不支持的 IM 渠道类型: {} (id={})", channel.channel_type, channel.id);
             }
         }
     }

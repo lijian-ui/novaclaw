@@ -85,12 +85,12 @@ impl SystemTopic {
 
 /// 打开网关连接的请求
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GatewayRequest {
     pub client_id: String,
     pub client_secret: String,
     pub subscriptions: Vec<Subscription>,
     pub ua: String,
-    #[serde(rename = "localIp")]
     pub local_ip: String,
 }
 

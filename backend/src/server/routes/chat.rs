@@ -39,6 +39,8 @@ struct ChatStreamRequest {
     model: Option<String>,
     #[serde(default)]
     workspace: Option<String>,
+    #[serde(default)]
+    images: Vec<String>, // ["data:image/png;base64,iVBORw..."]
 }
 
 #[derive(Deserialize)]
@@ -55,6 +57,46 @@ fn make_session_title(msg: &str) -> String {
     if trimmed.is_empty() { "新对话".to_string() } else { trimmed }
 }
 
+/// 获取图片存储目录
+fn get_images_dir() -> std::path::PathBuf {
+    crate::config::get_sessions_dir().join("images")
+}
+
+/// 解码 data: URL → 保存到磁盘，返回相对文件名
+fn save_image_data_url(data_url: &str, session_id: &str) -> Result<String, String> {
+    // 解析 "data:image/png;base64,iVBORw..."
+    let after_comma = data_url.find(',').ok_or("Invalid data URL format")?;
+    let header = &data_url[..after_comma];   // "data:image/png;base64"
+    let b64 = &data_url[after_comma + 1..];
+
+    // 提取 MIME → 扩展名
+    let mime = header
+        .trim_start_matches("data:")
+        .trim_end_matches(";base64");
+    let ext = match mime {
+        "image/png" => "png",
+        "image/jpeg" | "image/jpg" => "jpg",
+        "image/gif" => "gif",
+        "image/webp" => "webp",
+        _ => return Err(format!("Unsupported image type: {}", mime)),
+    };
+
+    // Base64 解码
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| format!("Base64 decode failed: {}", e))?;
+
+    // 写磁盘
+    let dir = get_images_dir().join(session_id);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Create image dir failed: {}", e))?;
+    let filename = format!("{}.{}", uuid::Uuid::new_v4(), ext);
+    let filepath = dir.join(&filename);
+    std::fs::write(&filepath, &data).map_err(|e| format!("Write image failed: {}", e))?;
+
+    Ok(filename)
+}
+
 fn storage_msg_to_agent_msg(m: &storage::Message) -> AgentMessage {
     let tool_calls = m.tool_calls.as_ref().map(|tcs| {
         tcs.iter().map(|tc| AgentToolCall {
@@ -65,6 +107,7 @@ fn storage_msg_to_agent_msg(m: &storage::Message) -> AgentMessage {
         role: m.role.clone(), content: m.content.clone(), tool_calls,
         tool_call_id: m.tool_call_id.clone(), tool_name: m.tool_name.clone(),
         first_reasoning: m.first_reasoning.clone(), again_reasonings: m.again_reasonings.clone(), reasoning: m.reasoning.clone(),
+        images: None,
     }
 }
 
@@ -77,6 +120,24 @@ fn make_storage_msg(session_id: &str, role: &str, content: &str, tool_calls: Opt
         created_at: chrono::Utc::now().to_rfc3339(),
         metadata: None, tool_calls, tool_call_id, tool_name,
         first_reasoning: None, again_reasonings: None, reasoning: None,
+        input_tokens: None, output_tokens: None, cached_tokens: None,
+        last_input_tokens: None, last_output_tokens: None,
+        image_paths: None, message_type: None,
+    }
+}
+
+fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, input_tokens: u64, output_tokens: u64, cached_tokens: u64, last_input_tokens: u64, last_output_tokens: u64) -> storage::Message {
+    storage::Message {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        role: role.to_string(),
+        content: content.to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        metadata: None, tool_calls, tool_call_id, tool_name,
+        first_reasoning: None, again_reasonings: None, reasoning: None,
+        input_tokens: Some(input_tokens), output_tokens: Some(output_tokens), cached_tokens: Some(cached_tokens),
+        last_input_tokens: Some(last_input_tokens), last_output_tokens: Some(last_output_tokens),
+        image_paths: None, message_type: None,
     }
 }
 
@@ -104,7 +165,7 @@ async fn chat(Json(req): Json<ChatRequestHttp>) -> Json<serde_json::Value> {
     for m in &history { if m.role != "system" { agent_session.push_message(storage_msg_to_agent_msg(m)); } }
 
     let mut runtime = AgentRuntime::new(agent_session, llm_client, Arc::new(state.tool_registry.clone()), &state.config, state.skills_loader.list_skills());
-    let result = match runtime.run_turn(&req.message, None, None).await {
+    let result = match runtime.run_turn(&req.message, None, None, &[]).await {
         Ok(r) => r, Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
     };
 
@@ -173,22 +234,53 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
 
         let agent_sse_tx = sse_tx.clone();
         tokio::spawn(async move {
+            // 保存图片到磁盘，收集路径
+            let mut saved_image_paths: Vec<String> = Vec::new();
+            let mut image_data_urls: Vec<String> = Vec::new();
+            for data_url in &req.images {
+                match save_image_data_url(data_url, &session_id) {
+                    Ok(filename) => {
+                        saved_image_paths.push(filename);
+                        image_data_urls.push(data_url.clone());
+                    }
+                    Err(e) => tracing::warn!("Image save failed: {}", e),
+                }
+            }
+
             let mut runtime = AgentRuntime::new(agent_session, llm_client, tool_registry, &config, skills);
-            let result = runtime.run_turn(&req.message, Some(step_tx), None).await;
+            let result = runtime.run_turn(&req.message, Some(step_tx), None, &image_data_urls).await;
             let _ = step_fwd_handle.await;
 
             match result {
                 Ok(agent_result) => {
                     let state = APP_STATE.read().await;
-                    let _ = state.session_store.append_message(&session_id, &make_storage_msg(&session_id, "user", &req.message, None, None, None));
+                    let mut user_msg = make_storage_msg(&session_id, "user", &req.message, None, None, None);
+                    if !saved_image_paths.is_empty() {
+                        user_msg.image_paths = Some(saved_image_paths.clone());
+                    }
+                    let _ = state.session_store.append_message(&session_id, &user_msg);
                     let new_msgs = if history_msg_count <= agent_result.messages.len() { &agent_result.messages[history_msg_count..] }
                         else { let keep = crate::agent::runtime::COMPACT_KEEP_LAST_FALLBACK; if agent_result.messages.len() > keep { &agent_result.messages[agent_result.messages.len() - keep..] } else { &agent_result.messages[..] } };
-                    for m in new_msgs {
+                    let msg_count = new_msgs.len();
+                    for (i, m) in new_msgs.iter().enumerate() {
                         let tcs = m.tool_calls.as_ref().map(|tcs| tcs.iter().map(|tc| storage::ToolCall { id: tc.id.clone(), name: tc.name.clone(), arguments: Some(tc.arguments.clone()) }).collect());
-                        let _ = state.session_store.append_message(&session_id, &make_storage_msg(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone()));
+                        // 仅最后一条 assistant 消息携带 Token 用量
+                        if i == msg_count - 1 && m.role == "assistant" && (agent_result.total_input_tokens > 0 || agent_result.total_output_tokens > 0) {
+                            let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_tokens(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), agent_result.total_input_tokens, agent_result.total_output_tokens, agent_result.total_cached_tokens, agent_result.last_input_tokens, agent_result.last_output_tokens));
+                        } else {
+                            let _ = state.session_store.append_message(&session_id, &make_storage_msg(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone()));
+                        }
                     }
                     drop(state);
-                    let _ = agent_sse_tx.send(serde_json::json!({"type": "done", "data": {"content": agent_result.content, "session_id": session_id}}).to_string()).await;
+                    let _ = agent_sse_tx.send(serde_json::json!({"type": "done", "data": {
+                        "content": agent_result.content,
+                        "session_id": session_id,
+                        "input_tokens": agent_result.total_input_tokens,
+                        "output_tokens": agent_result.total_output_tokens,
+                        "cached_tokens": agent_result.total_cached_tokens,
+                        "last_input_tokens": agent_result.last_input_tokens,
+                        "last_output_tokens": agent_result.last_output_tokens,
+                    }}).to_string()).await;
                 }
                 Err(e) => { let _ = agent_sse_tx.send(serde_json::json!({"type": "error", "data": {"message": e.to_string()}}).to_string()).await; }
             }
@@ -221,7 +313,7 @@ async fn test_connection(Json(req): Json<TestConnectionReq>) -> Json<serde_json:
     let client = crate::llm::client::LlmClient::new(provider, 30);
     let chat_req = ChatRequest {
         model: req.model,
-        messages: vec![crate::llm::types::ChatMessage { role: "user".to_string(), content: "Hi".to_string(), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None }],
+        messages: vec![crate::llm::types::ChatMessage { role: "user".to_string(), content: serde_json::Value::String("Hi".to_string()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None }],
         temperature: None, stream: false, tools: None, stream_options: None,
     };
     match client.chat(&chat_req).await {
@@ -233,120 +325,10 @@ async fn test_connection(Json(req): Json<TestConnectionReq>) -> Json<serde_json:
     }
 }
 
-#[derive(Deserialize)]
-struct ApproveReq { approval_id: String, approved: bool, session_id: String }
-
-async fn approve_tool(Json(req): Json<ApproveReq>) -> Sse<SseEventStream> {
-    let (sse_tx, sse_rx) = mpsc::channel::<String>(256);
-    let (step_tx, mut step_rx) = mpsc::channel::<AgentStep>(32);
-    let sse_tx_clone = sse_tx.clone();
-
-    tokio::spawn(async move {
-        // Atomic take → 防止并发重复确认
-        let pending = { let state = APP_STATE.read().await; state.approval_manager.take_pending(&req.approval_id).await };
-        let (_approval, session_id_from_pending, tool_name, args_json) = match pending {
-            Some(p) => p,
-            None => { let _ = sse_tx_clone.send(serde_json::json!({"type": "error", "data": {"message": "未找到该确认请求，可能已过期"}}).to_string()).await; return; }
-        };
-        if session_id_from_pending != req.session_id {
-            let _ = sse_tx_clone.send(serde_json::json!({"type": "error", "data": {"message": "会话 ID 不匹配"}}).to_string()).await; return;
-        }
-
-        let (config, models_config, tool_registry, skills, session_store) = {
-            let state = APP_STATE.read().await;
-            (state.config.clone(), state.models_config.clone(), Arc::new(state.tool_registry.clone()), state.skills_loader.list_skills(), state.session_store.clone())
-        };
-
-        if !req.approved {
-            { let mut state = APP_STATE.write().await; state.cancel_map.remove(&format!("approve:{}:{}", req.session_id, req.approval_id)); }
-            let _ = sse_tx_clone.send(serde_json::json!({"type": "approval_result", "data": {"approved": false, "message": "操作已取消"}}).to_string()).await;
-            return;
-        }
-
-        // 执行工具
-        let session_workspace = session_store.get_session(&req.session_id).ok().and_then(|s| s.metadata);
-        let tool_output = match tool_name.as_str() {
-            "delete_file" => {
-                let args: serde_json::Value = match serde_json::from_str(&args_json) {
-                    Ok(a) => a,
-                    Err(e) => { let _ = sse_tx_clone.send(serde_json::json!({"type": "error", "data": {"message": format!("参数解析失败: {}", e)}}).to_string()).await; return; }
-                };
-                crate::tools::approval::execute_delete_file(args, session_workspace.as_deref()).await
-            }
-            _ => { let _ = sse_tx_clone.send(serde_json::json!({"type": "error", "data": {"message": format!("未知工具: {}", tool_name)}}).to_string()).await; return; }
-        };
-        let tool_output = match tool_output { Ok(o) => o, Err(e) => { let _ = sse_tx_clone.send(serde_json::json!({"type": "error", "data": {"message": format!("执行失败: {}", e)}}).to_string()).await; return; } };
-
-        let _ = sse_tx_clone.send(serde_json::json!({"type": "approval_result", "data": {"approved": true, "tool_name": tool_name, "output": tool_output.clone(), "message": "操作已执行"}}).to_string()).await;
-
-        // 继续 Agent 执行
-        let existing_session = match session_store.get_session(&req.session_id) {
-            Ok(s) => s,
-            Err(_) => { let _ = sse_tx_clone.send(serde_json::json!({"type": "done", "data": {"session_id": req.session_id}}).to_string()).await; return; }
-        };
-        let model = existing_session.model.clone();
-        let provider = match models_config.find_provider_by_model(&model) {
-            Some(p) => p.clone(),
-            None => { let _ = sse_tx_clone.send(serde_json::json!({"type": "error", "data": {"message": format!("未找到模型 '{}' 的提供商配置", model)}}).to_string()).await; return; }
-        };
-        let llm_client = crate::llm::client::LlmClient::new(provider, config.llm_timeout);
-        let mut agent_session = AgentSession::new(&existing_session.name, &model, existing_session.metadata.as_deref());
-        agent_session.id = existing_session.id.clone();
-        let history = session_store.get_messages(&req.session_id).unwrap_or_default();
-        for m in &history { if m.role != "system" { agent_session.push_message(storage_msg_to_agent_msg(m)); } }
-
-        let continue_prompt = format!("工具 {} 执行完成，结果：\n{}", tool_name, tool_output);
-        let step_sse_tx = sse_tx_clone.clone();
-        let step_fwd_handle = tokio::spawn(async move {
-            while let Some(step) = step_rx.recv().await {
-                let event_json = match step.step_type.as_str() {
-                    "text_chunk" => serde_json::json!({"type": "chunk", "data": step.content}),
-                    "approval_required" => serde_json::json!({"type": "agent_step", "data": {
-                        "step_type": step.step_type, "content": step.content, "tool_name": step.tool_name,
-                        "tool_result": step.tool_result, "turn": step.turn, "max_turns": step.max_turns,
-                        "approval": step.approval, "approval_id": step.approval_id,
-                    }}),
-                    _ => serde_json::json!({"type": "agent_step", "data": {
-                        "step_type": step.step_type, "content": step.content, "tool_name": step.tool_name,
-                        "tool_result": step.tool_result, "turn": step.turn, "max_turns": step.max_turns,
-                    }}),
-                };
-                if step_sse_tx.send(event_json.to_string()).await.is_err() { break; }
-            }
-        });
-
-        let cancel_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cancel_key = format!("approve:{}:{}", req.session_id, req.approval_id);
-        { let mut state = APP_STATE.write().await; state.cancel_map.insert(cancel_key.clone(), cancel_flag.clone()); }
-
-        let history_msg_count = agent_session.messages.len();
-        let mut runtime = AgentRuntime::new(agent_session, llm_client, tool_registry, &config, skills);
-        let agent_result = runtime.run_turn(&continue_prompt, Some(step_tx), Some(cancel_flag)).await;
-        let _ = step_fwd_handle.await;
-        { let mut state = APP_STATE.write().await; state.cancel_map.remove(&cancel_key); }
-
-        match agent_result {
-            Ok(ar) => {
-                let new_msgs = if history_msg_count <= ar.messages.len() { &ar.messages[history_msg_count..] }
-                    else { &ar.messages[crate::agent::runtime::COMPACT_KEEP_LAST_FALLBACK..] };
-                for m in new_msgs {
-                    let tcs = m.tool_calls.as_ref().map(|tcs| tcs.iter().map(|tc| storage::ToolCall { id: tc.id.clone(), name: tc.name.clone(), arguments: Some(tc.arguments.clone()) }).collect());
-                    let _ = session_store.append_message(&req.session_id, &make_storage_msg(&req.session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone()));
-                }
-                let _ = sse_tx_clone.send(serde_json::json!({"type": "done", "data": {"content": ar.content, "session_id": req.session_id}}).to_string()).await;
-            }
-            Err(e) => { let _ = sse_tx_clone.send(serde_json::json!({"type": "error", "data": {"message": e.to_string()}}).to_string()).await; }
-        }
-    });
-    let stream: SseEventStream = Box::pin(tokio_stream::wrappers::ReceiverStream::new(sse_rx).map(|data| Ok(Event::default().data(data))));
-    return Sse::new(stream).keep_alive(KeepAlive::default());
-}
-
 pub fn routes() -> Router {
     Router::new()
         .route("/chat", post(chat))
         .route("/chat/stream", post(chat_stream))
         .route("/chat/cancel", post(cancel_stream))
         .route("/chat/test", post(test_connection))
-        .route("/chat/approve", post(approve_tool))
 }

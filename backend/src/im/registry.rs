@@ -32,22 +32,20 @@ impl PlatformRegistry {
     }
 
     /// 获取指定平台的适配器
-    pub fn get(&self, platform: &PlatformType) -> Option<Arc<dyn IMAdapter>> {
-        // 使用 blocking_read 因为 HashMap 操作不涉及 await 点
-        // 但在 tokio 上下文中，使用 blocking_read 是安全的
-        let guard = self.adapters.blocking_read();
+    pub async fn get(&self, platform: &PlatformType) -> Option<Arc<dyn IMAdapter>> {
+        let guard = self.adapters.read().await;
         guard.get(platform).cloned()
     }
 
     /// 获取所有已注册的平台类型列表
-    pub fn platforms(&self) -> Vec<PlatformType> {
-        let guard = self.adapters.blocking_read();
+    pub async fn platforms(&self) -> Vec<PlatformType> {
+        let guard = self.adapters.read().await;
         guard.keys().cloned().collect()
     }
 
     /// 检查指定平台是否已连接
-    pub fn is_connected(&self, platform: &PlatformType) -> bool {
-        let guard = self.adapters.blocking_read();
+    pub async fn is_connected(&self, platform: &PlatformType) -> bool {
+        let guard = self.adapters.read().await;
         guard
             .get(platform)
             .map(|a| a.is_connected())
@@ -55,13 +53,13 @@ impl PlatformRegistry {
     }
 
     /// 获取适配器数量
-    pub fn len(&self) -> usize {
-        let guard = self.adapters.blocking_read();
+    pub async fn len(&self) -> usize {
+        let guard = self.adapters.read().await;
         guard.len()
     }
 
     /// 是否为空
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
+    pub async fn is_empty(&self) -> bool {
+        self.len().await == 0
     }
 }

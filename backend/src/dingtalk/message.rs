@@ -206,11 +206,10 @@ impl MessageSender {
 
         let status = resp.status();
         if !status.is_success() {
-            tracing::warn!(
-                "钉钉 Webhook 回复返回非成功状态 (HTTP {}): {}",
-                status,
-                resp.text().await.unwrap_or_default()
-            );
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::External(format!(
+                "钉钉 Webhook 回复失败 (HTTP {}): {}", status, text
+            )));
         }
 
         Ok(())
@@ -236,11 +235,10 @@ impl MessageSender {
 
         let status = resp.status();
         if !status.is_success() {
-            tracing::warn!(
-                "钉钉 Webhook Markdown 回复返回非成功状态 (HTTP {}): {}",
-                status,
-                resp.text().await.unwrap_or_default()
-            );
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::External(format!(
+                "钉钉 Webhook Markdown 回复失败 (HTTP {}): {}", status, text
+            )));
         }
 
         Ok(())

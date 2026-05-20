@@ -227,16 +227,18 @@ export function FileExplorer({ onFileOpen, customPath }: FileExplorerProps) {
   // ---- 删除确认对话框 ----
   const [deleteConfirm, setDeleteConfirm] = useState<{ path: string; name: string; parentDir: string } | null>(null)
 
-  // ---- 初始加载工作目录路径 ----
-  // customPath 来自父组件（ChatPanel 的文件夹选择），优先级高于 API 返回的默认路径
+  // ---- 初始加载工作目录路径 & 加载文件列表 ----
+  // customPath 来自父组件（ChatPanel 的文件夹选择/持久化路径），优先级最高
   useEffect(() => {
     if (customPath) {
       setWorkspacePath(customPath)
+      loadDir(customPath)
       return
     }
     apiGetPaths().then(paths => {
       if (paths.workspace_dir) {
         setWorkspacePath(paths.workspace_dir)
+        loadDir(paths.workspace_dir)
       }
     }).catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps

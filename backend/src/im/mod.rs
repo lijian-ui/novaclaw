@@ -19,6 +19,7 @@ pub mod config;
 pub mod gateway;
 pub mod handler;
 pub mod registry;
+pub mod reload;
 pub mod session;
 pub mod types;
 

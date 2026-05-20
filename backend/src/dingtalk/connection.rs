@@ -111,12 +111,12 @@ pub async fn start_connection(
 
             connected.store(false, Ordering::Relaxed);
             registered.store(false, Ordering::Relaxed);
-            handler_registry.notify_disconnected();
+            handler_registry.notify_disconnected().await;
 
             match &result {
                 Err(e) => {
                     tracing::error!("钉钉连接异常: {}，{}秒后重连", e, config.reconnect_interval_secs);
-                    handler_registry.notify_error(&e.to_string());
+                    handler_registry.notify_error(&e.to_string()).await;
                 }
                 Ok(()) => {
                     tracing::info!("钉钉连接正常关闭，{}秒后重连", config.reconnect_interval_secs);
@@ -128,7 +128,7 @@ pub async fn start_connection(
                 break;
             }
 
-            handler_registry.notify_reconnecting();
+            handler_registry.notify_reconnecting().await;
             tokio::time::sleep(Duration::from_secs(config.reconnect_interval_secs)).await;
         }
     });
@@ -152,8 +152,10 @@ async fn run_one_session(
         .unwrap_or_else(|| get_local_ip().unwrap_or_else(|| "0.0.0.0".to_string()));
 
     tracing::info!("正在连接钉钉网关 (IP: {})...", local_ip);
+    let dt_token = token_manager.get_token().await?;
     let conn_resp = GatewayConnector::open(
         http_client,
+        &dt_token,
         token_manager.credential().client_id.as_str(),
         token_manager.credential().client_secret.as_str(),
         &local_ip,
@@ -172,7 +174,7 @@ async fn run_one_session(
 
     tracing::info!("WebSocket 已建立");
     connected.store(true, Ordering::Relaxed);
-    handler_registry.notify_connected();
+    handler_registry.notify_connected().await;
 
     let (ws_writer, ws_reader) = ws_stream.split();
 
@@ -303,7 +305,7 @@ async fn dispatch_message(
     registered: &AtomicBool,
 ) -> Result<(), AppError> {
     let msg: DownStreamMessage = serde_json::from_str(text).map_err(|e| {
-        AppError::External(format!("解析消息失败: {} (raw: {})", e, &text[..text.len().min(200)]))
+        AppError::External(format!("解析消息失败: {} (raw: {})", e, text.chars().take(200).collect::<String>()))
     })?;
 
     match msg.msg_type.as_str() {
@@ -332,7 +334,7 @@ async fn handle_system(
         SystemTopic::Registered => {
             tracing::info!("➡ 钉钉: Registered");
             registered.store(true, Ordering::Relaxed);
-            handler_registry.notify_registered();
+            handler_registry.notify_registered().await;
             send_ack(ack_tx, &msg.headers, CODE_OK, "OK")?;
         }
         SystemTopic::Disconnect => {
@@ -380,8 +382,13 @@ async fn handle_callback(
     ack_tx: &mpsc::UnboundedSender<String>,
     handler_registry: &HandlerRegistry,
 ) -> Result<(), AppError> {
-    let cb: CallbackMessageData = serde_json::from_value(msg.data.clone()).map_err(|e| {
-        AppError::External(format!("解析回调数据失败: {} (topic={})", e, msg.headers.topic))
+    // 钉钉回调的 data 可能是双重 JSON 编码（字符串里包着 JSON 对象）
+    let data_value = match &msg.data {
+        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s).unwrap_or(msg.data.clone()),
+        _ => msg.data.clone(),
+    };
+    let cb: CallbackMessageData = serde_json::from_value(data_value).map_err(|e| {
+        AppError::External(format!("解析回调数据失败: {} (topic={}, data={})", e, msg.headers.topic, &msg.data.to_string()[..msg.data.to_string().len().min(200)]))
     })?;
 
     let webhook = cb.session_webhook.clone();

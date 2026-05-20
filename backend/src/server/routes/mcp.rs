@@ -6,7 +6,7 @@
 
 use axum::{
     extract::Path,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use serde::Deserialize;
@@ -285,10 +285,73 @@ async fn disconnect_server(Path(name): Path<String>) -> Json<serde_json::Value> 
     Json(serde_json::json!({ "success": true }))
 }
 
+/// 更新 MCP 服务器配置（先删除再重建）
+async fn update_server(Path(name): Path<String>, Json(req): Json<CreateServerReq>) -> Json<serde_json::Value> {
+    tracing::info!("{}更新 MCP 服务器: {}", LOG_PREFIX, name);
+
+    // 先断开旧连接
+    crate::mcp::disconnect_server(&name).await;
+
+    let store = crate::mcp::get_store();
+    let mut guard = store.lock().await;
+
+    // 删除旧配置
+    guard.remove(&name);
+
+    // 创建新配置
+    let server = crate::mcp::McpServerConfig {
+        name: req.name.clone(),
+        transport_type: if req.transport_type.is_empty() { "stdio".to_string() } else { req.transport_type },
+        command: req.command,
+        args: req.args,
+        url: req.url,
+        headers: req.headers,
+        description: req.description.unwrap_or_default(),
+        enabled: true,
+        tools: Vec::new(),
+        status: crate::mcp::ConnectionStatus::Disconnected,
+    };
+    guard.add(server);
+    let server_copy = guard.get(&req.name).cloned();
+    drop(guard);
+
+    let server_copy = match server_copy {
+        Some(s) => s,
+        None => return Json(serde_json::json!({ "success": false, "message": "保存后找不到服务器" })),
+    };
+
+    // 如果是 stdio 模式自动连接 + 发现工具
+    if server_copy.transport_type == "stdio" {
+        if let Err(e) = crate::mcp::connect_server(&server_copy).await {
+            return Json(serde_json::json!({
+                "success": true, "connected": false,
+                "message": format!("MCP 服务器配置已更新，但连接失败: {}", e)
+            }));
+        }
+        match crate::mcp::discover_tools(&server_copy).await {
+            Ok(tools) => {
+                let store = crate::mcp::get_store();
+                let mut guard = store.lock().await;
+                guard.update_tools(&req.name, tools);
+                drop(guard);
+                let registry = crate::APP_STATE.read().await.tool_registry.clone();
+                crate::mcp::register_tools(&registry).await;
+            }
+            Err(e) => tracing::warn!("{}MCP 连接成功但工具发现失败: {} - {}", LOG_PREFIX, name, e),
+        }
+    } else {
+        let registry = crate::APP_STATE.read().await.tool_registry.clone();
+        crate::mcp::register_tools(&registry).await;
+    }
+
+    Json(serde_json::json!({ "success": true, "message": "MCP 服务器配置已更新" }))
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route("/mcp", get(list_servers))
         .route("/mcp", post(create_server))
+        .route("/mcp/:name", put(update_server))
         .route("/mcp/:name", delete(delete_server))
         .route("/mcp/:name/toggle", post(toggle_server))
         .route("/mcp/:name/discover", post(discover_tools))

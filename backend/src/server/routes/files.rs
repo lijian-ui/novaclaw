@@ -27,6 +27,9 @@ struct DeleteReq { path: String }
 #[derive(Deserialize)]
 struct MkdirReq { path: String }
 
+#[derive(Deserialize)]
+struct ListTreeReq { path: String }
+
 // ─── 文件条目 ──────────────────────────────────────────────────
 
 #[derive(serde::Serialize)]
@@ -228,6 +231,36 @@ async fn clear_cache() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "success": true, "message": "缓存已清空" }))
 }
 
+/// 获取图片文件
+async fn get_image(
+    axum::extract::Path((session_id, filename)): axum::extract::Path<(String, String)>,
+) -> axum::response::Response {
+    let path = crate::config::get_sessions_dir()
+        .join("images")
+        .join(&session_id)
+        .join(&filename);
+    if !path.exists() {
+        return axum::response::Response::builder()
+            .status(404)
+            .body(axum::body::Body::from("Image not found"))
+            .unwrap();
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            let mime = mime_guess::from_path(&filename).first_or_octet_stream();
+            axum::response::Response::builder()
+                .header("Content-Type", mime.as_ref())
+                .header("Cache-Control", "public, max-age=86400")
+                .body(axum::body::Body::from(bytes))
+                .unwrap()
+        }
+        Err(_) => axum::response::Response::builder()
+            .status(500)
+            .body(axum::body::Body::from("Read error"))
+            .unwrap(),
+    }
+}
+
 /// 获取所有目录路径
 async fn get_paths() -> Json<serde_json::Value> {
     let state = APP_STATE.read().await;
@@ -245,6 +278,88 @@ async fn get_paths() -> Json<serde_json::Value> {
     }))
 }
 
+/// 目录树浏览：返回指定路径的子目录列表
+async fn list_tree(Json(req): Json<ListTreeReq>) -> Json<serde_json::Value> {
+    // 清理路径：移除 Windows \\?\ 长路径前缀
+    let clean_path = req.path.trim_start_matches("\\\\?\\");
+    let p = Path::new(clean_path);
+
+    // 验证路径存在且是目录（用普通路径检查，避免 \\?\ 前缀导致 canonicalize 不稳定）
+    if !p.exists() {
+        return Json(serde_json::json!({ "success": false, "message": "路径不存在或无权限" }));
+    }
+    if !p.is_dir() {
+        return Json(serde_json::json!({ "success": false, "message": "不是有效的目录" }));
+    }
+
+    // Windows：根路径 "/" 列出所有驱动器
+    #[cfg(target_os = "windows")]
+    if req.path == "/" {
+        let drives = (b'A'..=b'Z')
+            .filter_map(|d| {
+                let drive = format!("{}:\\", d as char);
+                let p = Path::new(&drive);
+                p.exists().then(|| serde_json::json!({
+                    "name": drive,
+                    "path": drive.clone(),
+                }))
+            })
+            .collect::<Vec<_>>();
+        return Json(serde_json::json!({
+            "success": true,
+            "data": {
+                "current_path": req.path,
+                "parent_path": serde_json::Value::Null,
+                "subdirs": drives,
+            }
+        }));
+    }
+
+    let mut subdirs: Vec<serde_json::Value> = Vec::new();
+    let read_dir = match std::fs::read_dir(p) {
+        Ok(rd) => rd,
+        Err(_) => return Json(serde_json::json!({ "success": false, "message": "无法读取目录" })),
+    };
+
+    for entry in read_dir {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') || name == "node_modules" || name == "__pycache__" || name == "target" || name == ".git" {
+            continue;
+        }
+        let raw_path = entry.path().to_string_lossy().to_string();
+        let sub_path = raw_path.trim_start_matches("\\\\?\\");
+        subdirs.push(serde_json::json!({
+            "name": name,
+            "path": sub_path,
+        }));
+    }
+
+    subdirs.sort_by(|a, b| a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or("")));
+
+    let parent = p.parent()
+        .map(|pp| pp.to_string_lossy().to_string());
+
+    Json(serde_json::json!({
+        "success": true,
+        "data": {
+            "current_path": clean_path,
+            "parent_path": parent,
+            "subdirs": subdirs,
+        }
+    }))
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route("/layout", get(get_layout))
@@ -256,6 +371,8 @@ pub fn routes() -> Router {
         .route("/files/rename", post(rename_path))
         .route("/files/delete", post(delete_path))
         .route("/files/mkdir", post(mkdir))
+        .route("/files/list-tree", post(list_tree))
+        .route("/files/image/:session_id/:filename", get(get_image))
         .route("/cache/clear", post(clear_cache))
         .route("/paths", get(get_paths))
 }

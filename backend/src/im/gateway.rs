@@ -4,13 +4,11 @@
 //! process_incoming_loop 实现了完整的 IM → Agent 消息路由闭环：
 //!   收到消息 → 查找/创建会话 → 注入平台上下文 → Agent 处理 → 回复
 
-use crate::agent::runtime::AgentRuntime;
 use crate::error::AppError;
 use crate::im::adapter::IMAdapter;
 use crate::im::registry::PlatformRegistry;
 use crate::im::session::{self as im_session, IMSessionManager};
 use crate::im::types::{IncomingMessage, MessageTarget, PlatformType, SendResult};
-use crate::llm::client::LlmClient;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -54,6 +52,7 @@ impl IMGateway {
         let adapter = self
             .registry
             .get(&target.platform)
+            .await
             .ok_or_else(|| AppError::NotFound(format!("未注册的 IM 平台: {}", target.platform)))?;
         adapter.send_text(target, text).await
     }
@@ -67,6 +66,7 @@ impl IMGateway {
         let adapter = self
             .registry
             .get(&target.platform)
+            .await
             .ok_or_else(|| AppError::NotFound(format!("未注册的 IM 平台: {}", target.platform)))?;
         adapter.send_markdown(target, title, text).await
     }
@@ -79,22 +79,23 @@ impl IMGateway {
         let adapter = self
             .registry
             .get(&original.platform)
+            .await
             .ok_or_else(|| AppError::NotFound(format!("未注册的 IM 平台: {}", original.platform)))?;
         adapter.reply(original, text).await
     }
 
     // ─── 查询 ───────────────────────────────────────
 
-    pub fn is_connected(&self, platform: &PlatformType) -> bool {
-        self.registry.is_connected(platform)
+    pub async fn is_connected(&self, platform: &PlatformType) -> bool {
+        self.registry.is_connected(platform).await
     }
 
-    pub fn platforms(&self) -> Vec<PlatformType> {
-        self.registry.platforms()
+    pub async fn platforms(&self) -> Vec<PlatformType> {
+        self.registry.platforms().await
     }
 
-    pub fn adapter_count(&self) -> usize {
-        self.registry.len()
+    pub async fn adapter_count(&self) -> usize {
+        self.registry.len().await
     }
 
     // ─── 内部：入站消息处理循环 ──────────────────────
@@ -105,11 +106,7 @@ impl IMGateway {
         // 初始化会话管理器
         let sessions_dir = crate::config::get_sessions_dir();
         let session_store = crate::storage::SessionStore::new(&sessions_dir);
-        let default_model = {
-            let state = crate::APP_STATE.read().await;
-            state.models_config.default_model.clone()
-        };
-        let session_mgr = IMSessionManager::new(session_store, default_model);
+        let session_mgr = IMSessionManager::new(session_store);
 
         while let Some(msg) = rx.recv().await {
             // 群聊：检查是否需要响应
@@ -144,6 +141,12 @@ impl IMGateway {
         session_mgr: &IMSessionManager,
         msg: IncomingMessage,
     ) -> Result<(), AppError> {
+        use crate::agent::runtime::AgentRuntime;
+        use crate::llm::client::LlmClient;
+        use crate::tools::types::AgentStep;
+        use tokio::sync::mpsc;
+        use std::sync::Arc;
+
         let source = im_session::session_source_from_incoming(&msg);
 
         // 1. 获取或创建 Agent 会话
@@ -179,12 +182,45 @@ impl IMGateway {
             skills,
         );
 
-        // 5. 执行 Agent（非流式，无取消）
-        let result = runtime.run_turn(&user_text, None, None).await?;
+        // 5. 尝试启动流式回复（仅 DingTalk 支持 AI Card 流式）
+        let (stream_tx, is_streaming) = {
+            let adapter = self.registry.get(&msg.platform).await;
+            match adapter {
+                Some(adap) => {
+                    match adap.start_stream_reply(&msg).await {
+                        Ok(tx) => (Some(tx), true),
+                        Err(_) => (None, false),
+                    }
+                }
+                None => (None, false),
+            }
+        };
 
+        // 6. 创建 AgentStep 通道，在 run_turn 之前启动监听
+        let (step_tx, step_rx) = if is_streaming {
+            let (tx, rx) = mpsc::channel::<AgentStep>(32);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
+
+        // 如果启用流式，提前启动监听任务（在 run_turn 之前）
+        if let (Some(tx), Some(mut rx)) = (stream_tx, step_rx) {
+            tokio::spawn(async move {
+                while let Some(step) = rx.recv().await {
+                    if step.step_type == "text_chunk" {
+                        let _ = tx.send(step.content);
+                    }
+                }
+                tracing::info!("IM 流式回复完成");
+            });
+        }
+
+        // 7. 执行 Agent
+        let result = runtime.run_turn(&user_text, step_tx, None, &[]).await?;
         let reply_content = result.content.trim().to_string();
 
-        // 6. 持久化会话消息
+        // 8. 持久化会话消息
         {
             let _ = crate::APP_STATE
                 .read()
@@ -203,6 +239,13 @@ impl IMGateway {
                     first_reasoning: None,
                     again_reasonings: None,
                     reasoning: None,
+                    input_tokens: None,
+                    output_tokens: None,
+                    cached_tokens: None,
+                    last_input_tokens: None,
+                    last_output_tokens: None,
+                    image_paths: None,
+                    message_type: None,
                 });
             let _ = crate::APP_STATE
                 .read()
@@ -221,11 +264,24 @@ impl IMGateway {
                     first_reasoning: None,
                     again_reasonings: None,
                     reasoning: None,
+                    input_tokens: Some(result.total_input_tokens),
+                    output_tokens: Some(result.total_output_tokens),
+                    cached_tokens: Some(result.total_cached_tokens),
+                    last_input_tokens: Some(result.last_input_tokens),
+                    last_output_tokens: Some(result.last_output_tokens),
+                    image_paths: None,
+                    message_type: None,
                 });
         }
 
-        // 7. 发送回复到 IM 平台
-        if reply_content.is_empty() {
+        // 9. 发送回复到 IM 平台（非流式路径或流式已完成文本推送）
+        if is_streaming {
+            // 流式模式下，等待卡片后台任务完成最终内容
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if let Some(adapter) = self.registry.get(&msg.platform).await {
+                let _ = adapter.finish_stream_reply(&msg).await;
+            }
+        } else if reply_content.is_empty() {
             tracing::warn!("Agent 返回空回复 (session={})", result.session_id);
             self.reply(&msg, "抱歉，我没有生成有效的回复，请重试。")
                 .await
@@ -233,7 +289,7 @@ impl IMGateway {
         } else {
             tracing::info!(
                 "Agent → IM: {}，长度={}字符",
-                &reply_content[..reply_content.len().min(50)],
+                &reply_content.chars().take(50).collect::<String>(),
                 reply_content.len()
             );
             self.reply(&msg, &reply_content).await?;

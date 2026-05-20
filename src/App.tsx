@@ -28,7 +28,15 @@ function App() {
   const [fileWidth, setFileWidth] = useState(0)
   const [draggingTarget, setDraggingTarget] = useState<'chat' | 'file' | null>(null)
   const [activeTool, setActiveTool] = useState<string | null>(null)
-  const [workspacePath, setWorkspacePath] = useState('')
+  const [workspacePath, setWorkspacePathState] = useState(() => localStorage.getItem('novaclaw_workspace') || '')
+  const setWorkspacePath = useCallback((path: string) => {
+    setWorkspacePathState(path)
+    if (path) {
+      localStorage.setItem('novaclaw_workspace', path)
+    } else {
+      localStorage.removeItem('novaclaw_workspace')
+    }
+  }, [])
   const containerRef = useRef<HTMLDivElement>(null)
 
   const {

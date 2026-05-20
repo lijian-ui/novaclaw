@@ -241,11 +241,12 @@ You are NovaClaw, a general-purpose AI Agent. You help users with various tasks 
 
 impl Default for SoulPaths {
     fn default() -> Self {
-        // 获取基础目录
         let base_dir = crate::config::get_base_dir();
-        
+
         Self {
-            agent_default_dir: base_dir.join("agent").join("default"),
+            // agent_default_dir 是所有 Agent 目录的父目录
+            // agent_dir("default") = base/agent/default ✓
+            agent_default_dir: base_dir.join("agent"),
             default_agent: "default".to_string(),
         }
     }

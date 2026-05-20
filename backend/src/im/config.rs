@@ -10,10 +10,12 @@ use std::path::PathBuf;
 /// IM 渠道配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IMChannelConfig {
-    /// 渠道标识（如 "dingtalk", "feishu"）
+    /// 渠道唯一标识
     pub id: String,
     /// 渠道显示名称
     pub name: String,
+    /// 平台类型（如 "dingtalk", "feishu"）
+    pub channel_type: String,
     /// 是否启用
     pub enabled: bool,
     /// 渠道具体配置
@@ -22,6 +24,7 @@ pub struct IMChannelConfig {
 
 /// 渠道具体配置项
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IMChannelDetail {
     // ─── Webhook 模式 ───
     /// Webhook URL（钉钉自定义机器人、飞书自定义机器人等）
@@ -119,5 +122,19 @@ impl IMChannelConfig {
     /// 判断渠道是否使用 Webhook 模式（有 webhook url）
     pub fn use_webhook_mode(&self) -> bool {
         self.config.webhook.is_some()
+    }
+
+    /// 获取有效平台类型，旧配置（无 channel_type 字段）从配置字段推断
+    pub fn effective_type(&self) -> &str {
+        if !self.channel_type.is_empty() {
+            return &self.channel_type;
+        }
+        if self.config.client_id.is_some() || self.config.client_secret.is_some() || self.config.webhook.is_some() {
+            return "dingtalk";
+        }
+        if self.config.app_id.is_some() || self.config.app_secret.is_some() {
+            return "feishu";
+        }
+        "dingtalk"
     }
 }

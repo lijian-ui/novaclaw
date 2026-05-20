@@ -22,6 +22,7 @@
 //! ```
 
 pub mod adapter;
+pub mod card;
 pub mod connection;
 pub mod credential;
 pub mod frames;
@@ -44,6 +45,8 @@ pub struct DingTalkClient {
     pub connection: DingTalkConnection,
     /// 消息发送器（REST API）
     message_sender: MessageSender,
+    /// 卡片消息发送器
+    card_sender: card::CardSender,
     /// 处理器注册表（线程安全）
     handler_registry: Arc<HandlerRegistry>,
     /// 钉钉 Client ID（同时也是 RobotCode）
@@ -71,6 +74,11 @@ impl DingTalkClient {
         .await;
 
         let message_sender = MessageSender::new(
+            http_client.clone(),
+            token_manager.clone(),
+            client_id.clone(),
+        );
+        let card_sender = card::CardSender::new(
             http_client,
             token_manager,
             client_id.clone(),
@@ -79,6 +87,7 @@ impl DingTalkClient {
         Self {
             connection,
             message_sender,
+            card_sender,
             handler_registry,
             client_id,
         }
@@ -108,6 +117,11 @@ impl DingTalkClient {
         .await;
 
         let message_sender = MessageSender::new(
+            http_client.clone(),
+            token_manager.clone(),
+            client_id.clone(),
+        );
+        let card_sender = card::CardSender::new(
             http_client,
             token_manager,
             client_id.clone(),
@@ -116,6 +130,7 @@ impl DingTalkClient {
         Self {
             connection,
             message_sender,
+            card_sender,
             handler_registry,
             client_id,
         }
@@ -207,6 +222,28 @@ impl DingTalkClient {
     /// 下载消息中的文件，返回下载 URL
     pub async fn download_file(&self, download_code: &str) -> Result<String, AppError> {
         self.message_sender.download_file(download_code).await
+    }
+
+    // ─── AI Card 流式回复 ──────────────────────────
+
+    /// 创建并投放 AI Card
+    pub async fn card_create(&self, target_user_id: Option<&str>, target_open_conversation_id: Option<&str>) -> Result<card::AICardInstance, AppError> {
+        self.card_sender.create(target_user_id, target_open_conversation_id).await
+    }
+
+    /// 设置卡片为 INPUTING 状态
+    pub async fn card_set_inputing(&self, card: &card::AICardInstance, content: &str) -> Result<(), AppError> {
+        self.card_sender.set_inputing(card, content).await
+    }
+
+    /// 流式更新卡片内容
+    pub async fn card_stream_update(&self, card: &card::AICardInstance, content: &str, is_finalize: bool) -> Result<(), AppError> {
+        self.card_sender.stream_update(card, content, is_finalize).await
+    }
+
+    /// 完成卡片
+    pub async fn card_set_finished(&self, card: &card::AICardInstance, content: &str) -> Result<(), AppError> {
+        self.card_sender.set_finished(card, content).await
     }
 
     // ─── 状态查询 ───────────────────────────────────

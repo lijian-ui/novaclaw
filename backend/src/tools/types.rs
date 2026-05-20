@@ -79,4 +79,7 @@ pub struct AgentStep {
     /// 确认 ID
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_id: Option<String>,
+    /// 缓存 Token 用量
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<u64>,
 }

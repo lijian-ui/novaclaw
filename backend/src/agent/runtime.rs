@@ -99,6 +99,11 @@ pub struct AgentResult {
     pub reasoning: Option<String>,
     pub cancelled: bool,
     pub max_iterations_reached: bool,
+    pub total_input_tokens: u64,
+    pub total_output_tokens: u64,
+    pub total_cached_tokens: u64,
+    pub last_input_tokens: u64,
+    pub last_output_tokens: u64,
 }
 
 pub struct AgentRuntime {
@@ -120,6 +125,12 @@ pub struct AgentRuntime {
     last_doom_key: Option<String>,
     /// 是否已进入优雅终止（最后一次无工具调用）
     grace_terminating: bool,
+    /// 累计缓存 Token
+    total_cached_tokens: u64,
+    /// 最后一次 LLM 请求的输入 Token（"本次输入"）
+    last_input_tokens: u64,
+    /// 最后一次 LLM 请求的输出 Token（"本次输出"）
+    last_output_tokens: u64,
 }
 
 impl AgentRuntime {
@@ -147,6 +158,9 @@ impl AgentRuntime {
             consecutive_doom_count: 0,
             last_doom_key: None,
             grace_terminating: false,
+            total_cached_tokens: 0,
+            last_input_tokens: 0,
+            last_output_tokens: 0,
         }
     }
 
@@ -155,12 +169,13 @@ impl AgentRuntime {
         user_input: &str,
         step_tx: Option<mpsc::Sender<AgentStep>>,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        images: &[String],
     ) -> Result<AgentResult, AppError> {
         let mut iterations = 0;
         let mut final_content = String::new();
         let mut max_iterations_reached = false;
 
-        self.session.push_user(user_input);
+        self.session.push_user_with_images(user_input, images);
 
         let compact_keep = if self.config.compact_keep > 0 {
             self.config.compact_keep
@@ -206,15 +221,21 @@ impl AgentRuntime {
                 self.grace_terminating = true;
                 max_iterations_reached = true;
 
-                // 注入 user 消息要求 LLM 总结
+                // 注入 user 消息要求 LLM 生成结构化摘要
                 let summary_prompt = format!(
-                    "[Agent 已达最大迭代次数 {}，请提供当前工作的完整总结，包括已完成的内容和任何未完成的事项]",
+                    "[对话已达 {} 次迭代上限。请生成以下格式的结构化摘要：]\n\n\
+                    ## Goal\n- [单句目标描述]\n\n\
+                    ## Progress\n### Done\n- [已完成工作]\n### In Progress\n- [进行中]\n### Blocked\n- [阻塞项]\n\n\
+                    ## Decisions Made\n- [关键决策及理由]\n\n\
+                    ## Critical Context\n- [重要技术细节、错误、开放问题]\n\n\
+                    ## Next Steps\n- [有序的下一步行动]\n\n\
+                    此外，如果对话中出现了需要跨会话记住的持久事实（用户偏好、项目约定），请用 memory 工具的 add action 保存。",
                     self.max_iterations
                 );
                 self.session.push_user(&summary_prompt);
 
                 // 用无工具的调用做最后一次 LLM 响应
-                let (summary_msg, _, cancelled) = self
+                let (summary_msg, _, cancelled, _) = self
                     .call_llm_with_tools_and_retry(&system_prompt, &step_tx, cancel.clone())
                     .await?;
 
@@ -230,7 +251,7 @@ impl AgentRuntime {
 
             tracing::info!("[Agent] ReAct 迭代 {}/{}", iterations, self.max_iterations);
 
-            let (assistant_message, reasoning_blocks, cancelled) = self
+            let (assistant_message, reasoning_blocks, cancelled, _) = self
                 .call_llm_with_tools_and_retry(&system_prompt, &step_tx, cancel.clone())
                 .await?;
 
@@ -288,6 +309,7 @@ impl AgentRuntime {
                             max_turns: self.max_iterations,
                             approval: None,
                             approval_id: None,
+                            cached_tokens: None,
                         })
                         .await;
                 }
@@ -332,6 +354,7 @@ impl AgentRuntime {
                                                     max_turns: max_iterations,
                                                     approval: None,
                                                     approval_id: None,
+                                                    cached_tokens: None,
                                                 })
                                         .await;
                                 }
@@ -399,6 +422,7 @@ impl AgentRuntime {
                                     max_turns: self.max_iterations,
                                     approval: None,
                                     approval_id: None,
+                                    cached_tokens: None,
                                 })
                                 .await;
                         }
@@ -443,6 +467,7 @@ impl AgentRuntime {
                                     max_turns: self.max_iterations,
                                     approval: Some(approval),
                                     approval_id: Some(approval_id.clone()),
+                                    cached_tokens: None,
                                 })
                                 .await;
                         }
@@ -467,6 +492,7 @@ impl AgentRuntime {
                                     max_turns: self.max_iterations,
                                     approval: None,
                                     approval_id: None,
+                                    cached_tokens: None,
                                 })
                                 .await;
                         }
@@ -515,10 +541,15 @@ impl AgentRuntime {
         }
 
         tracing::info!(
-            "[Agent] ReAct 完成: {} 次迭代, {} 字符输出, max_iterations_reached={}",
+            "[Agent] ReAct 完成: {} 次迭代, {} 字符输出, max_iterations_reached={}. Token: 本次输入 {}, 本次输出 {}, 缓存 {}, 累计输入 {}, 累计输出 {}",
             iterations,
             final_content.len(),
-            max_iterations_reached
+            max_iterations_reached,
+            self.last_input_tokens,
+            self.last_output_tokens,
+            self.total_cached_tokens,
+            self.session.total_input_tokens,
+            self.session.total_output_tokens
         );
 
         let first_reasoning = self.session.messages.iter()
@@ -541,6 +572,11 @@ impl AgentRuntime {
             reasoning: None,
             cancelled,
             max_iterations_reached,
+            total_input_tokens: self.session.total_input_tokens,
+            total_output_tokens: self.session.total_output_tokens,
+            total_cached_tokens: self.total_cached_tokens,
+            last_input_tokens: self.last_input_tokens,
+            last_output_tokens: self.last_output_tokens,
         })
     }
 
@@ -583,23 +619,19 @@ impl AgentRuntime {
         system_prompt: &str,
         step_tx: &Option<mpsc::Sender<AgentStep>>,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<(AgentMessage, Vec<String>, bool), AppError> {
+    ) -> Result<(AgentMessage, Vec<String>, bool, u64), AppError> {
         let mut attempts = 0u32;
         loop {
             match self.call_llm_with_tools(system_prompt, step_tx, cancel.clone()).await {
-                Ok((msg, blocks, cancelled, input_tokens, output_tokens)) => {
+                Ok((msg, blocks, cancelled, input_tokens, output_tokens, cached_tokens)) => {
                     if input_tokens > 0 || output_tokens > 0 {
                         self.session.total_input_tokens += input_tokens;
                         self.session.total_output_tokens += output_tokens;
-                        tracing::info!(
-                            "[Agent] Token 写回完成 — 本次输入: {}, 输出: {}, 累计输入: {}, 累计输出: {}",
-                            input_tokens,
-                            output_tokens,
-                            self.session.total_input_tokens,
-                            self.session.total_output_tokens
-                        );
+                        self.total_cached_tokens += cached_tokens;
+                        self.last_input_tokens = input_tokens;
+                        self.last_output_tokens = output_tokens;
                     }
-                    return Ok((msg, blocks, cancelled));
+                    return Ok((msg, blocks, cancelled, cached_tokens));
                 }
                 Err(e) if attempts < self.max_retries => {
                     attempts += 1;
@@ -624,6 +656,7 @@ impl AgentRuntime {
                             max_turns: self.max_iterations,
                             approval: None,
                             approval_id: None,
+                            cached_tokens: None,
                         }).await;
                     }
                     tokio::time::sleep(Duration::from_secs(wait_secs)).await;
@@ -645,7 +678,7 @@ impl AgentRuntime {
         system_prompt: &str,
         step_tx: &Option<mpsc::Sender<AgentStep>>,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    ) -> Result<(AgentMessage, Vec<String>, bool, u64, u64), AppError> {
+    ) -> Result<(AgentMessage, Vec<String>, bool, u64, u64, u64), AppError> {
         let tools = if self.grace_terminating {
             // 优雅终止：不传工具，LLM 只能返回文本
             Vec::new()
@@ -656,17 +689,40 @@ impl AgentRuntime {
 
         let mut messages: Vec<ChatMessage> = vec![ChatMessage {
             role: "system".to_string(),
-            content: system_prompt.to_string(),
+            content: serde_json::Value::String(system_prompt.to_string()),
             tool_calls: None,
             tool_call_id: None,
             name: None,
             reasoning_content: None,
         }];
 
-        for msg in &self.session.messages {
+        let mut first_user_msg_idx = None;
+        for (i, msg) in self.session.messages.iter().enumerate() {
+            let content = if msg.role == "user" && msg.images.is_some() && first_user_msg_idx.is_none() {
+                // 只有第一条带图的 user 消息才嵌入 base64，后续迭代不再重传
+                first_user_msg_idx = Some(i);
+                let imgs = msg.images.as_ref().unwrap();
+                if imgs.is_empty() {
+                    serde_json::Value::String(msg.content.clone())
+                } else {
+                    let mut parts: Vec<serde_json::Value> = vec![serde_json::json!({
+                        "type": "text",
+                        "text": &msg.content
+                    })];
+                    for url in imgs {
+                        parts.push(serde_json::json!({
+                            "type": "image_url",
+                            "image_url": { "url": url }
+                        }));
+                    }
+                    serde_json::Value::Array(parts)
+                }
+            } else {
+                serde_json::Value::String(msg.content.clone())
+            };
             messages.push(ChatMessage {
                 role: msg.role.clone(),
-                content: msg.content.clone(),
+                content,
                 tool_calls: msg.tool_calls.as_ref().map(|tcs| {
                     tcs.iter()
                         .map(|tc| crate::llm::types::ToolCall {
@@ -725,6 +781,7 @@ impl AgentRuntime {
         let mut was_cancelled = false;
         let mut input_tokens: u64 = 0;
         let mut output_tokens: u64 = 0;
+        let mut cached_tokens: u64 = 0;
 
         while let Some(event) = stream_handle.rx.recv().await {
             if let Some(ref flag) = cancel_flag {
@@ -749,6 +806,7 @@ impl AgentRuntime {
                                 max_turns: self.max_iterations,
                                 approval: None,
                                 approval_id: None,
+                                cached_tokens: None,
                             })
                             .await;
                     }
@@ -766,6 +824,7 @@ impl AgentRuntime {
                                 max_turns: self.max_iterations,
                                 approval: None,
                                 approval_id: None,
+                                cached_tokens: None,
                             })
                             .await;
                     }
@@ -787,13 +846,15 @@ impl AgentRuntime {
                     accumulated_tool_calls[index].name = name.clone();
                     accumulated_tool_calls[index].arguments = arguments.clone();
                 }
-                StreamEvent::Usage { prompt_tokens, completion_tokens } => {
+                StreamEvent::Usage { prompt_tokens, completion_tokens, cached_tokens: cached } => {
                     input_tokens = prompt_tokens;
                     output_tokens = completion_tokens;
+                    cached_tokens = cached;
                     tracing::debug!(
-                        "[Agent] Token 用量 — 输入: {}, 输出: {}",
+                        "[Agent] Token 用量 — 输入: {}, 输出: {}, 缓存: {}",
                         input_tokens,
-                        output_tokens
+                        output_tokens,
+                        cached_tokens
                     );
                 }
                 StreamEvent::Done(_) => {
@@ -806,12 +867,11 @@ impl AgentRuntime {
         }
 
         if input_tokens > 0 || output_tokens > 0 {
-            tracing::info!(
-                "[Agent] 本次请求 Token 用量 — 输入: {}, 输出: {}, 累计输入: {}, 累计输出: {}",
+            tracing::debug!(
+                "[Agent] Token 用量 — 输入: {}, 输出: {}, 缓存: {}",
                 input_tokens,
                 output_tokens,
-                self.session.total_input_tokens + input_tokens,
-                self.session.total_output_tokens + output_tokens
+                cached_tokens
             );
         }
 
@@ -852,6 +912,7 @@ impl AgentRuntime {
                             max_turns: self.max_iterations,
                             approval: None,
                             approval_id: None,
+                            cached_tokens: None,
                         })
                         .await;
                 }
@@ -870,6 +931,7 @@ impl AgentRuntime {
                             max_turns: self.max_iterations,
                             approval: None,
                             approval_id: None,
+                            cached_tokens: None,
                         })
                         .await;
                 }
@@ -918,9 +980,10 @@ impl AgentRuntime {
             first_reasoning,
             again_reasonings,
             reasoning,
+            images: None,
         };
 
-        Ok((agent_msg, reasoning_blocks, was_cancelled, input_tokens, output_tokens))
+        Ok((agent_msg, reasoning_blocks, was_cancelled, input_tokens, output_tokens, cached_tokens))
     }
 
     async fn build_system_prompt(&self) -> String {
@@ -936,8 +999,12 @@ impl AgentRuntime {
             "Linux"
         };
 
-        // 从全局状态获取 SoulManager
-        let soul_manager = crate::APP_STATE.read().await.soul_manager.clone();
+        // 从全局状态获取 SoulManager 和 MemoryStore
+        let (soul_manager, memory_content) = {
+            let state = crate::APP_STATE.read().await;
+            let memory = state.memory_store.list_memories();
+            (state.soul_manager.clone(), if memory.is_empty() { None } else { Some(memory) })
+        };
 
         crate::agent::prompt::SystemPromptBuilder::new(
             &self.config,
@@ -948,6 +1015,7 @@ impl AgentRuntime {
             format!("{}: {}", s.name, s.description)
         }).collect())
         .with_soul_manager(soul_manager)
+        .with_memory(memory_content)
         .build()
         .await
     }

@@ -62,41 +62,41 @@ impl HandlerRegistry {
     }
 
     /// 通知已连接
-    pub fn notify_connected(&self) {
-        let listeners = self.lifecycle_listeners.blocking_read();
+    pub async fn notify_connected(&self) {
+        let listeners = self.lifecycle_listeners.read().await;
         for l in listeners.iter() {
             l.on_connected();
         }
     }
 
     /// 通知已注册
-    pub fn notify_registered(&self) {
-        let listeners = self.lifecycle_listeners.blocking_read();
+    pub async fn notify_registered(&self) {
+        let listeners = self.lifecycle_listeners.read().await;
         for l in listeners.iter() {
             l.on_registered();
         }
     }
 
     /// 通知已断开
-    pub fn notify_disconnected(&self) {
-        let listeners = self.lifecycle_listeners.blocking_read();
+    pub async fn notify_disconnected(&self) {
+        let listeners = self.lifecycle_listeners.read().await;
         for l in listeners.iter() {
             l.on_disconnected();
         }
     }
 
     /// 通知正在重连
-    pub fn notify_reconnecting(&self) {
-        let listeners = self.lifecycle_listeners.blocking_read();
+    pub async fn notify_reconnecting(&self) {
+        let listeners = self.lifecycle_listeners.read().await;
         for l in listeners.iter() {
             l.on_reconnecting();
         }
     }
 
     /// 通知发生错误
-    pub fn notify_error(&self, error: &str) {
+    pub async fn notify_error(&self, error: &str) {
         let msg = error.to_string();
-        let listeners = self.lifecycle_listeners.blocking_read();
+        let listeners = self.lifecycle_listeners.read().await;
         for l in listeners.iter() {
             l.on_error(&msg);
         }

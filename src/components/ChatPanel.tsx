@@ -82,10 +82,11 @@ import {
   Clock,
   FileText,
   Folder,
-  AlertTriangle,
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
-import { startChatStream, cancelChatStream, approveChatStream, useApi } from '@/hooks/useApi'
+import { TreeBrowser } from './TreeBrowser'
+import { compressImage } from '@/lib/imageCompress'
+import { startChatStream, cancelChatStream, useApi } from '@/hooks/useApi'
 import { useChat } from '@/contexts/ChatContext'
 import { useTranslation } from 'react-i18next'
 
@@ -375,6 +376,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                 id: m.id,
                 role: 'assistant',
                 content: strippedContent,
+                inputTokens: (m as any).inputTokens ?? (m as any).input_tokens,
+                outputTokens: (m as any).outputTokens ?? (m as any).output_tokens,
+                cachedTokens: (m as any).cachedTokens ?? (m as any).cached_tokens,
+                lastInputTokens: (m as any).lastInputTokens ?? (m as any).last_input_tokens,
+                lastOutputTokens: (m as any).lastOutputTokens ?? (m as any).last_output_tokens,
               })
             }
           }
@@ -401,7 +407,14 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             id: m.id,
             role,
             content: m.content,
-          })
+            inputTokens: (m as any).inputTokens ?? (m as any).input_tokens,
+            outputTokens: (m as any).outputTokens ?? (m as any).output_tokens,
+            cachedTokens: (m as any).cachedTokens ?? (m as any).cached_tokens,
+            lastInputTokens: (m as any).lastInputTokens ?? (m as any).last_input_tokens,
+            lastOutputTokens: (m as any).lastOutputTokens ?? (m as any).last_output_tokens,
+            imagePaths: (m as any).image_paths?.length > 0 ? (m as any).image_paths : undefined,
+            sessionId: (m as any).image_paths?.length > 0 ? m.session_id : undefined,
+          } as any)
         }
       }
       // 合并：保留本地已有的 tool_call 状态（toolResult、stepType），
@@ -422,6 +435,16 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
       })
     }
   }, [contextMessages, currentSession])
+
+  // 同步 workspaceName：当 workspacePath 变化时更新显示名
+  useEffect(() => {
+    if (workspacePath) {
+      setWorkspaceName(workspacePath.split(/[/\\]/).pop() || 'workspace')
+    } else {
+      setWorkspaceName('')
+    }
+  }, [workspacePath])
+
   const [isStreaming, setIsStreaming] = useState(false)
   const [streamingContent, setStreamingContent] = useState('')
   const [streamingReasoning, setStreamingReasoning] = useState('')
@@ -429,11 +452,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [selectedModel, setSelectedModel] = useState('Auto')
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([{ name: 'Auto', providerId: '' }])
-  const [workspaceName, setWorkspaceName] = useState('workspace')
+  const [workspaceName, setWorkspaceName] = useState('')
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
-  const [editingWorkspace, setEditingWorkspace] = useState(false)
-  const [editingWsPath, setEditingWsPath] = useState('')
-  const folderInputRef = useRef<HTMLInputElement>(null)
+  const [showTreeBrowser, setShowTreeBrowser] = useState(false)
+  const [pendingImages, setPendingImages] = useState<string[]>([])
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
@@ -442,14 +465,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const hasFlushedFirstReasoningRef = useRef(false) // 标记是否已刷新第一次思考内容
   const streamingJustEndedRef = useRef(false) // 标记流式刚结束，阻止 contextMessages 覆盖
   const [isRethinking, setIsRethinking] = useState(false) // 标记是否处于二次思考阶段
-  // 工具确认对话框状态
-  const [approvalDialog, setApprovalDialog] = useState<{
-    open: boolean
-    approvalId: string
-    title: string
-    message: string
-    sessionId: string
-  } | null>(null)
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -545,7 +560,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   }
 
   // SSE streaming via HTTP POST + SSE
-  const startStreaming = useCallback((userContent: string) => {
+  const startStreaming = useCallback((userContent: string, images: string[] = []) => {
     setIsStreaming(true)
     setStreamingContent('')
     setStreamingReasoning('')
@@ -564,6 +579,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         model: selectedModel === 'Auto' ? undefined : selectedModel,
         session_id: sessionId,
         workspace: workspacePath || undefined,
+        images: images.length > 0 ? images : undefined,
       },
       {
         onChunk: (chunk) => {
@@ -606,10 +622,10 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             setStreamingReasoning('')
           }
 
-          // 固化最终文本为 assistant 消息
+          // 固化最终文本为 assistant 消息（携带 Token 用量）
           const content = streamingContentRef.current || result.content || ''
           if (content) {
-            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content }])
+            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content, inputTokens: (result as any).inputTokens, outputTokens: (result as any).outputTokens, cachedTokens: (result as any).cachedTokens, lastInputTokens: (result as any).lastInputTokens, lastOutputTokens: (result as any).lastOutputTokens }])
           }
           setStreamingContent('')
           streamingContentRef.current = ''
@@ -788,40 +804,34 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
               }
             }])
           }
-          // 处理工具确认请求
-          if (step.approval && step.approvalId && sessionIdRef.current) {
-            setApprovalDialog({
-              open: true,
-              approvalId: step.approvalId,
-              title: step.approval.title || '工具执行确认',
-              message: step.approval.message || '是否允许执行此操作？',
-              sessionId: sessionIdRef.current,
-            })
-          }
+          // 处理工具确认请求（已移除 delete_file 工具，不再需要）
         },
       },
     )
 
     abortRef.current = ac
-  }, [selectedModel, abortRef, workspacePath, setApprovalDialog])
+  }, [selectedModel, abortRef, workspacePath])
 
   const handleSend = useCallback(() => {
-    if (!input.trim() || isStreaming) return
+    if ((!input.trim() && pendingImages.length === 0) || isStreaming) return
 
     const userMsg: MessageData = {
       id: genId(),
       role: 'user',
-      content: input.trim(),
+      content: input.trim() || '(图片)',
+      images: pendingImages.length > 0 ? pendingImages : undefined,
     }
     setMessages(prev => [...prev, userMsg])
-    const msg = input.trim()
+    const msg = input.trim() || '请描述这张图片'
+    const imgs = [...pendingImages]
     setInput('')
+    setPendingImages([])
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
 
-    startStreaming(msg)
-  }, [input, isStreaming, startStreaming])
+    startStreaming(msg, imgs)
+  }, [input, isStreaming, startStreaming, pendingImages])
 
   // 打断停止：AbortController 取消 SSE 请求 + 通知后端
   const handleStop = useCallback(() => {
@@ -835,126 +845,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     // abortRef 由 startChatStream 内部管理，SSE 流结束后自动清理
   }, [])
 
-  // 处理工具确认
-  const handleApprove = useCallback(async () => {
-    if (approvalDialog) {
-      setApprovalDialog(null)
-      
-      // 使用流式 API 来继续 Agent 执行
-      approveChatStream(approvalDialog.approvalId, approvalDialog.sessionId, true, {
-        onChunk: (text) => {
-          streamingContentRef.current += text
-          setStreamingContent(streamingContentRef.current)
-        },
-        onAgentStep: (step) => {
-          if (step.stepType === 'approval_required' && step.approval && step.approvalId) {
-            setApprovalDialog({
-              open: true,
-              approvalId: step.approvalId,
-              title: step.approval?.operation_type || '需要确认',
-              message: step.approval?.message || '',
-              sessionId: approvalDialog.sessionId,
-            })
-            return
-          }
-          
-          const stepData: MessageData = {
-            id: `step_${Date.now()}_${Math.random()}`,
-            role: 'agent_step',
-            content: step.content,
-            agentStep: step,
-          }
-          setMessages(prev => [...prev, stepData])
-        },
-        onApprovalResult: (result) => {
-          const msg: MessageData = {
-            id: `approval_result_${Date.now()}`,
-            role: 'agent_step',
-            content: result.message,
-            agentStep: {
-              stepType: 'tool_result',
-              content: result.output || result.message,
-              toolName: result.toolName,
-              toolResult: result.output || '',
-              turn: 0,
-              maxTurns: 20,
-            },
-          }
-          setMessages(prev => [...prev, msg])
-        },
-        onDone: (result) => {
-          setIsStreaming(false)
-          const content = result.content
-          if (content) {
-            setMessages(prev => {
-              const lastIdx = prev.length - 1
-              const last = prev[lastIdx]
-              if (last && last.role === 'assistant' && !last.id.includes('final_')) {
-                const updated = [...prev]
-                updated[lastIdx] = {
-                  ...last,
-                  content,
-                }
-                return updated
-              } else {
-                return [
-                  ...prev,
-                  {
-                    id: `final_${Date.now()}`,
-                    role: 'assistant',
-                    content,
-                  },
-                ]
-              }
-            })
-          }
-          if (result.sessionId) {
-            refreshSessionList()
-          }
-        },
-        onError: (err) => {
-          setIsStreaming(false)
-          setStreamError(err)
-        },
-      })
-    }
-  }, [approvalDialog, refreshSessionList])
-
-  // 处理工具取消
-  const handleCancel = useCallback(async () => {
-    if (approvalDialog) {
-      setApprovalDialog(null)
-      
-      // 使用流式 API 发送取消
-      approveChatStream(approvalDialog.approvalId, approvalDialog.sessionId, false, {
-        onChunk: () => {},
-        onAgentStep: () => {},
-        onApprovalResult: (result) => {
-          const msg: MessageData = {
-            id: `approval_cancel_${Date.now()}`,
-            role: 'agent_step',
-            content: result.message,
-            agentStep: {
-              stepType: 'tool_result',
-              content: result.message,
-              toolName: '取消操作',
-              toolResult: '已取消',
-              turn: 0,
-              maxTurns: 20,
-            },
-          }
-          setMessages(prev => [...prev, msg])
-        },
-        onDone: () => {
-          setIsStreaming(false)
-        },
-        onError: (err) => {
-          setIsStreaming(false)
-          setStreamError(err)
-        },
-      })
-    }
-  }, [approvalDialog])
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -989,25 +879,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
         <div className="relative">
-          <input
-            ref={folderInputRef}
-            type="file"
-            className="hidden"
-            /* @ts-ignore */
-            webkitdirectory=""
-            directory=""
-            onChange={async (e) => {
-              // webkitdirectory 只能获取文件夹名（浏览器限制），完整路径走 Tauri 选择器
-              const files = e.target.files
-              if (files && files.length > 0) {
-                const relPath = files[0].webkitRelativePath
-                const dirName = relPath.split('/')[0]
-                setWorkspaceName(dirName)
-                setWorkspaceOpen(false)
-                onOpenFilePanel?.()
-              }
-            }}
-          />
           <div
             className="flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity"
             onClick={(e) => { e.stopPropagation(); setWorkspaceOpen(!workspaceOpen) }}
@@ -1019,78 +890,22 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             <div className="absolute left-0 top-full mt-1 w-56 py-1 rounded-md bg-card border border-border shadow-lg z-20">
               <button
                 className="w-full flex items-center gap-2 px-3 py-2 text-xs text-foreground/70 hover:bg-foreground/10 transition-colors"
-                onClick={async (e) => {
+                onClick={(e) => {
                   e.stopPropagation()
-                  // Tauri 模式下使用原生文件夹选择器获取完整路径
-                  const tauriApi = (window as any).__TAURI__
-                  if (tauriApi) {
-                    try {
-                      // @ts-ignore
-                      const selected = await import('@tauri-apps/plugin-dialog').then(m => m.open({
-                        directory: true,
-                        multiple: false,
-                      }))
-                      if (selected) {
-                        const fullPath = String(selected)
-                        const name = fullPath.split(/[/\\]/).pop() || 'workspace'
-                        setWorkspaceName(name)
-                        onWorkspacePathChange?.(fullPath)
-                        setWorkspaceOpen(false)
-                        onOpenFilePanel?.()
-                      }
-                    } catch { /* user cancelled */ }
-                  } else {
-                    const input = folderInputRef.current
-                    if (input) {
-                      input.setAttribute('webkitdirectory', '')
-                      input.setAttribute('directory', '')
-                      input.click()
-                    }
-                  }
+                  setWorkspaceOpen(false)
+                  setShowTreeBrowser(true)
                 }}
               >
                 <Folder className="w-3.5 h-3.5" />
-                {t('chat.openFolder')}
+                浏览目录
               </button>
-              <div className="border-t border-border my-1" />
-              <div className="px-3 py-1.5">
-                <div
-                  className="flex items-center gap-1.5 cursor-pointer"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setEditingWsPath(workspacePath ?? '')
-                    setEditingWorkspace(true)
-                  }}
-                >
-                  <span className="text-xs text-foreground/70 truncate flex-1">
-                    {workspacePath || '输入工作目录路径...'}
-                  </span>
+              {workspacePath && (
+                <div className="px-3 py-1.5 border-t border-border mt-1">
+                  <div className="text-[10px] text-foreground/40 font-mono truncate" title={workspacePath}>
+                    {workspacePath}
+                  </div>
                 </div>
-                {editingWorkspace && (
-                  <input
-                    type="text"
-                    className="w-full mt-1 px-2 py-1 text-xs rounded border border-border bg-background text-foreground outline-none focus:border-primary"
-                    placeholder="例如: C:\Users\xxx\my-project"
-                    value={editingWsPath}
-                    onChange={(e) => setEditingWsPath(e.target.value)}
-                    // 阻止鼠标按下事件冒泡，防止 document click 处理器关闭下拉菜单
-                    onMouseDown={(e) => e.stopPropagation()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.stopPropagation()
-                        onWorkspacePathChange?.(editingWsPath)
-                        setWorkspaceName(editingWsPath.split(/[/\\]/).pop() || 'workspace')
-                        setEditingWorkspace(false)
-                        setWorkspaceOpen(false)
-                      }
-                      if (e.key === 'Escape') {
-                        setEditingWorkspace(false)
-                      }
-                    }}
-                    autoFocus
-                  />
-                )}
-              </div>
+              )}
             </div>
           )}
         </div>
@@ -1183,40 +998,28 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         </div>
       )}
 
-      {/* 工具确认条 - 窄条显示在输入框上方 */}
-      {approvalDialog && (
-        <div className="px-3 pb-1 shrink-0">
-          <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-amber-500/[0.08] border border-amber-500/20">
-            <div className="flex items-center gap-2 min-w-0 flex-1">
-              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-              <p className="text-xs text-amber-300/90 truncate leading-relaxed">
-                {approvalDialog.message}
-              </p>
-            </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              <button
-                onClick={handleCancel}
-                className="px-2.5 py-1 text-xs text-foreground/50 hover:text-foreground/70 bg-foreground/5 hover:bg-foreground/10 rounded-md transition-colors"
-              >
-                取消
-              </button>
-              <button
-                onClick={handleApprove}
-                className="px-2.5 py-1 text-xs text-white bg-red-500 hover:bg-red-400 rounded-md transition-colors"
-              >
-                确认执行
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* Bottom input area */}
       <div className="px-3 pb-3 shrink-0">
         <p className="text-[11px] text-foreground/30 mb-2 leading-relaxed text-center">
           {t('chat.chatWith')}
         </p>
         <div className="rounded-lg bg-foreground/5 border border-border">
+          {/* 待发送图片缩略图 */}
+          {pendingImages.length > 0 && (
+            <div className="px-3 pt-2 flex gap-2 flex-wrap">
+              {pendingImages.map((url, i) => (
+                <div key={i} className="relative group">
+                  <img src={url} className="w-14 h-14 rounded-lg object-cover border border-border" alt="" />
+                  <button
+                    className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-red-500 text-white text-[10px] flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={() => setPendingImages(prev => prev.filter((_, j) => j !== i))}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="px-3 pt-2">
             <textarea
               ref={textareaRef}
@@ -1228,11 +1031,67 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
               placeholder={t('chat.inputPlaceholder')}
               className="w-full bg-transparent text-sm text-foreground/80 placeholder-foreground/30 outline-none resize-none leading-5 py-0.5 max-h-[160px]"
               style={{ height: 'auto' }}
+              onPaste={async (e) => {
+                const items = e.clipboardData.items
+                let hasImage = false
+                for (const item of items) {
+                  if (item.type.startsWith('image/')) {
+                    hasImage = true
+                    e.preventDefault()
+                    const file = item.getAsFile()
+                    if (!file) continue
+                    try {
+                      const dataUrl = await compressImage(file)
+                      setPendingImages(prev => [...prev, dataUrl])
+                    } catch { /* skip */ }
+                  }
+                }
+                // If only text was pasted (no image), let default paste happen
+                if (hasImage) e.preventDefault()
+              }}
+              onDrop={async (e) => {
+                const files = e.dataTransfer.files
+                if (files.length === 0) return
+                let hasImage = false
+                for (const file of files) {
+                  if (file.type.startsWith('image/')) {
+                    hasImage = true
+                    e.preventDefault()
+                    try {
+                      const dataUrl = await compressImage(file)
+                      setPendingImages(prev => [...prev, dataUrl])
+                    } catch { /* skip */ }
+                  }
+                }
+                if (hasImage) e.preventDefault()
+              }}
             />
           </div>
 
           <div className="flex items-center justify-between px-2 pb-2">
-            <button className="p-1 rounded hover:bg-foreground/10 transition-colors">
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              onChange={async (e) => {
+                const files = e.target.files
+                if (!files) return
+                for (const file of files) {
+                  try {
+                    const dataUrl = await compressImage(file)
+                    setPendingImages(prev => [...prev, dataUrl])
+                  } catch { /* skip */ }
+                }
+                e.target.value = ''
+              }}
+            />
+            <button
+              className="p-1 rounded hover:bg-foreground/10 transition-colors"
+              onClick={() => imageInputRef.current?.click()}
+              title="添加图片"
+            >
               <Paperclip className="w-4 h-4 text-foreground/50" />
             </button>
 
@@ -1283,7 +1142,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
               </button>
               <button
                 onClick={isStreaming ? handleStop : handleSend}
-                disabled={!isStreaming && !input.trim()}
+                disabled={!isStreaming && !input.trim() && pendingImages.length === 0}
                 className={`p-1.5 rounded-lg transition-colors ${
                   isStreaming
                     ? 'bg-red-500 hover:bg-red-400 animate-breathing'
@@ -1309,6 +1168,17 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           animation: breathing 2.5s ease-in-out infinite;
         }
       `}</style>
+      {showTreeBrowser && (
+        <TreeBrowser
+          initialPath={workspacePath || '/'}
+          onSelect={(path) => {
+            onWorkspacePathChange?.(path)
+            setWorkspaceName(path.split(/[/\\]/).pop() || 'workspace')
+            setShowTreeBrowser(false)
+          }}
+          onCancel={() => setShowTreeBrowser(false)}
+        />
+      )}
     </div>
   )
 }

@@ -25,6 +25,7 @@ impl GatewayConnector {
     /// * `subscribe_delegate` - 是否订阅委派消息
     pub async fn open(
         http_client: &reqwest::Client,
+        token: &str,
         client_id: &str,
         client_secret: &str,
         local_ip: &str,
@@ -69,6 +70,7 @@ impl GatewayConnector {
             .post(url)
             .header("Accept", "application/json")
             .header("Content-Type", "application/json")
+            .header("x-acs-dingtalk-access-token", token)
             .json(&request)
             .send()
             .await

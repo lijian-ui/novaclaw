@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, Plug, X, ChevronRight, ChevronDown, Wrench, ArrowLeft, RefreshCw, Power, PowerOff, Loader2 } from 'lucide-react'
+import { Plus, Trash2, Plug, X, ChevronRight, ChevronDown, Wrench, ArrowLeft, RefreshCw, Power, PowerOff, Loader2, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 const API = 'http://127.0.0.1:3000/api/mcp'
@@ -41,6 +41,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
   const [showModal, setShowModal] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [form, setForm] = useState({ name: '', transportType: 'stdio', command: '', args: '', url: '', headers: '', description: '' })
+  const [editingServer, setEditingServer] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const [discovering, setDiscovering] = useState<string | null>(null)
   const [connectingName, setConnectingName] = useState<string | null>(null)
@@ -92,7 +93,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
     setDiscovering(null)
   }, [loadServers])
 
-  const handleCreate = useCallback(async () => {
+  const handleSave = useCallback(async () => {
     if (!form.name.trim()) return
     const isStdio = form.transportType === 'stdio'
     if (isStdio && !form.command.trim()) return
@@ -110,24 +111,27 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
       })
     }
 
+    const body = JSON.stringify({
+      name: form.name.trim(),
+      transport_type: form.transportType,
+      command: isStdio ? form.command.trim() : undefined,
+      args: isStdio && form.args.trim() ? form.args.trim().split(/\s+/) : undefined,
+      url: !isStdio ? form.url.trim() : undefined,
+      headers: !isStdio && Object.keys(headers).length > 0 ? headers : undefined,
+      description: form.description.trim() || undefined,
+    })
+
     try {
-      await fetch(API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: form.name.trim(),
-          transport_type: form.transportType,
-          command: isStdio ? form.command.trim() : undefined,
-          args: isStdio && form.args.trim() ? form.args.trim().split(/\s+/) : undefined,
-          url: !isStdio ? form.url.trim() : undefined,
-          headers: !isStdio && Object.keys(headers).length > 0 ? headers : undefined,
-          description: form.description.trim() || undefined,
-        }),
-      })
+      if (editingServer) {
+        await fetch(`${API}/${encodeURIComponent(editingServer)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body })
+      } else {
+        await fetch(API, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+      }
       setForm({ name: '', transportType: 'stdio', command: '', args: '', url: '', headers: '', description: '' })
+      setEditingServer(null)
       loadServers()
     } catch {}
-  }, [form, loadServers])
+  }, [form, editingServer, loadServers])
 
   const confirmDelete = useCallback(async () => {
     if (!showDeleteConfirm) return
@@ -170,7 +174,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
           </button>
           <span className="text-sm font-medium text-foreground/90">{t('mcpSettings.title')}</span>
         </div>
-        <button onClick={() => { setForm({ name: '', transportType: 'stdio', command: '', args: '', url: '', headers: '', description: '' }); setShowModal(true) }}
+        <button onClick={() => { setEditingServer(null); setForm({ name: '', transportType: 'stdio', command: '', args: '', url: '', headers: '', description: '' }); setShowModal(true) }}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors">
           <Plus className="w-3.5 h-3.5" />
           {t('mcpSettings.addMcp')}
@@ -229,6 +233,18 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                       </button>
                     )
                   )}
+                  <button onClick={() => {
+                    const hdrs = server.header ? Object.entries(server.header).map(([k, v]) => `${k}: ${v}`).join('\n') : ''
+                    setEditingServer(server.name)
+                    setForm({
+                      name: server.name, transportType: server.transport_type,
+                      command: server.command || '', args: server.args?.join(' ') || '',
+                      url: server.url || '', headers: hdrs, description: server.description,
+                    })
+                    setShowModal(true)
+                  }} className="p-1 rounded hover:bg-foreground/10 transition-colors" title={t('mcpSettings.edit')}>
+                    <Pencil className="w-3.5 h-3.5 text-foreground/40" />
+                  </button>
                   <button onClick={() => handleDiscover(server.name)} disabled={discovering === server.name}
                     className="p-1 rounded hover:bg-foreground/10 transition-colors" title={t('mcpSettings.discoverTools')}>
                     <RefreshCw className={`w-3.5 h-3.5 text-foreground/40 ${discovering === server.name ? 'animate-spin' : ''}`} />
@@ -268,13 +284,20 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
           <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
             <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
               <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm font-medium text-foreground/90">{t('mcpSettings.addMcpConnection')}</span>
+                <span className="text-sm font-medium text-foreground/90">
+                  {editingServer ? t('mcpSettings.editMcpConnection') || '编辑 MCP 连接' : t('mcpSettings.addMcpConnection')}
+                </span>
                 <button onClick={() => setShowModal(false)} className="p-1 rounded hover:bg-foreground/10 transition-colors"><X className="w-4 h-4 text-foreground/50" /></button>
               </div>
               <div className="px-4 py-4 space-y-3">
                 <div>
                   <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.name')}</label>
-                  <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="my-server" className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono" />
+                  <div className="relative">
+                    <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} disabled={!!editingServer} placeholder="my-server" className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono disabled:opacity-50" />
+                    {!editingServer && (
+                      <p className="text-[10px] text-amber-400/70 mt-1">请使用英文名称，避免 LLM 调用异常</p>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="text-xs text-foreground/50 mb-1 block">{t('mcpSettings.transportType')}</label>
@@ -331,7 +354,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
               </div>
               <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
                 <button onClick={() => setShowModal(false)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('mcpSettings.cancel')}</button>
-                <button onClick={handleCreate}
+                <button onClick={handleSave}
                   disabled={!form.name.trim() || (form.transportType === 'stdio' && !form.command.trim()) || (form.transportType !== 'stdio' && !form.url.trim())}
                   className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium transition-colors">{t('mcpSettings.add')}</button>
               </div>

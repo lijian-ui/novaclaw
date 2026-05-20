@@ -10,6 +10,8 @@ pub struct SystemPromptBuilder<'a> {
     workspace: Option<String>,
     skill_list: Vec<String>,
     soul_manager: Option<SoulManager>,
+    /// MEMORY.md 内容（跨会话持久记忆，可选）
+    memory_content: Option<String>,
 }
 
 impl<'a> SystemPromptBuilder<'a> {
@@ -25,6 +27,7 @@ impl<'a> SystemPromptBuilder<'a> {
             workspace: workspace.map(|s| s.into()),
             skill_list: Vec::new(),
             soul_manager: None,
+            memory_content: None,
         }
     }
 
@@ -40,6 +43,12 @@ impl<'a> SystemPromptBuilder<'a> {
         self
     }
 
+    /// 注入 MEMORY.md 记忆内容
+    pub fn with_memory(mut self, content: Option<String>) -> Self {
+        self.memory_content = content;
+        self
+    }
+
     /// 构建完整的系统提示词
     pub async fn build(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
@@ -47,19 +56,22 @@ impl<'a> SystemPromptBuilder<'a> {
         // 1. SOUL.md 身份层（最高优先级）
         sections.push(self.build_identity().await);
 
-        // 2. 系统规则层
+        // 2. 跨会话记忆层
+        sections.push(self.build_memory());
+
+        // 3. 系统规则层
         sections.push(self.build_system_rules());
 
-        // 3. 输出格式层
+        // 4. 输出格式层
         sections.push(self.build_output_format());
 
-        // 4. 静态/动态边界
+        // 5. 静态/动态边界
         sections.push("---".to_string());
 
-        // 5. 环境信息层
+        // 6. 环境信息层
         sections.push(self.build_environment());
 
-        // 6. 技能索引层（预注入模式：有技能列表时才注入）
+        // 7. 技能索引层（预注入模式：有技能列表时才注入）
         if !self.skill_list.is_empty() {
             sections.push(self.build_skill_index());
         }
@@ -107,6 +119,37 @@ You are NovaClaw, a general-purpose AI Agent. You help users with various tasks 
 - Use tools to get real data, not guess
 - Keep responses clear and concise
 - Verify results before presenting"#.to_string()
+    }
+
+    /// Memory injection — 跨会话持久记忆
+    fn build_memory(&self) -> String {
+        let mut output = String::from(
+            "## Memory Instructions\n\n\
+             When the user shares preferences, project details, or personal information, \
+             use the `memory` tool (action: add) to save them. Also call it when the user explicitly \
+             says to 'remember' something. The tool also supports: search (find past facts), \
+             list (show all), replace (update), remove (delete).\n\n"
+        );
+
+        match &self.memory_content {
+            Some(m) if !m.trim().is_empty() => {
+                let truncated: String = if m.len() > 3500 {
+                    m.chars().take(3500).collect::<String>() + "\n---\n...(记忆已截断)"
+                } else {
+                    m.trim().to_string()
+                };
+                output.push_str(&format!(
+                    "## Persistent Memory\n\nSaved facts from previous sessions:\n\n{}\n\n\
+                     Use these to personalize your responses.",
+                    truncated
+                ));
+            }
+            _ => {
+                output.push_str("No persistent memory yet. You will build it over time.");
+            }
+        }
+
+        output
     }
 
     /// System rules

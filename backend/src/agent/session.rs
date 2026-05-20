@@ -52,6 +52,9 @@ pub struct AgentMessage {
     /// 兼容旧字段：完整的推理内容（已废弃，请使用 first_reasoning 和 again_reasonings）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<String>,
+    /// 图片 data URL 列表（仅 user 消息，临时传递，不持久化到 AgentSession）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
 /// Agent 工具调用
@@ -89,6 +92,11 @@ impl AgentSession {
 
     /// 添加用户消息
     pub fn push_user(&mut self, content: &str) {
+        self.push_user_with_images(content, &[])
+    }
+
+    /// 添加用户消息（含图片 data URL）
+    pub fn push_user_with_images(&mut self, content: &str, image_urls: &[String]) {
         self.push_message(AgentMessage {
             role: "user".to_string(),
             content: content.to_string(),
@@ -98,6 +106,7 @@ impl AgentSession {
             first_reasoning: None,
             again_reasonings: None,
             reasoning: None,
+            images: if image_urls.is_empty() { None } else { Some(image_urls.to_vec()) },
         });
     }
 
@@ -112,6 +121,7 @@ impl AgentSession {
             first_reasoning: None,
             again_reasonings: None,
             reasoning: None,
+            images: None,
         });
     }
 
@@ -126,6 +136,7 @@ impl AgentSession {
             first_reasoning: None,
             again_reasonings: None,
             reasoning: None,
+            images: None,
         });
     }
 
@@ -156,6 +167,7 @@ impl AgentSession {
             first_reasoning: None,
             again_reasonings: None,
             reasoning: None,
+            images: None,
         };
 
         self.messages = front;

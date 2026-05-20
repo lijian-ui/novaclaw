@@ -6,6 +6,15 @@
 use crate::error::AppError;
 use crate::im::types::{IncomingMessage, MessageTarget, PlatformCapabilities, PlatformType, SendResult};
 use async_trait::async_trait;
+use tokio::sync::mpsc;
+
+/// 流式回复回调
+pub struct StreamCallbacks {
+    /// 每次收到新文本块时调用
+    pub on_chunk: Box<dyn Fn(&str) + Send>,
+    /// 回复完成时调用（传入完整内容）
+    pub on_complete: Box<dyn Fn(&str) + Send>,
+}
 
 /// IM 平台适配器契约
 ///
@@ -39,4 +48,21 @@ pub trait IMAdapter: Send + Sync {
         original: &IncomingMessage,
         text: &str,
     ) -> Result<SendResult, AppError>;
+
+    /// 流式回复（可选）。返回一个 Sender，调用方可通过它发送文本块
+    /// 默认实现降级为非流式 reply
+    async fn start_stream_reply(
+        &self,
+        _original: &IncomingMessage,
+    ) -> Result<mpsc::UnboundedSender<String>, AppError> {
+        Err(AppError::External("该平台不支持流式回复".to_string()))
+    }
+
+    /// 完成流式回复
+    async fn finish_stream_reply(
+        &self,
+        _original: &IncomingMessage,
+    ) -> Result<(), AppError> {
+        Ok(())
+    }
 }
