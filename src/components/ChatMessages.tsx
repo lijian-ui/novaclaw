@@ -55,7 +55,8 @@ import { oneDark, vs } from 'react-syntax-highlighter/dist/esm/styles/prism'
 import {
   Copy, Check, ChevronRight, ChevronDown, Brain,
   Search, Code2, Puzzle, Cpu, Blocks, Terminal,
-  Clock, FileText, Settings, Wrench,
+  Clock, FileText, Settings, Wrench, ListTodo,
+  ClipboardList, AlertTriangle, CheckCircle2,
 } from 'lucide-react'
 import { useTheme } from '@/contexts/ThemeContext'
 import type { Components } from 'react-markdown'
@@ -87,6 +88,9 @@ const toolIconMap: Record<string, { icon: React.ComponentType<{ className?: stri
   skills_list:  { icon: Puzzle,   color: 'text-violet-400' },
   skill_view:   { icon: Puzzle,   color: 'text-violet-400' },
   todo:         { icon: Clock,    color: 'text-orange-400' },
+  todo_write:   { icon: ListTodo, color: 'text-orange-400' },
+  todo_list:    { icon: ListTodo, color: 'text-orange-400' },
+  submit_plan:  { icon: ClipboardList, color: 'text-blue-400' },
   terminal:     { icon: Terminal, color: 'text-green-400' },
   settings:     { icon: Settings, color: 'text-foreground/50' },
   agent:        { icon: Cpu,      color: 'text-blue-400' },
@@ -598,6 +602,32 @@ function renderAgentStep(msg: MessageData, _isStreaming: boolean): JSX.Element |
       )
     }
 
+    // todo_write / todo_list 使用任务清单卡片
+    if (toolName === 'todo_write' || toolName === 'todo_list') {
+      const isDone = st === 'tool_call_done' || st === 'tool_error'
+      return (
+        <div key={msg.id}>
+          <TodoCard
+            argsJson={msg.agentStep.content}
+            result={msg.agentStep.toolResult}
+            isDone={isDone}
+          />
+        </div>
+      )
+    }
+
+    // submit_plan 使用计划卡片
+    if (toolName === 'submit_plan') {
+      return (
+        <div key={msg.id}>
+          <PlanCard
+            argsJson={msg.agentStep.content}
+            result={msg.agentStep.toolResult}
+          />
+        </div>
+      )
+    }
+
     // 其他工具使用简单的一行显示
     return (
       <div key={msg.id}>
@@ -617,6 +647,187 @@ function renderAgentStep(msg: MessageData, _isStreaming: boolean): JSX.Element |
   }
   
   return null
+}
+
+// ─── TodoCard ────────────────────────────────────────────────────
+// 用于 todo_write / todo_list 工具的美观卡片渲染
+function TodoCard({
+  argsJson,
+  result,
+  isDone,
+}: {
+  argsJson: string
+  result?: string
+  isDone: boolean
+}) {
+  // 解析 items 列表
+  let items: { content: string; status: string; priority?: string }[] | null = null
+  try {
+    const args = JSON.parse(argsJson)
+    if (Array.isArray(args.items)) {
+      items = args.items
+    }
+  } catch {}
+
+  const total = items?.length ?? 0
+  const doneCount = items?.filter(i => i.status === 'completed').length ?? 0
+  const progress = total > 0 ? Math.round((doneCount / total) * 100) : 0
+
+  return (
+    <div className="my-2 rounded-lg border border-orange-500/20 bg-orange-500/[0.03] overflow-hidden">
+      {/* 头部 */}
+      <div className="flex items-center gap-2 px-4 py-2.5 text-xs border-b border-orange-500/10">
+        <ListTodo className="w-4 h-4 text-orange-400 shrink-0" />
+        <span className="text-blue-500/60 font-medium">任务清单</span>
+        {items && (
+          <span className="ml-auto flex items-center gap-2">
+            <span className="text-foreground/40">{doneCount}/{total}</span>
+            <div className="w-20 h-1.5 rounded-full bg-foreground/10 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-orange-400 transition-all duration-500"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+          </span>
+        )}
+      </div>
+
+      {/* 列表内容 */}
+      {items && items.length > 0 && (
+        <div className="px-4 py-2 space-y-1">
+          {items.map((item, i) => {
+            const statusIcon = item.status === 'completed' ? '✅' : item.status === 'in_progress' ? '🔄' : '⬜'
+            const priorityTag = item.priority === 'high'
+              ? <span className="ml-1.5 px-1 py-0.5 rounded text-[10px] bg-red-500/10 text-red-400 border border-red-500/20">高</span>
+              : item.priority === 'low'
+                ? <span className="ml-1.5 px-1 py-0.5 rounded text-[10px] bg-foreground/5 text-foreground/40 border border-foreground/10">低</span>
+                : null
+            const isActive = item.status === 'in_progress'
+
+            return (
+              <div
+                key={i}
+                className={`flex items-center gap-2 px-2 py-1.5 rounded text-xs transition-colors ${
+                  isActive ? 'bg-orange-500/10 border border-orange-500/20' : ''
+                }`}
+              >
+                <span>{statusIcon}</span>
+                <span className={`${item.status === 'completed' ? 'line-through text-foreground/40' : 'text-foreground/70'}`}>
+                  {item.content}
+                </span>
+                {priorityTag}
+                {isActive && <span className="ml-auto w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse" />}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {/* 结果文本（折叠显示） */}
+      {isDone && result && (
+        <details className="px-4 pb-2">
+          <summary className="text-[10px] text-foreground/30 cursor-pointer hover:text-foreground/50">
+            显示完整内容
+          </summary>
+          <pre className="mt-1 text-[10px] text-foreground/50 whitespace-pre-wrap font-mono">{result}</pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
+// ─── PlanCard ─────────────────────────────────────────────────────
+// 用于 submit_plan 工具的美观卡片渲染
+function PlanCard({
+  argsJson,
+  result,
+}: {
+  argsJson: string
+  result?: string
+}) {
+  let goal = ''
+  let steps: { title: string; description: string; risk?: string }[] = []
+  let summary = ''
+  try {
+    const args = JSON.parse(argsJson)
+    goal = args.goal || ''
+    if (Array.isArray(args.steps)) steps = args.steps
+    summary = args.summary || ''
+  } catch {}
+
+  const highRiskCount = steps.filter(s => s.risk === 'high').length
+
+  return (
+    <div className="my-2 rounded-lg border border-blue-500/20 bg-blue-500/[0.03] overflow-hidden">
+      {/* 头部 */}
+      <div className="flex items-center gap-2 px-4 py-2.5 text-xs border-b border-blue-500/10">
+        <ClipboardList className="w-4 h-4 text-blue-400 shrink-0" />
+        <span className="text-blue-500/60 font-medium">执行计划</span>
+        {highRiskCount > 0 && (
+          <span className="ml-auto flex items-center gap-1 text-[10px] text-red-400/70">
+            <AlertTriangle className="w-3 h-3" />
+            {highRiskCount} 项高风险
+          </span>
+        )}
+      </div>
+
+      <div className="px-4 py-3 space-y-2">
+        {/* 目标 */}
+        {goal && (
+          <div className="text-xs font-medium text-foreground/80 pb-2 border-b border-foreground/5">
+            🎯 {goal}
+          </div>
+        )}
+
+        {/* 步骤列表 */}
+        {steps.map((step, i) => {
+          const riskBadge = step.risk === 'high'
+            ? <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-500/10 text-red-400 border border-red-500/20">高风险</span>
+            : step.risk === 'med'
+              ? <span className="px-1.5 py-0.5 rounded text-[10px] bg-yellow-500/10 text-yellow-400 border border-yellow-500/20">中风险</span>
+              : null
+
+          return (
+            <div key={i} className="flex items-start gap-2">
+              <span className="w-5 h-5 rounded-full bg-blue-500/10 text-blue-400 text-[10px] flex items-center justify-center shrink-0 mt-0.5 font-medium">
+                {i + 1}
+              </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-medium text-foreground/70">{step.title}</span>
+                  {riskBadge}
+                </div>
+                {step.description && (
+                  <p className="text-[11px] text-foreground/40 mt-0.5">{step.description}</p>
+                )}
+              </div>
+            </div>
+          )
+        })}
+
+        {/* 总结 */}
+        {summary && (
+          <div className="text-[11px] text-foreground/50 pt-2 border-t border-foreground/5 italic">
+            {summary}
+          </div>
+        )}
+
+        {/* 计划状态提示 */}
+        {result && result.includes('等待审批') && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded bg-blue-500/10 border border-blue-500/20 text-xs text-blue-400/80">
+            <Clock className="w-3.5 h-3.5 shrink-0" />
+            等待用户确认…
+          </div>
+        )}
+        {result && result.includes('已批准') && (
+          <div className="flex items-center gap-2 px-3 py-2 rounded bg-green-500/10 border border-green-500/20 text-xs text-green-400/80">
+            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+            计划已批准
+          </div>
+        )}
+      </div>
+    </div>
+  )
 }
 
 // ─── 主组件 ──────────────────────────────────────────────────────

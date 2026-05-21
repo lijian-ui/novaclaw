@@ -1,0 +1,260 @@
+use crate::tools::registry::{ToolDef, ToolRegistry};
+use serde_json::json;
+
+/// 注册记忆/知识/技能相关工具: memory, session_search, skill_view, todo
+pub async fn register(
+    registry: &ToolRegistry,
+    memory_store: &std::sync::Arc<crate::memory::store::MemoryStore>,
+    session_store: &std::sync::Arc<crate::storage::SessionStore>,
+    skills_loader: &std::sync::Arc<crate::skills::loader::SkillsLoader>,
+) {
+    // memory tool
+    let memory_store_for_memory = memory_store.clone();
+    registry
+        .register(ToolDef {
+            name: "memory".to_string(),
+            description: "Save and search persistent facts. Use this whenever the user states a preference, shares personal details, or says to remember something. Also use it when you notice recurring patterns or conventions.\n\nActions:\n- action='add': Save a fact. content is the text of what to remember.\n- action='search': Find past memories. query is the keyword.\n- action='replace': Update a memory. content must be 'old text | new text'.\n- action='remove': Delete a memory. content is the text to remove.\n\nDo NOT save temporary info (task progress, commit hashes). Use session_search for that."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add", "search", "replace", "remove"],
+                        "description": "Action: add=save fact, search=find memories, replace=update, remove=delete"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The fact text (for add/replace/remove). Use declarative statements like 'User prefers Golang'"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search keyword (used for search action)"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional category label (e.g. 'preference', 'convention', 'environment')"
+                    }
+                },
+                "required": ["action"]
+            }),
+            handler: std::sync::Arc::new(
+                move |args: serde_json::Value,
+                      _chunk_tx: Option<
+                    tokio::sync::mpsc::UnboundedSender<String>,
+                >| -> Result<String, String> {
+                    let action = args["action"]
+                        .as_str()
+                        .ok_or("Missing 'action' parameter. Valid: add, search, replace, remove")?;
+                    match action {
+                        "add" => {
+                            let content = args["content"]
+                                .as_str()
+                                .ok_or("Missing 'content' parameter for add")?;
+                            let category = args
+                                .get("category")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("general");
+                            memory_store_for_memory
+                                .add_memory(content, category)
+                                .map_err(|e| format!("添加失败: {}", e))?;
+                            Ok(format!("已保存: \"{}\"", content))
+                        }
+                        "search" => {
+                            let query = args["query"].as_str().unwrap_or("");
+                            let results = memory_store_for_memory.search_memories(query);
+                            if results.is_empty() {
+                                Ok("未找到相关记忆".to_string())
+                            } else {
+                                Ok(format!(
+                                    "找到 {} 条相关记忆:\n\n{}",
+                                    results.len(),
+                                    results.join("\n---\n")
+                                ))
+                            }
+                        }
+                        "replace" => {
+                            let content = args["content"].as_str().ok_or(
+                                "Missing 'content' parameter. Format: 'old text | new text'",
+                            )?;
+                            let parts: Vec<&str> = content.splitn(2, '|').collect();
+                            if parts.len() != 2 {
+                                return Err("replace 需要 '旧内容 | 新内容' 格式，用 | 分隔"
+                                    .to_string());
+                            }
+                            memory_store_for_memory.replace_memory(parts[0], parts[1])
+                        }
+                        "remove" => {
+                            let content = args["content"]
+                                .as_str()
+                                .ok_or("Missing 'content' parameter for remove")?;
+                            memory_store_for_memory
+                                .remove_memory(content)
+                                .map_err(|e| format!("删除失败: {}", e))?;
+                            Ok(format!("已删除: \"{}\"", content))
+                        }
+                        "list" => {
+                            let all = memory_store_for_memory.list_memories();
+                            if all.is_empty() {
+                                Ok("暂无记忆".to_string())
+                            } else {
+                                Ok(format!("所有记忆:\n\n{}", all))
+                            }
+                        }
+                        _ => Err(format!(
+                            "不支持的操作 '{}'。可用: add, search, replace, remove, list",
+                            action
+                        )),
+                    }
+                },
+            ),
+        })
+        .await;
+
+    // session_search tool
+    let session_store_for_search = session_store.clone();
+    registry
+        .register(ToolDef {
+            name: "session_search".to_string(),
+            description:
+                "Search the current session's transcript (JSONL) for temporal information like task progress, bug details, or past decisions. Use this instead of memory/search for session-specific or temporary info. Params: query (required, search keyword), limit (optional, max results, default 5)"
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search keyword or phrase"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results to return (default 5)"
+                    }
+                },
+                "required": ["query"]
+            }),
+            handler: std::sync::Arc::new(
+                move |args: serde_json::Value,
+                      _chunk_tx: Option<
+                    tokio::sync::mpsc::UnboundedSender<String>,
+                >| -> Result<String, String> {
+                    let query = args["query"].as_str().ok_or("Missing 'query' parameter")?;
+                    let limit = args
+                        .get("limit")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(5) as usize;
+                    let query_lower = query.to_lowercase();
+
+                    let session_id = args["_session_id"].as_str().unwrap_or("");
+                    if session_id.is_empty() {
+                        return Err("无法获取当前会话 ID".to_string());
+                    }
+
+                    let messages = session_store_for_search
+                        .get_messages(session_id)
+                        .map_err(|e| format!("读取会话历史失败: {}", e))?;
+
+                    let mut results: Vec<String> = Vec::new();
+                    for msg in messages.iter().rev() {
+                        if msg.content.to_lowercase().contains(&query_lower) {
+                            let role_icon = match msg.role.as_str() {
+                                "user" => "👤",
+                                "assistant" => "🤖",
+                                "tool" => "🔧",
+                                _ => "💬",
+                            };
+                            let preview: String = msg.content.chars().take(200).collect();
+                            let suffix = if msg.content.len() > 200 { "..." } else { "" };
+                            results.push(format!("{} [{}] {}{}", role_icon, msg.role, preview, suffix));
+                            if results.len() >= limit {
+                                break;
+                            }
+                        }
+                    }
+
+                    if results.is_empty() {
+                        Ok(format!(
+                            "在会话历史中未找到与 '{}' 相关的消息",
+                            query
+                        ))
+                    } else {
+                        Ok(format!(
+                            "找到 {} 条相关历史消息:\n\n{}",
+                            results.len(),
+                            results.join("\n\n")
+                        ))
+                    }
+                },
+            ),
+        })
+        .await;
+
+    // skill_view tool
+    let skills_loader_for_view = skills_loader.clone();
+    registry
+        .register(ToolDef {
+            name: "skill_view".to_string(),
+            description:
+                "View the full content of a specific skill. The skill_dir field tells you the absolute path to the skill folder, use it to reference scripts or assets. Available skills are listed in the system prompt."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the skill to view"
+                    }
+                },
+                "required": ["name"]
+            }),
+            handler: std::sync::Arc::new(
+                move |args: serde_json::Value,
+                      _chunk_tx: Option<
+                    tokio::sync::mpsc::UnboundedSender<String>,
+                >| -> Result<String, String> {
+                    let name = args["name"]
+                        .as_str()
+                        .ok_or("Missing 'name' parameter - provide the skill name")?;
+                    tracing::info!("[Skill] skill_view 加载技能: {}", name);
+                    match skills_loader_for_view.get_skill(name) {
+                        Some(skill) => {
+                            let raw = &skill.source_path;
+                            let normalized_dir = if cfg!(target_os = "windows") {
+                                raw.replace('/', "\\")
+                            } else {
+                                raw.replace('\\', "/")
+                            };
+                            let content = skill
+                                .content
+                                .replace("{SKILL_DIR}", &normalized_dir)
+                                .replace("${SKILL_DIR}", &normalized_dir)
+                                .replace("${HERMES_SKILL_DIR}", &normalized_dir);
+                            Ok(serde_json::json!({
+                                "name": skill.name,
+                                "description": skill.description,
+                                "version": skill.version,
+                                "content": content,
+                                "skill_dir": normalized_dir,
+                            })
+                            .to_string())
+                        }
+                        None => {
+                            let available: Vec<String> = skills_loader_for_view
+                                .list_skills()
+                                .iter()
+                                .map(|s| s.name.clone())
+                                .collect();
+                            Err(format!(
+                                "Skill '{}' not found. Available skills: {}",
+                                name,
+                                available.join(", ")
+                            ))
+                        }
+                    }
+                },
+            ),
+        })
+        .await;
+
+}
+

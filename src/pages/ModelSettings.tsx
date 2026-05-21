@@ -57,6 +57,8 @@ const supplierOptions = [
   { id: 'deepseek', name: 'DeepSeek' },
   { id: 'qwen', name: 'Qwen' },
   { id: 'openai', name: 'OpenAI' },
+  { id: 'anthropic', name: 'Anthropic' },
+  { id: 'zhipu', name: '智谱AI' },
   { id: 'ollama', name: 'Ollama' },
   { id: 'lmstudio', name: 'LM Studio' },
 ]
@@ -78,7 +80,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
   const { listProviders, saveProvider, testConnection, setDefaultModel, getDefaultModel } = useApi()
 
   const [providers, setProviders] = useState<Provider[]>([])
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set(['deepseek', 'qwen', 'openai']))
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set(['deepseek', 'qwen', 'openai', 'anthropic', 'zhipu']))
   const [showModal, setShowModal] = useState(false)
   const [editingModel, setEditingModel] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
@@ -282,6 +284,8 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
     deepseek: 'text-blue-400',
     qwen: 'text-violet-400',
     openai: 'text-emerald-400',
+    anthropic: 'text-orange-400',
+    zhipu: 'text-red-400',
     ollama: 'text-amber-400',
     lmstudio: 'text-cyan-400',
   }
