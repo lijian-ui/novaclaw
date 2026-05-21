@@ -336,8 +336,8 @@ impl AgentRuntime {
                 let max_iterations = self.max_iterations;
                 let name_clone_for_spawn = name.clone();
                 async move {
-                    // 为 execute_command/terminal 工具创建流式输出通道
-                    let chunk_tx: Option<mpsc::UnboundedSender<String>> = if name == "execute_command" || name == "terminal" {
+                    // 为 execute_command/terminal/delegate_task 工具创建流式输出通道
+                    let chunk_tx: Option<mpsc::UnboundedSender<String>> = if name == "execute_command" || name == "terminal" || name == "delegate_task" {
                         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
                         let fwd_tx = step_tx.clone();
                         let spawn_name = name_clone_for_spawn.clone();

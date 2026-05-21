@@ -118,7 +118,7 @@ pub fn routes() -> Router {
         .route("/logs", get(get_system_logs))
         .route("/logs/level", post(set_log_level))
         .route("/logs/tasks", get(list_task_logs))
-        .route("/logs/tasks/{task_id}", get(get_task_log))
-        .route("/logs/tasks/{task_id}", delete(delete_task_log))
-        .route("/logs/tasks/{task_id}/delete", get(delete_task_log_get))
+        .route("/logs/tasks/:task_id", get(get_task_log))
+        .route("/logs/tasks/:task_id", delete(delete_task_log))
+        .route("/logs/tasks/:task_id/delete", get(delete_task_log_get))
 }

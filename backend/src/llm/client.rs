@@ -69,15 +69,26 @@ impl LlmClient {
         normalize_base_url(&self.provider.base_url)
     }
 
+    /// 根据提供商设置认证头
+    fn auth_header(&self) -> (&'static str, String) {
+        let name = self.provider.name.to_lowercase();
+        if name.contains("anthropic") {
+            ("x-api-key", self.provider.api_key.clone())
+        } else {
+            ("Authorization", format!("Bearer {}", self.provider.api_key))
+        }
+    }
+
     /// 非流式聊天
     pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, AppError> {
         let base = self.api_base();
         let url = format!("{}/chat/completions", base);
+        let (header_name, header_value) = self.auth_header();
 
         let response = self
             .http
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.provider.api_key))
+            .header(header_name, header_value)
             .json(req)
             .send()
             .await
@@ -124,10 +135,12 @@ impl LlmClient {
         let url = format!("{}/chat/completions", base);
         let (tx, rx) = mpsc::channel(256);
 
+        let (header_name, header_value) = self.auth_header();
+
         let response = self
             .http
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.provider.api_key))
+            .header(header_name, header_value)
             .header("Accept", "text/event-stream")
             .json(req)
             .send()

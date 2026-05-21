@@ -50,7 +50,7 @@ export type SseCallbacks = {
 
 /** 发起 SSE 流式聊天请求，返回 AbortController 用于取消 */
 export function startChatStream(
-  params: { message: string; model?: string; session_id?: string; workspace?: string; images?: string[] },
+  params: { message: string; model?: string; session_id?: string; workspace?: string; images?: string[]; agent_id?: string },
   callbacks: SseCallbacks,
 ): AbortController {
   const abortController = new AbortController()

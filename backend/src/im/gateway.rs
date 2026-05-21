@@ -158,10 +158,11 @@ impl IMGateway {
         // 3. 获取 LLM 客户端的配置
         let (provider, config, tool_registry, skills) = {
             let state = crate::APP_STATE.read().await;
-            let model = &session.model;
+            // 始终使用当前默认模型，而非会话创建时的旧模型
+            let model = state.models_config.default_model.clone();
             let provider = state
                 .models_config
-                .find_provider_by_model(model)
+                .find_provider_by_model(&model)
                 .ok_or_else(|| {
                     AppError::NotFound(format!("模型 {} 未配置提供商", model))
                 })?

@@ -36,6 +36,7 @@ Desktop.ini
 *.log
 
 # 参考项目（仅供学习参考，非项目源代码）
+参考项目/
 claude-code-rust/
 opencode/
 picoclaw/
@@ -51,4 +52,5 @@ tencent-weixin-openclaw-weixin-2.4.3/
 
 # 其他临时文件
 对话.json
+会话.json
 vite.config.ts.timestamp-*.mjs

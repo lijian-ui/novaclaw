@@ -1,30 +1,18 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Plus, Pencil, Trash2, X, Brain, ArrowLeft, ChevronDown, Loader2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Plus, Pencil, Trash2, X, Brain, ArrowLeft, ChevronDown, Check, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-const API = 'http://127.0.0.1:3000/api/agents'
+const AGENTS_API = 'http://127.0.0.1:3000/api/agents'
 
-interface Agent {
+interface SubAgentProfile {
   id: string
   name: string
   description: string
-  bot: string
-  enabled: boolean
-  is_default: boolean
-  memory_summary?: string
-  user_summary?: string
+  system_prompt: string
+  model: string | null
+  enabled_tools: string[]
+  max_iterations: number
 }
-
-const botOptions = [
-  { id: 'deepseek-chat', name: 'DeepSeek Chat' },
-  { id: 'gpt-4o', name: 'GPT-4o' },
-  { id: 'gpt-4o-mini', name: 'GPT-4o Mini' },
-  { id: 'qwen-max', name: 'Qwen Max' },
-  { id: 'glm-4', name: 'GLM-4' },
-  { id: 'Auto', name: '自动选择' },
-]
-
-const emptyForm = { name: '', description: '', bot: 'Auto' }
 
 interface AgentSettingsProps {
   onBack?: () => void
@@ -32,89 +20,66 @@ interface AgentSettingsProps {
 
 export function AgentSettings({ onBack }: AgentSettingsProps) {
   const { t } = useTranslation()
-  const [agents, setAgents] = useState<Agent[]>([])
-  const [loading, setLoading] = useState(false)
-  const [showModal, setShowModal] = useState(false)
-  const [editingId, setEditingId] = useState<string | null>(null)
-  const [form, setForm] = useState(emptyForm)
-  const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
+  const [profiles, setProfiles] = useState<SubAgentProfile[]>([])
+  const [loading, setLoading] = useState(true)
+  const [editingProfile, setEditingProfile] = useState<SubAgentProfile | null>(null)
+  const [showProfileForm, setShowProfileForm] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
-  const loadAgents = useCallback(async () => {
+  const loadProfiles = useCallback(() => {
     setLoading(true)
-    try {
-      const res = await fetch(API)
-      if (res.ok) setAgents(await res.json())
-    } catch {}
-    setLoading(false)
+    fetch(AGENTS_API).then(r => r.json()).then(body => {
+      if (body.success && Array.isArray(body.data)) {
+        // 将后端返回的列表转换为 SubAgentProfile（需要单独加载 SOUL.md）
+        const items: SubAgentProfile[] = body.data.map((a: any) => ({
+          id: a.id,
+          name: a.name,
+          description: a.description || '',
+          system_prompt: '', // SOUL.md 内容单独加载
+          model: a.model || null,
+          enabled_tools: a.enabled_tools || [],
+          max_iterations: a.max_iterations ?? 0,
+        }))
+        setProfiles(items)
+      }
+    }).catch(() => {}).finally(() => setLoading(false))
   }, [])
+  useEffect(() => { loadProfiles() }, [loadProfiles])
 
-  useEffect(() => { loadAgents() }, [loadAgents])
-
-  const handleSave = useCallback(async () => {
-    if (!form.name.trim()) return
-
-    if (editingId) {
-      // Update existing
-      try {
-        await fetch(`${API}/${editingId}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: form.name.trim(), description: form.description.trim(), bot: form.bot }),
-        })
-        setShowModal(false)
-        loadAgents()
-      } catch {}
-    } else {
-      // Create new agent
-      const newId = form.name.trim().toLowerCase().replace(/\s+/g, '-')
-      try {
-        // Create agent directory with profile
-        const profile = {
-          id: newId, name: form.name.trim(), description: form.description.trim(),
-          bot: form.bot, enabled: false, is_default: false,
-        }
-        const res = await fetch(`${API}/${newId}`, {
-          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(profile),
-        })
-        if (res.ok) {
-          setShowModal(false)
-          setForm(emptyForm)
-          loadAgents()
-          // Reload to pick up the new agent
-        } else {
-          // Fallback: POST to create
-          await fetch(`${API}/${newId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(profile) })
-          loadAgents()
-        }
-      } catch {}
-    }
-  }, [form, editingId, loadAgents])
-
-  const handleToggle = useCallback(async (id: string) => {
+  const handleSaveProfile = useCallback(async (profile: SubAgentProfile) => {
     try {
-      await fetch(`${API}/${id}`, {
+      const body: any = {
+        name: profile.name,
+        description: profile.description,
+        model: profile.model || '',
+        enabled_tools: profile.enabled_tools,
+        max_iterations: profile.max_iterations,
+      }
+      // system_prompt 单独发给后端写入 SOUL.md
+      if (profile.system_prompt) {
+        body.system_prompt = profile.system_prompt
+      }
+      const res = await fetch(`${AGENTS_API}/${profile.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true }), // toggle will get current state
+        body: JSON.stringify(body),
       })
-      loadAgents()
+      const result = await res.json()
+      if (result.success) {
+        setShowProfileForm(false)
+        setEditingProfile(null)
+        loadProfiles()
+      }
     } catch {}
-  }, [loadAgents])
+  }, [loadProfiles])
 
-  const confirmDelete = useCallback(async () => {
-    if (!showDeleteConfirm) return
+  const handleDeleteProfile = useCallback(async (id: string) => {
     try {
-      await fetch(`${API}/${showDeleteConfirm}`, { method: 'DELETE' })
-      setShowDeleteConfirm(null)
-      loadAgents()
+      await fetch(`${AGENTS_API}/${id}`, { method: 'DELETE' })
+      setDeleteConfirm(null)
+      loadProfiles()
     } catch {}
-  }, [showDeleteConfirm, loadAgents])
-
-  const openEditModal = (agent: Agent) => {
-    setEditingId(agent.id)
-    setForm({ name: agent.name, description: agent.description, bot: agent.bot })
-    setShowModal(true)
-  }
+  }, [loadProfiles])
 
   return (
     <div className="h-full flex flex-col bg-mainbg">
@@ -125,110 +90,64 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
           </button>
           <span className="text-sm font-medium text-foreground/90">{t('agentSettings.title')}</span>
         </div>
-        <button onClick={() => { setEditingId(null); setForm(emptyForm); setShowModal(true) }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors">
-          <Plus className="w-3.5 h-3.5" />{t('agentSettings.addAgent')}
-        </button>
-      </div>
-
-      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
-        {loading && agents.length === 0 ? (
-          <div className="flex items-center justify-center h-full"><Loader2 className="w-5 h-5 animate-spin text-foreground/30" /></div>
-        ) : agents.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-center">
-            <Brain className="w-10 h-10 text-foreground/20 mb-3" />
-            <p className="text-sm text-foreground/40">{t('agentSettings.noAgents')}</p>
-          </div>
-        ) : (
-          agents.map((agent) => (
-            <div key={agent.id} className="rounded-xl border border-border bg-foreground/[0.02] hover:bg-foreground/[0.04] transition-colors">
-              <div className="flex items-center justify-between px-4 py-3">
-                <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <div className={`p-2 rounded-lg ${agent.enabled ? 'bg-green-500/10' : 'bg-foreground/5'}`}>
-                    <Brain className={`w-4 h-4 ${agent.enabled ? 'text-green-400' : 'text-foreground/30'}`} />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-foreground/90">{agent.name}</span>
-                      {agent.is_default && (
-                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">{t('agentSettings.default')}</span>
-                      )}
-                      <span className="text-[10px] text-foreground/40 font-mono">{agent.bot}</span>
-                    </div>
-                    <p className="text-xs text-foreground/40 mt-0.5">{agent.description}</p>
-                    {agent.memory_summary && (
-                      <p className="text-[10px] text-foreground/30 mt-0.5 truncate">{t('agentSettings.memory', { summary: agent.memory_summary })}</p>
-                    )}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 shrink-0">
-                  <button onClick={() => openEditModal(agent)} className="p-1 rounded hover:bg-foreground/10 transition-colors" title={t('agentSettings.edit')}>
-                    <Pencil className="w-3.5 h-3.5 text-foreground/40" />
-                  </button>
-                  <button onClick={() => handleToggle(agent.id)}
-                    className={`relative w-8 h-4 rounded-full transition-colors mx-1 ${agent.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
-                    title={agent.enabled ? t('agentSettings.disable') : t('agentSettings.enable')}>
-                    <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${agent.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
-                  </button>
-                  {!agent.is_default && (
-                    <button onClick={() => setShowDeleteConfirm(agent.id)} className="p-1 rounded hover:bg-red-500/10 transition-colors" title={t('agentSettings.delete')}>
-                      <Trash2 className="w-3.5 h-3.5 text-foreground/40 hover:text-red-400" />
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))
+        {!showProfileForm && (
+          <button onClick={() => { setEditingProfile(null); setShowProfileForm(true) }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 text-xs transition-colors">
+            <Plus className="w-3.5 h-3.5" />{t('agentSettings.addSubAgent')}
+          </button>
         )}
       </div>
 
-      {/* Add/Edit Modal */}
-      {showModal && (
-        <>
-          <div className="fixed inset-0 bg-black/50 z-30" onClick={() => setShowModal(false)} />
-          <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
-            <div className="w-full max-w-md rounded-xl border border-border bg-card shadow-2xl">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-border">
-                <span className="text-sm font-medium text-foreground/90">{editingId ? t('agentSettings.editAgent') : t('agentSettings.addAgent')}</span>
-                <button onClick={() => setShowModal(false)} className="p-1 rounded hover:bg-foreground/10 transition-colors"><X className="w-4 h-4 text-foreground/50" /></button>
-              </div>
-              <div className="px-4 py-4 space-y-3">
-                <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">{t('agentSettings.name')}</label>
-                  <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder={t('agentSettings.placeholderName')}
-                    className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors" />
-                </div>
-                <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">{t('agentSettings.description')}</label>
-                  <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                    placeholder={t('agentSettings.placeholderDescription')} rows={3}
-                    className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors resize-none" />
-                </div>
-                <div>
-                  <label className="text-xs text-foreground/50 mb-1 block">{t('agentSettings.associatedBot')}</label>
-                  <div className="relative">
-                    <select value={form.bot} onChange={e => setForm(f => ({ ...f, bot: e.target.value }))}
-                      className="w-full appearance-none px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 outline-none focus:border-foreground/20 transition-colors cursor-pointer">
-                      {botOptions.map((b) => (
-                        <option key={b.id} value={b.id} className="bg-card text-foreground/80">{b.name}</option>
-                      ))}
-                    </select>
-                    <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-foreground/40 pointer-events-none" />
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+        {showProfileForm ? (
+          <ProfileForm
+            initial={editingProfile}
+            onSave={handleSaveProfile}
+            onCancel={() => { setShowProfileForm(false); setEditingProfile(null) }}
+          />
+        ) : loading ? (
+          <div className="flex items-center justify-center h-full"><Loader2 className="w-5 h-5 animate-spin text-foreground/30" /></div>
+        ) : profiles.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-center">
+            <Brain className="w-10 h-10 text-foreground/20 mb-3" />
+            <p className="text-sm text-foreground/40">{t('settings.noEmployees')}</p>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {profiles.map((profile) => (
+              <div key={profile.id} className="rounded-xl border border-border bg-foreground/[0.02] p-3.5">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <Brain className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span className="text-sm font-medium text-foreground/90">{profile.name}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50 font-mono">{profile.id}</span>
+                    </div>
+                    <p className="text-xs text-foreground/50 mt-1 line-clamp-2">{profile.description}</p>
+                    <div className="flex items-center gap-3 mt-2 text-[10px] text-foreground/40">
+                      <span>{profile.model || t('settings.inheritModel')}</span>
+                      <span>{profile.enabled_tools.length} 工具</span>
+                      <span>{t('settings.maxIter', { n: profile.max_iterations })}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => { setEditingProfile(profile); setShowProfileForm(true) }}
+                      className="p-1.5 rounded hover:bg-foreground/10 transition-colors">
+                      <Pencil className="w-3.5 h-3.5 text-foreground/40" />
+                    </button>
+                    <button onClick={() => setDeleteConfirm(profile.id)}
+                      className="p-1.5 rounded hover:bg-red-500/10 transition-colors">
+                      <Trash2 className="w-3.5 h-3.5 text-red-400/60" />
+                    </button>
                   </div>
                 </div>
               </div>
-              <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-                <button onClick={() => setShowModal(false)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('agentSettings.cancel')}</button>
-                <button onClick={handleSave} disabled={!form.name.trim()}
-                  className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium transition-colors">{editingId ? t('agentSettings.save') : t('agentSettings.add')}</button>
-              </div>
-            </div>
+            ))}
           </div>
-        </>
-      )}
+        )}
+      </div>
 
-      {/* Delete confirmation */}
-      {showDeleteConfirm && (
+      {deleteConfirm && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="w-full max-w-sm rounded-xl border border-border bg-card shadow-2xl">
             <div className="px-4 py-4">
@@ -236,12 +155,218 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
               <p className="text-xs text-foreground/50 mt-2">{t('agentSettings.deleteAgentWarning')}</p>
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
-              <button onClick={() => setShowDeleteConfirm(null)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('agentSettings.cancel')}</button>
-              <button onClick={confirmDelete} className="px-4 py-1.5 rounded-lg bg-red-500 hover:bg-red-400 text-xs text-white font-medium transition-colors">{t('agentSettings.delete')}</button>
+              <button onClick={() => setDeleteConfirm(null)} className="px-4 py-1.5 rounded-lg text-xs text-foreground/50 hover:bg-foreground/10 transition-colors">{t('agentSettings.cancel')}</button>
+              <button onClick={() => handleDeleteProfile(deleteConfirm)} className="px-4 py-1.5 rounded-lg bg-red-500 hover:bg-red-400 text-xs text-white font-medium transition-colors">{t('agentSettings.delete')}</button>
             </div>
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+// ─── 子智能体编辑表单 ──────────────────────────────────────────
+
+interface ProfileFormProps {
+  initial: SubAgentProfile | null
+  onSave: (profile: SubAgentProfile) => Promise<void>
+  onCancel: () => void
+}
+
+function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
+  const { t } = useTranslation()
+  const isEditing = !!initial
+  const [saving, setSaving] = useState(false)
+
+  const [id, setId] = useState(initial?.id ?? '')
+  const [name, setName] = useState(initial?.name ?? '')
+  const [description, setDescription] = useState(initial?.description ?? '')
+  const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? '')
+  const [model, setModel] = useState(initial?.model ?? '')
+  const [enabledTools, setEnabledTools] = useState<string[]>(initial?.enabled_tools ?? [])
+  const [maxIterations, setMaxIterations] = useState(initial?.max_iterations ?? 0)
+  const promptRef = useRef<HTMLTextAreaElement>(null)
+
+  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [modelOpen, setModelOpen] = useState(false)
+  const [allTools] = useState<{ name: string; description: string }[]>(() => [
+    { name: 'read_file', description: '读取文件内容' },
+    { name: 'write_file', description: '写入文件内容' },
+    { name: 'edit_file', description: '修改文件内容' },
+    { name: 'glob', description: '搜索匹配的文件路径' },
+    { name: 'grep', description: '在文件中搜索文本' },
+    { name: 'memory', description: '读取/保存长期记忆' },
+    { name: 'session_search', description: '搜索历史对话' },
+    { name: 'web_search', description: '搜索网络信息' },
+    { name: 'web_fetch', description: '抓取网页内容' },
+    { name: 'skill_view', description: '查看技能说明' },
+    { name: 'todo', description: '管理待办事项' },
+    { name: 'search_replace', description: '搜索替换文件内容' },
+    { name: 'list_dir', description: '列出目录文件' },
+    { name: 'rename_file', description: '重命名文件' },
+    { name: 'apply_patch', description: '应用代码补丁' },
+    { name: 'lsp', description: '语言服务器协议查询' },
+    { name: 'execute_command', description: '执行终端命令' },
+    { name: 'cron', description: '管理定时任务' },
+    { name: 'delegate_task', description: '委托任务给子智能体' },
+  ])
+
+  useEffect(() => {
+    fetch('http://127.0.0.1:3000/api/models-config').then(r => r.json()).then(body => {
+      if (body.success && body.data?.providers) {
+        const names: string[] = []
+        for (const p of body.data.providers) {
+          if (p.models) {
+            for (const m of p.models) { if (!names.includes(m)) names.push(m) }
+          }
+        }
+        names.sort(); setModelOptions(names)
+      }
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (promptRef.current) {
+      promptRef.current.style.height = 'auto'
+      promptRef.current.style.height = promptRef.current.scrollHeight + 'px'
+    }
+  }, [systemPrompt])
+
+  const toggleTool = (n: string) => setEnabledTools(p => p.includes(n) ? p.filter(t => t !== n) : [...p, n])
+
+  const handleSubmit = async () => {
+    if (!id.trim() || !name.trim()) return
+    setSaving(true)
+    try {
+      await onSave({
+        id: id.trim().toLowerCase().replace(/\s+/g, '-'),
+        name: name.trim(), description: description.trim(),
+        system_prompt: systemPrompt, model: model || null,
+        enabled_tools: enabledTools, max_iterations: maxIterations,
+      })
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-border bg-foreground/[0.02] p-4">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium text-foreground/90">{isEditing ? t('settings.editEmployee') : t('settings.addEmployee')}</span>
+        <button onClick={onCancel} className="p-1 rounded hover:bg-foreground/10"><X className="w-4 h-4 text-foreground/40" /></button>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeeId')}</label>
+          <input value={id} onChange={e => setId(e.target.value)} disabled={isEditing}
+            className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20 disabled:opacity-40" />
+        </div>
+        <div>
+          <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeeName')}</label>
+          <input value={name} onChange={e => setName(e.target.value)}
+            className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20" />
+        </div>
+      </div>
+      <div>
+        <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeeDesc')}</label>
+        <input value={description} onChange={e => setDescription(e.target.value)}
+          className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20" />
+      </div>
+      <div>
+        <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeePrompt')}</label>
+        <textarea ref={promptRef} value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)}
+          onInput={() => { const el = promptRef.current; if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
+          rows={3}
+          className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-xs font-mono text-foreground/80 outline-none focus:border-foreground/20 resize-none overflow-hidden" />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="relative">
+          <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeeModel')}</label>
+          <button onClick={() => setModelOpen(!modelOpen)}
+            className="w-full flex items-center justify-between gap-1 px-3 py-2 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 hover:bg-foreground/10">
+            <span className={model ? 'text-foreground/80' : 'text-foreground/40 italic'}>{model || t('settings.inheritModel')}</span>
+            <ChevronDown className="w-3 h-3 shrink-0 text-foreground/40" />
+          </button>
+          {modelOpen && (<>
+            <div className="fixed inset-0 z-10" onClick={() => setModelOpen(false)} />
+            <div className="absolute bottom-full left-0 mb-1 w-full py-1 rounded-md bg-card border border-border shadow-lg z-20 max-h-40 overflow-y-auto">
+              <button className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-foreground/50 italic hover:bg-foreground/10"
+                onClick={() => { setModel(''); setModelOpen(false) }}>
+                {model === '' && <Check className="w-3 h-3 text-emerald-400 shrink-0" />}
+                <span className={model === '' ? '' : 'ml-[18px]'}>{t('settings.inheritModel')}</span>
+              </button>
+              {modelOptions.map(m => (
+                <button key={m} className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-foreground/70 hover:bg-foreground/10"
+                  onClick={() => { setModel(m); setModelOpen(false) }}>
+                  {model === m && <Check className="w-3 h-3 text-emerald-400 shrink-0" />}
+                  <span className={model === m ? '' : 'ml-[18px]'}>{m}</span>
+                </button>
+              ))}
+            </div>
+          </>)}
+        </div>
+        <div>
+          <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeeIterations')}</label>
+          <input type="number" min={0} max={200} value={maxIterations} onChange={e => setMaxIterations(parseInt(e.target.value) || 0)}
+            className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20" />
+          <span className="text-[9px] text-foreground/30 mt-0.5 block">{t('settings.employeeIterationsDesc')}</span>
+        </div>
+      </div>
+      <div>
+        <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeeTools')}</label>
+        <div className="rounded-lg bg-foreground/5 border border-border overflow-hidden">
+          {allTools.length === 0 ? (
+            <div className="text-xs text-foreground/40 py-3 px-3">{t('settings.employeeToolsLoading')}</div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border bg-foreground/[0.03]">
+                  <th className="w-10 px-3 py-2 text-left">
+                    <input
+                      type="checkbox"
+                      checked={enabledTools.length === allTools.length}
+                      onChange={() => {
+                        if (enabledTools.length === allTools.length) setEnabledTools([])
+                        else setEnabledTools(allTools.map(t => t.name))
+                      }}
+                      className="w-3.5 h-3.5 rounded border-foreground/30 accent-amber-500"
+                    />
+                  </th>
+                  <th className="px-2 py-2 text-left text-foreground/60 font-medium">{t('settings.employeeToolsName')}</th>
+                  <th className="px-2 py-2 text-left text-foreground/60 font-medium hidden sm:table-cell">{t('settings.employeeToolsDesc')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allTools.map(tool => {
+                  const sel = enabledTools.includes(tool.name)
+                  return (
+                    <tr key={tool.name} onClick={() => toggleTool(tool.name)}
+                      className={`border-b border-border/50 last:border-0 cursor-pointer transition-colors ${sel ? 'bg-amber-500/8' : 'hover:bg-foreground/[0.02]'}`}>
+                      <td className="px-3 py-2">
+                        <input type="checkbox" checked={sel} onChange={() => toggleTool(tool.name)}
+                          className="w-3.5 h-3.5 rounded border-foreground/30 accent-amber-500" />
+                      </td>
+                      <td className={`px-2 py-2 font-medium ${sel ? 'text-amber-600 dark:text-amber-300' : 'text-foreground/70'}`}>{tool.name}</td>
+                      <td className="px-2 py-2 text-foreground/40 truncate max-w-[200px] hidden sm:table-cell">{tool.description}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+          <div className="flex items-center justify-between px-3 py-2 border-t border-border">
+            <span className="text-[10px] text-foreground/30">
+              {enabledTools.length === 0 ? t('settings.employeeToolsAll') : t('settings.employeeToolsCount', { n: enabledTools.length, total: allTools.length })}
+            </span>
+            {enabledTools.length > 0 && (
+              <button onClick={() => setEnabledTools([])} className="text-[10px] text-red-400/60 hover:text-red-400">{t('settings.employeeToolsClear')}</button>
+            )}
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 pt-1">
+        <button onClick={handleSubmit} disabled={saving || !id.trim() || !name.trim()}
+          className="px-4 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-xs text-white font-medium">{saving ? t('settings.saving') : isEditing ? t('settings.save') : t('settings.add')}</button>
+        <button onClick={onCancel} className="px-4 py-1.5 rounded-lg bg-foreground/5 hover:bg-foreground/10 text-xs text-foreground/60">{t('settings.cancel')}</button>
+      </div>
     </div>
   )
 }

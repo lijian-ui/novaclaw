@@ -205,7 +205,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-foreground/90">{server.name}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50">
-                        {t('mcpSettings.toolsCount', { count: server.tools.length })}
+                        {t('mcpSettings.toolsCount', { count: (server.tools || []).length })}
                       </span>
                       {renderStatusBadge(server)}
                     </div>
@@ -260,7 +260,7 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                 </div>
               </div>
 
-              {expanded.has(server.name) && server.tools.length > 0 && (
+              {expanded.has(server.name) && (server.tools || []).length > 0 && (
                 <div className="px-4 py-3 border-t border-border space-y-2">
                   {server.tools.map((tool, idx) => (
                     <div key={idx} className="flex items-start gap-2.5 px-3 py-2 rounded-lg bg-foreground/[0.03]">

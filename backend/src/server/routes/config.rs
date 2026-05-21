@@ -1,6 +1,7 @@
-use axum::{routing::{get, put}, Json, Router};
+use axum::{extract::Path, routing::{get, put, delete}, Json, Router};
 use crate::APP_STATE;
 use crate::config::AppConfig;
+use crate::soul::{AgentConfig, SoulPaths};
 
 /// 获取当前配置（从内存读取，不重新加载磁盘文件）
 async fn get_config() -> Json<serde_json::Value> {
@@ -17,23 +18,124 @@ async fn get_config() -> Json<serde_json::Value> {
 /// 更新配置
 async fn update_config(Json(config): Json<AppConfig>) -> Json<serde_json::Value> {
     let mut state = APP_STATE.write().await;
+
+    if !config.deny_patterns.is_empty() {
+        if let Ok(mut cached) = crate::tools::execute::DENY_PATTERNS.write() {
+            *cached = config.deny_patterns.clone();
+        }
+    }
     state.config = config;
 
     match state.config.save() {
         Ok(_) => {
             tracing::info!("项目配置已保存");
-            Json(serde_json::json!({
-                "success": true,
-                "message": "配置已更新",
-            }))
+            Json(serde_json::json!({"success": true}))
         }
         Err(e) => {
             tracing::error!("保存配置失败: {}", e);
-            Json(serde_json::json!({
-                "success": false,
-                "message": format!("保存配置失败: {}", e),
-            }))
+            Json(serde_json::json!({"success": false, "message": format!("保存配置失败: {}", e)}))
         }
+    }
+}
+
+/// 前端选择默认智能体时记录日志
+async fn log_default_agent() -> Json<serde_json::Value> {
+    tracing::info!("[Agent] 前端选择智能体: 默认智能体");
+    Json(serde_json::json!({"success": true}))
+}
+
+/// 前端选择智能体时调用，记录日志
+async fn log_agent_selection(Path(agent_id): Path<String>) -> Json<serde_json::Value> {
+    let paths = SoulPaths::default();
+    if let Ok(config) = AgentConfig::load(&paths, &agent_id) {
+        tracing::info!("[Agent] 前端选择智能体: id={}, name={}", config.id, config.name);
+    } else {
+        tracing::warn!("[Agent] 前端选择智能体 '{}' 未找到", agent_id);
+    }
+    Json(serde_json::json!({"success": true}))
+}
+
+/// 列出所有智能体（排除 default）
+async fn list_agents() -> Json<serde_json::Value> {
+    let paths = SoulPaths::default();
+    let agent_names = AgentConfig::list_all(&paths);
+    let mut agents = Vec::new();
+
+    for name in agent_names {
+        if name == "default" { continue; }
+        match AgentConfig::load(&paths, &name) {
+            Ok(config) => {
+                // 检查是否有 SOUL.md
+                let has_soul = std::path::Path::new(&paths.soul_path(&name)).exists();
+                agents.push(serde_json::json!({
+                    "id": config.id,
+                    "name": config.name,
+                    "description": config.description,
+                    "model": config.model,
+                    "enabled_tools": config.enabled_tools,
+                    "max_iterations": config.max_iterations,
+                    "has_soul": has_soul,
+                }));
+            }
+            Err(_) => {
+                // 有目录但无 agent.json，仍然列出基本信息
+                let has_soul = std::path::Path::new(&paths.soul_path(&name)).exists();
+                agents.push(serde_json::json!({
+                    "id": name,
+                    "name": name,
+                    "description": "",
+                    "model": null,
+                    "enabled_tools": [],
+                    "max_iterations": 0,
+                    "has_soul": has_soul,
+                }));
+            }
+        }
+    }
+
+    Json(serde_json::json!({"success": true, "data": agents}))
+}
+
+/// 创建或更新智能体
+async fn upsert_agent(Path(agent_id): Path<String>, Json(body): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    let paths = SoulPaths::default();
+
+    let config = AgentConfig {
+        id: agent_id.clone(),
+        name: body["name"].as_str().unwrap_or(&agent_id).to_string(),
+        description: body["description"].as_str().unwrap_or("").to_string(),
+        model: body.get("model").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        enabled_tools: body.get("enabled_tools")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        max_iterations: body.get("max_iterations").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+    };
+
+    match config.save(&paths) {
+        Ok(_) => {
+            // 如果有 system_prompt，写入 SOUL.md
+            if let Some(prompt) = body.get("system_prompt").and_then(|v| v.as_str()) {
+                if !prompt.is_empty() {
+                    let _ = AgentConfig::save_soul_content(&paths, &agent_id, prompt);
+                }
+            }
+            tracing::info!("[Agent] 保存智能体: id={}, name={}", config.id, config.name);
+            Json(serde_json::json!({"success": true}))
+        }
+        Err(e) => Json(serde_json::json!({"success": false, "message": e}))
+    }
+}
+
+/// 删除智能体
+async fn delete_agent(Path(agent_id): Path<String>) -> Json<serde_json::Value> {
+    let paths = SoulPaths::default();
+    match AgentConfig::remove(&paths, &agent_id) {
+        Ok(_) => {
+            tracing::info!("[Agent] 删除智能体: id={}", agent_id);
+            Json(serde_json::json!({"success": true}))
+        }
+        Err(e) => Json(serde_json::json!({"success": false, "message": e}))
     }
 }
 
@@ -41,4 +143,9 @@ pub fn routes() -> Router {
     Router::new()
         .route("/config", get(get_config))
         .route("/config", put(update_config))
+        .route("/set-agent", get(log_default_agent))
+        .route("/set-agent/:agent_id", get(log_agent_selection))
+        .route("/agents", get(list_agents))
+        .route("/agents/:agent_id", put(upsert_agent))
+        .route("/agents/:agent_id", delete(delete_agent))
 }

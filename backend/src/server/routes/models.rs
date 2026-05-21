@@ -132,7 +132,7 @@ async fn set_default_model(Json(req): Json<serde_json::Value>) -> Json<serde_jso
 pub fn routes() -> Router {
     Router::new()
         .route("/models", get(list_models))
-        .route("/models/{id}", get(get_model))
+        .route("/models/:id", get(get_model))
         .route("/models-config", get(get_models_config))
         .route("/models-config", put(save_models_config))
         .route("/default-model", put(set_default_model))

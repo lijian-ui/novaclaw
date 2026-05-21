@@ -31,6 +31,9 @@ pub struct AppConfig {
     pub tinyfish_api_key: Option<String>,
     /// Tavily Search API KEY（可选，用于网络搜索）
     pub tavily_api_key: Option<String>,
+    /// 命令黑名单正则表达式列表（匹配到的命令被阻止执行）
+    #[serde(default)]
+    pub deny_patterns: Vec<String>,
 }
 
 /// 模型配置（单独存放）
@@ -59,7 +62,7 @@ impl Default for AppConfig {
         Self {
             port: 3000,
             host: "127.0.0.1".to_string(),
-            llm_timeout: 30,
+            llm_timeout: 60,
             max_retries: 1,
             max_iterations: 0,
             temperature: 0.7,
@@ -76,6 +79,38 @@ impl Default for AppConfig {
             data_dir: None,
             tinyfish_api_key: None,
             tavily_api_key: None,
+            deny_patterns: vec![
+                // ─── 文件系统破坏 ───
+                "rm -rf".into(), "rmdir /s".into(), "del /f".into(), "rd /s".into(),
+                "format ".into(), "dd if=".into(),
+                // ─── 磁盘/分区 ───
+                "mkfs".into(), "diskpart".into(), "fdisk".into(), "mount".into(), "umount".into(),
+                "reg add".into(), "reg delete".into(),
+                // ─── 系统控制 ───
+                "shutdown".into(), "reboot".into(), "poweroff".into(), "halt".into(), "init".into(),
+                "sudo".into(), "chmod".into(), "chown".into(), "passwd".into(),
+                // ─── Shell 危险操作 ───
+                "eval".into(), "exec".into(), "kill -9".into(), "pkill -9".into(), "taskkill /f".into(),
+                // ─── 远程操作 ───
+                "ssh".into(), "scp".into(), "rsync".into(),
+                // ─── 容器 ───
+                "docker run".into(), "docker exec".into(), "kubectl delete".into(),
+                // ─── Git 破坏 ───
+                "git push".into(), "git force".into(), "git reset --hard".into(), "git clean -f".into(),
+                // ─── 包管理 ───
+                "npm install -g".into(), "pip install".into(), "apt install".into(),
+                "apt remove".into(), "yum install".into(), "brew install".into(),
+                // ─── 下载 ───
+                "wget".into(), "curl -o".into(), "curl -O".into(),
+                // ─── Windows 系统 ───
+                "net user".into(), "net localgroup".into(), "sc stop".into(), "sc delete".into(),
+                "regedit".into(), "cipher".into(),
+                // ─── macOS ───
+                "defaults write".into(), "spctl".into(), "csrutil".into(),
+                // ─── Linux ───
+                "systemctl stop".into(), "systemctl disable".into(), "journalctl --vacuum".into(),
+                "iptables".into(), "swapoff".into(), "grub2-mkconfig".into(),
+            ],
         }
     }
 }
@@ -100,6 +135,13 @@ impl AppConfig {
                 Ok(content) => {
                     match serde_json::from_str::<Self>(&content) {
                         Ok(config) => {
+                            // 如果旧配置缺少 deny_patterns 或 profiles，注入默认值
+                            let mut config = config;
+                            if config.deny_patterns.is_empty() {
+                                config.deny_patterns = Self::default().deny_patterns;
+                                tracing::info!("已注入默认命令黑名单到项目配置");
+                            }
+                            let _ = config.save();
                             tracing::info!("成功从 {:?} 加载项目配置", config_path);
                             return config;
                         }
@@ -142,7 +184,13 @@ impl AppConfig {
         match fs::read_to_string(&config_path) {
             Ok(content) => {
                 match serde_json::from_str::<Self>(&content) {
-                    Ok(config) => {
+                    Ok(mut config) => {
+                        // 如果旧配置缺少 deny_patterns，自动注入默认值
+                        if config.deny_patterns.is_empty() {
+                            config.deny_patterns = Self::default().deny_patterns;
+                            let _ = config.save();
+                            tracing::info!("已注入默认命令黑名单到项目配置");
+                        }
                         tracing::info!("重新加载项目配置成功");
                         config
                     }

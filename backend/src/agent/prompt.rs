@@ -255,6 +255,7 @@ Bad - guessing wrong columns:
     /// Skill index
     fn build_skill_index(&self) -> String {
         let mut index = String::from("# Available Skills\n\n");
+        index.push_str("Skills are NOT callable tools. You cannot invoke a skill by its name. To use a skill, call `skill_view(name)` to read its instructions first, then use `execute_command` or other real tools to carry out the steps.\n\n");
         index.push_str("Before responding, scan the following skills. If a skill matches or is partially relevant to your task, use skill_view(name) to load and follow its instructions.\n\n");
         index.push_str("<available_skills>\n");
 

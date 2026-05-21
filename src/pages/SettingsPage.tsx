@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import {
   ArrowLeft,
   Sun,
@@ -11,6 +11,7 @@ import {
   Globe,
   ChevronRight,
   Cpu,
+  Shield,
 } from 'lucide-react'
 import { useTheme } from '@/contexts/ThemeContext'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +28,7 @@ const sections: SettingsSection[] = [
   { id: 'appearance', titleKey: 'settings.appearance', icon: Palette, iconColor: 'text-violet-400' },
   { id: 'chat', titleKey: 'settings.chat', icon: MessageSquare, iconColor: 'text-blue-400' },
   { id: 'agent', titleKey: 'settings.agent', icon: Cpu, iconColor: 'text-orange-400' },
+  { id: 'security', titleKey: 'settings.security', icon: Shield, iconColor: 'text-red-400' },
   { id: 'language', titleKey: 'settings.language', icon: Globe, iconColor: 'text-emerald-400' },
 ]
 
@@ -37,6 +39,7 @@ interface AppConfig {
   compact_threshold: number
   compact_keep: number
   temperature?: number
+  deny_patterns?: string[]
   [key: string]: unknown
 }
 
@@ -48,6 +51,8 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
   const { t, i18n: i18nInstance } = useTranslation()
   const { theme, setTheme, isDark } = useTheme()
   const [activeSection, setActiveSection] = useState<string | null>(null)
+
+  const securityTextareaRef = useRef<HTMLTextAreaElement>(null)
 
   // Agent 配置
   const [config, setConfig] = useState<AppConfig | null>(null)
@@ -61,6 +66,19 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
       }
     }).catch(() => {})
   }, [])
+
+  // 进入安全页面时自动撑开黑名单输入框
+  useEffect(() => {
+    if (activeSection === 'security') {
+      requestAnimationFrame(() => {
+        const el = securityTextareaRef.current
+        if (el) {
+          el.style.height = 'auto'
+          el.style.height = el.scrollHeight + 'px'
+        }
+      })
+    }
+  }, [activeSection, config?.deny_patterns])
 
   const saveConfig = useCallback(async (updates: Partial<AppConfig>) => {
     if (!config) return
@@ -321,11 +339,53 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
     </div>
   )
 
+  const renderSecurity = () => (
+    <div className="space-y-4">
+      {/* 危险命令黑名单 */}
+      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
+        <label className="text-sm font-medium text-foreground/90 mb-1 block">{t('settings.denyPatterns')}</label>
+        <p className="text-xs text-foreground/40 mb-3">{t('settings.denyPatternsDesc')}</p>
+        <textarea
+          ref={securityTextareaRef}
+          spellCheck={false}
+          value={(config?.deny_patterns as string[] | undefined)?.join('\n') ?? ''}
+          onChange={e => {
+            const lines = e.target.value.split('\n').filter(l => l.trim())
+            setConfig(prev => prev ? { ...prev, deny_patterns: lines } : null)
+          }}
+          onInput={() => {
+            const el = securityTextareaRef.current
+            if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' }
+          }}
+          placeholder="rm -rf&#10;shutdown&#10;sudo&#10;docker run&#10;pip install&#10;一行一个命令关键词"
+          className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-xs font-mono text-foreground/80 outline-none focus:border-foreground/20 transition-colors resize-none overflow-hidden"
+        />
+      </div>
+
+      {/* 保存按钮 */}
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => saveConfig({
+            deny_patterns: (config?.deny_patterns as string[] | undefined) ?? [],
+          })}
+          disabled={agentSaveStatus === 'saving'}
+          className="px-6 py-2 rounded-lg bg-red-500 hover:bg-red-400 disabled:opacity-50 text-sm text-white font-medium transition-colors"
+        >
+          {agentSaveStatus === 'saving' ? t('settings.saving') : agentSaveStatus === 'saved' ? t('settings.saved') : t('settings.save')}
+        </button>
+        {agentSaveStatus === 'error' && (
+          <span className="text-xs text-red-400/80">{t('settings.saveError')}</span>
+        )}
+      </div>
+    </div>
+  )
+
   const renderSection = () => {
     switch (activeSection) {
       case 'appearance': return renderAppearance()
       case 'chat': return renderChat()
       case 'agent': return renderAgent()
+      case 'security': return renderSecurity()
       case 'language': return renderLanguage()
       default: return null
     }
@@ -387,3 +447,5 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
     </div>
   )
 }
+
+

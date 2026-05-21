@@ -1,9 +1,25 @@
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use regex::Regex;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
+
+/// 可运行时更新的黑名单缓存（pub 以便 config.rs 热更新）
+pub static DENY_PATTERNS: once_cell::sync::Lazy<RwLock<Vec<String>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(Vec::new()));
+
+/// 从配置文件加载黑名单到缓存。如果配置中没有设置，则清空缓存（不阻止任何命令）
+pub fn load_deny_patterns() -> Vec<String> {
+    let patterns = match crate::APP_STATE.try_read() {
+        Ok(state) => state.config.deny_patterns.clone(),
+        Err(_) => Vec::new(),
+    };
+    if let Ok(mut cached) = DENY_PATTERNS.write() {
+        *cached = patterns.clone();
+    }
+    patterns
+}
 
 /// 命令执行结果
 pub struct CommandOutput {
@@ -15,46 +31,14 @@ pub struct CommandOutput {
     pub block_reason: String,
 }
 
-/// 危险命令黑名单（正则匹配）
-const DENY_PATTERNS: &[&str] = &[
-    r"\brm\s+-[rf]{1,2}\b",            // rm -rf
-    r"\brmdir\s+/[sSqQf]?\b",          // Windows rmdir /s
-    r"\b(del|erase)\s+/[fq]\b",        // Windows del /f
-    r"\bdd\s+if=",                      // dd 危险写入
-    r"\b(format|mkfs|diskpart|fdisk)\b", // 磁盘操作
-    r"\b(shutdown|reboot|poweroff|halt|init)\b", // 系统控制
-    r"\bsudo\b",                         // sudo
-    r"\bchmod\s+[0-7]{3,4}\b",          // 权限修改
-    r"\bchown\b",                        // 所有者修改
-    r"\bpasswd\b",                       // 密码
-    r"\beval\b",                         // eval
-    r"\bexec\b",                         // exec 替换进程
-    r"\bdocker\s+(run|exec|compose)\b",  // Docker 操作
-    r"\bkubectl\b",                      // K8s 操作
-    r"\bgit\s+(push|force|merge)\b",     // Git 破坏性操作
-    r"\bnpm\s+install\s+-g\b",          // 全局 npm
-    r"\bpip\s+install\b",               // pip 安装（修改系统）
-    r"\bapt\s+(install|remove|purge)\b", // apt
-    r"\byum\s+(install|remove)\b",       // yum
-    r"\bbrew\s+(install|uninstall)\b",   // homebrew
-    r"\bkill\b",                         // 杀死进程
-    r"\bpkill\b",
-    r"\bssh\b",                          // SSH
-    r"\bscp\b",                          // SCP
-    r"\brsync\b",                        // rsync
-    r"\bmount\b",                        // 挂载
-    r"\bumount\b",
-    r"\bwget\b",                         // 下载
-    r"\bcurl\s+-[oO]\b",                // curl 写文件
-];
 
-/// 检查命令是否被黑名单拦截
-fn check_command_deny(command: &str) -> Option<&'static str> {
-    for pattern in DENY_PATTERNS {
-        if let Ok(re) = Regex::new(pattern) {
-            if re.is_match(command) {
-                return Some(pattern);
-            }
+
+/// 检查命令是否被黑名单拦截（子串匹配，大小写不敏感）
+fn check_command_deny<'a>(command: &str, patterns: &'a [String]) -> Option<&'a str> {
+    let cmd_lower = command.to_lowercase();
+    for pattern in patterns {
+        if cmd_lower.contains(&pattern.to_lowercase()) {
+            return Some(pattern);
         }
     }
     None
@@ -88,6 +72,7 @@ pub fn execute_sync(
     workdir: &std::path::Path,
     timeout_secs: u64,
     chunk_callback: Option<Box<dyn Fn(String) + Send>>,
+    deny_patterns: &[String],
 ) -> CommandOutput {
     tracing::info!(
         "[ExecTool] Starting command: '{}' | workdir: {} | timeout: {}s",
@@ -97,7 +82,7 @@ pub fn execute_sync(
     );
 
     // 命令安全检查
-    if let Some(pat) = check_command_deny(command) {
+    if let Some(pat) = check_command_deny(command, deny_patterns) {
         tracing::warn!("[ExecTool] Command BLOCKED by deny pattern: {}", pat);
         return CommandOutput {
             stdout: String::new(),
@@ -312,10 +297,17 @@ pub fn execute_command_safe(
     workdir: &std::path::Path,
     timeout_secs: u64,
     chunk_callback: Option<Box<dyn Fn(String) + Send>>,
+    deny_patterns: &[String],
 ) -> CommandOutput {
     let command = command.to_string();
     let workdir = workdir.to_path_buf();
     let timeout_secs = timeout_secs.min(300);
+    // 如果未传入模式，从缓存/配置加载
+    let patterns: Vec<String> = if deny_patterns.is_empty() {
+        load_deny_patterns()
+    } else {
+        deny_patterns.to_vec()
+    };
 
     tracing::info!(
         "[ExecTool] execute_command_safe: '{}' | workdir: {} | timeout: {}s",
@@ -325,7 +317,7 @@ pub fn execute_command_safe(
     );
 
     std::thread::spawn(move || {
-        let result = execute_sync(&command, &workdir, timeout_secs, chunk_callback);
+        let result = execute_sync(&command, &workdir, timeout_secs, chunk_callback, &patterns);
         if result.blocked {
             tracing::warn!("[ExecTool] Result: BLOCKED - {}", result.block_reason);
         } else if result.timed_out {

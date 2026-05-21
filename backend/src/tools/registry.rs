@@ -259,6 +259,35 @@ impl ToolRegistry {
         tools.get(name).cloned()
     }
 
+    /// 获取所有已注册工具的名称列表（仅名称）
+    pub async fn get_all_tool_names(&self) -> Vec<String> {
+        let tools = self.tools.read().await;
+        let mut names: Vec<String> = tools.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// 按名称白名单过滤工具，返回一个新的注册表
+    /// 用于子 Agent 的受限工具集
+    pub async fn filter_by_names(&self, names: &[String]) -> Self {
+        let tools = self.tools.read().await;
+        let cbs = self.circuit_breakers.read().await;
+        let mut filtered_tools = HashMap::new();
+        let mut filtered_cbs = HashMap::new();
+        for name in names {
+            if let Some(tool) = tools.get(name) {
+                filtered_tools.insert(name.clone(), tool.clone());
+                if let Some(cb) = cbs.get(name) {
+                    filtered_cbs.insert(name.clone(), cb.clone());
+                }
+            }
+        }
+        ToolRegistry {
+            tools: Arc::new(RwLock::new(filtered_tools)),
+            circuit_breakers: Arc::new(RwLock::new(filtered_cbs)),
+        }
+    }
+
     /// 执行工具（受熔断器 + 超时 + spawn_blocking 保护）
     /// `chunk_tx` 可选：用于流式输出（如 execute_command 的实时终端输出）
     pub async fn execute(&self, name: &str, mut args: Value, workspace: Option<&str>, chunk_tx: Option<mpsc::UnboundedSender<String>>) -> Result<super::types::ToolResult, String> {

@@ -56,6 +56,7 @@ npm run tauri:dev
 | [记忆](docs/memory.md) | 持久记忆、用户画像、最佳实践 |
 | [MCP 集成](docs/mcp.md) | 连接任意 MCP 服务器扩展能力 |
 | [定时调度](docs/cron.md) | 定时任务与平台投递 |
+| [多智能体](docs/multi-agent.md) | Orchestrator + Worker 架构、子 Agent 管理、任务委派 |
 | [架构](docs/architecture.md) | 项目结构、代理循环、关键模块 |
 | [API 文档](docs/api.md) | 所有 API 端点参考 |
 | [贡献](docs/contributing.md) | 开发设置、PR 流程、代码风格 |

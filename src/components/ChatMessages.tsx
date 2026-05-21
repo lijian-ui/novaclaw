@@ -340,7 +340,7 @@ function CodeBlock({ className, children }: { className?: string; children: stri
         <span>{lang}</span>
         <button onClick={handleCopy} className="flex items-center gap-1 px-1.5 py-0.5 rounded hover:bg-foreground/10 transition-colors">
           {copied ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
-          <span>{copied ? '已复制' : '复制'}</span>
+          <span className="text-[11px]">复制</span>
         </button>
       </div>
       <SyntaxHighlighter
@@ -512,7 +512,7 @@ function MessageCopyButton({ text }: { text: string }) {
       className="opacity-60 hover:opacity-100 transition-opacity p-1 rounded hover:bg-foreground/10"
       title="复制"
     >
-      {copied ? <span className="text-xs text-green-500 font-medium">已复制</span> : <Copy className="w-4 h-4 text-foreground/50" />}
+      {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-foreground/50" />}
     </button>
   )
 }

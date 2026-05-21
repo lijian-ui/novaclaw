@@ -75,6 +75,46 @@ pub async fn initialize() {
         }
     }
 
+    // 初始化默认子智能体（仅在首次启动时创建）
+    {
+        let paths = crate::soul::SoulPaths::default();
+        let default_agents: Vec<(&str, &str, &str, Vec<&str>)> = vec![
+            ("code-reviewer", "代码审查员", "审查代码质量、发现 Bug 和安全问题",
+             vec!["read_file", "search", "glob", "list_dir"]),
+            ("data-analyst", "数据分析师", "处理数据、统计分析、生成报告",
+             vec!["read_file", "write_file", "execute_command", "glob"]),
+            ("web-researcher", "网络研究员", "搜索网络信息、整理资料",
+             vec!["web_search", "web_fetch", "read_file", "search"]),
+        ];
+        for (id, name, desc, tools) in default_agents {
+            if !std::path::Path::new(&paths.agent_json_path(id)).exists() {
+                let config = crate::soul::AgentConfig {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    description: desc.to_string(),
+                    model: None,
+                    enabled_tools: tools.iter().map(|t| t.to_string()).collect(),
+                    max_iterations: 0,
+                };
+                if let Err(e) = config.save(&paths) {
+                    tracing::warn!("创建默认智能体 '{}' 失败: {}", id, e);
+                }
+            }
+            // 如果 SOUL.md 不存在也创建
+            if !std::path::Path::new(&paths.soul_path(id)).exists() {
+                let soul_content = match id {
+                    "code-reviewer" => "你是一个严谨的代码审查员。你的职责是：\n1. 仔细阅读代码，找出逻辑错误、性能问题、安全隐患\n2. 检查代码风格是否符合最佳实践\n3. 给出具体的改进建议\n4. 如果代码没有问题，明确说明「代码审查通过」\n\n请专注审查，不要执行修改操作。",
+                    "data-analyst" => "你是一个专业的数据分析师。你的职责是：\n1. 理解数据分析需求\n2. 使用 Python 或其他工具处理数据\n3. 分析结果并用清晰的语言解释\n4. 必要时生成可视化图表\n\n始终展示你的分析过程和结论。",
+                    "web-researcher" => "你是一个高效的网络研究员。你的职责是：\n1. 通过网络搜索查找相关信息\n2. 从多个来源交叉验证信息准确性\n3. 整理和归纳搜索结果为结构化报告\n4. 注明信息来源\n\n确保信息准确可靠，不确定时明确说明。",
+                    _ => "",
+                };
+                if !soul_content.is_empty() {
+                    let _ = crate::soul::AgentConfig::save_soul_content(&paths, id, soul_content);
+                }
+            }
+        }
+    }
+
     // 先读取需要的配置值，然后释放写锁，再注册工具（避免 register_all 内部死锁）
     let (tinyfish_api_key, tavily_api_key, mut tool_registry, memory_store, skills_loader, session_store) = {
         let state = APP_STATE.read().await;

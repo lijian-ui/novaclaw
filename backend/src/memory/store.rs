@@ -2,22 +2,33 @@ use crate::error::AppError;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+/// 记忆存储的内部状态
+#[derive(Debug)]
+struct MemoryStoreInner {
+    memory_path: PathBuf,
+    user_path: PathBuf,
+}
 
 /// 记忆存储 — 操作 MEMORY.md（§ 分隔的纯文本格式）
+///
+/// 所有方法通过内部 `Mutex` 保护，支持多线程并发安全调用。
 ///
 /// 例: "User prefers concise responses\n\n§ Project uses Rust 2024 edition\n\n§ Code convention: snake_case"
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
-    memory_path: PathBuf,
-    user_path: PathBuf,
+    inner: Arc<Mutex<MemoryStoreInner>>,
 }
 
 impl MemoryStore {
     pub fn new(base_dir: &PathBuf) -> Self {
         fs::create_dir_all(base_dir).ok();
         Self {
-            memory_path: base_dir.join("MEMORY.md"),
-            user_path: base_dir.join("USER.md"),
+            inner: Arc::new(Mutex::new(MemoryStoreInner {
+                memory_path: base_dir.join("MEMORY.md"),
+                user_path: base_dir.join("USER.md"),
+            })),
         }
     }
 
@@ -25,7 +36,8 @@ impl MemoryStore {
 
     /// 读取所有条目
     fn entries(&self) -> Vec<String> {
-        let text = fs::read_to_string(&self.memory_path).unwrap_or_default();
+        let inner = self.inner.lock().unwrap();
+        let text = fs::read_to_string(&inner.memory_path).unwrap_or_default();
         text.split('§')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
@@ -34,10 +46,11 @@ impl MemoryStore {
 
     /// 原子写回
     fn write_entries(&self, entries: &[String]) -> Result<(), String> {
+        let inner = self.inner.lock().unwrap();
         let content = entries.join("\n\n§ ");
-        let tmp = self.memory_path.with_extension("md.tmp");
+        let tmp = inner.memory_path.with_extension("md.tmp");
         fs::write(&tmp, &content).map_err(|e| format!("写入失败: {}", e))?;
-        fs::rename(&tmp, &self.memory_path).map_err(|e| format!("保存失败: {}", e))?;
+        fs::rename(&tmp, &inner.memory_path).map_err(|e| format!("保存失败: {}", e))?;
         Ok(())
     }
 
@@ -55,11 +68,12 @@ impl MemoryStore {
         if existing.iter().any(|e| e.to_lowercase() == norm) {
             return Err(AppError::Storage(format!("已存在相同记忆: \"{}\"", trimmed)));
         }
+        let inner = self.inner.lock().unwrap();
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&self.memory_path)?;
-        let existing_text = fs::read_to_string(&self.memory_path).unwrap_or_default();
+            .open(&inner.memory_path)?;
+        let existing_text = fs::read_to_string(&inner.memory_path).unwrap_or_default();
         if !existing_text.trim().is_empty() {
             write!(file, "\n\n§ ")?;
         }
@@ -157,7 +171,8 @@ impl MemoryStore {
 
     /// 获取用户档案
     pub fn get_user_profile(&self) -> Result<String, AppError> {
-        fs::read_to_string(&self.user_path)
+        let inner = self.inner.lock().unwrap();
+        fs::read_to_string(&inner.user_path)
             .map(|s| s.trim().to_string())
             .or(Ok(String::new()))
     }

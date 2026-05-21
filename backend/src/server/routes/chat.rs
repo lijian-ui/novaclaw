@@ -41,6 +41,8 @@ struct ChatStreamRequest {
     workspace: Option<String>,
     #[serde(default)]
     images: Vec<String>, // ["data:image/png;base64,iVBORw..."]
+    #[serde(default)]
+    agent_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -204,6 +206,21 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
         let history = state.session_store.get_messages(&session_id).unwrap_or_default();
         let mut agent_session = AgentSession::new(&make_session_title(&req.message), &model, req.workspace.as_deref());
         agent_session.id = session_id.clone();
+        // 如果指定了智能体，从文件系统加载 SOUL.md 作为系统提示词
+        if let Some(ref agent_id) = req.agent_id {
+            let paths = crate::soul::SoulPaths::default();
+            match crate::soul::AgentConfig::get_soul_content(&paths, agent_id) {
+                Ok(soul_content) => {
+                    agent_session.system_prompt_override = Some(soul_content);
+                    tracing::info!("[Agent] 用户选择智能体: id={}", agent_id);
+                }
+                Err(_) => {
+                    tracing::warn!("[Agent] 用户选择的智能体 '{}' 未找到 SOUL.md，使用默认提示词", agent_id);
+                }
+            }
+        } else {
+            tracing::debug!("[Agent] 使用默认智能体（未指定 agent_id）");
+        }
         for m in &history { if m.role != "system" { agent_session.push_message(storage_msg_to_agent_msg(m)); } }
 
         let llm_client = crate::llm::client::LlmClient::new(provider, state.config.llm_timeout);

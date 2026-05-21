@@ -4,62 +4,7 @@
  * 【文件功能概述】
  * 该组件是聊天界面的核心容器，负责管理聊天会话的完整生命周期，包括消息发送、接收、
  * 流式渲染、会话管理、模型选择等功能。它是用户与 AI 助手交互的主要界面入口。
- * 
- * 【主要组件/模块说明】
- * 1. 顶部导航栏
- *    - 工作空间选择器：显示当前工作目录，支持切换
- *    - 工具菜单：提供编辑器、技能、模型、代理等功能入口
- *    - 用户头像按钮
- * 
- * 2. 消息展示区域
- *    - 集成 ChatMessages 组件渲染消息列表
- *    - 支持任务进度面板展示（复杂任务分解时显示）
- *    - 自动滚动到最新消息
- *    - 显示滚动到顶部按钮
- * 
- * 3. 底部输入区域
- *    - 多行文本输入框（支持自动高度调整）
- *    - 模型选择下拉菜单
- *    - 发送/停止按钮（根据流式状态切换）
- *    - 附件上传按钮
- * 
- * 【数据处理逻辑】
- * - 消息状态管理：维护本地消息数组，支持流式增量更新
- * - 会话同步：监听 ChatContext 中的上下文消息变化，同步历史消息
- * - 消息格式转换：将后端返回的消息格式转换为前端展示格式
- *   - first_reasoning → first_thought（首次思考）
- *   - again_reasonings → thought（后续思考）
- *   - tool_calls → tool_call（工具调用）
- *   - tool 角色 → tool_result（工具结果）
- * 
- * 【WebSocket 流式通信】
- * - 建立 WebSocket 连接进行实时聊天
- * - 处理流式文本增量（text_chunk）
- * - 处理思考过程增量（reasoning）
- * - 处理工具调用事件（tool_call、tool_result）
- * - 支持用户打断/停止生成
- * 
- * 【与其他文件的关联关系】
- * - 使用 ChatMessages 组件渲染消息列表
- * - 使用 useApi hook 进行 API 调用和 WebSocket 通信
- * - 使用 ChatContext 管理会话状态
- * - 使用 useTranslation 进行国际化支持
- * 
- * 【使用场景】
- * - 主聊天界面：用户输入消息，AI 助手回复
- * - 会话管理：创建新会话、切换已有会话
- * - 模型切换：选择不同的 AI 模型
- * - 工具调用：展示工具执行过程和结果
- * - 思考过程展示：显示 AI 的推理步骤（可折叠）
- * 
- * 【关键特性】
- * - WebSocket 流式消息传输，实时显示思考过程
- * - 支持消息打断（停止生成）
- * - 自动滚动到最新消息
- * - 响应式输入框（自动调整高度）
- * - 会话历史同步与恢复
- * - 模型选择与配置
- * - 多语言支持（i18n）
+ * - 开发此页面务必适配多语言支持（i18n）
  */
 
 import { useState, useRef, useCallback, useEffect } from 'react'
@@ -82,6 +27,10 @@ import {
   Clock,
   FileText,
   Folder,
+  Loader2,
+  CheckCircle,
+  AlertCircle,
+  Check,
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
 import { TreeBrowser } from './TreeBrowser'
@@ -94,6 +43,8 @@ import openaiIcon from '@/assets/OpenAI.svg'
 import lmStudioIcon from '@/assets/lm-studio.png'
 import ollamaIcon from '@/assets/ollama.png'
 import deepseekIcon from '@/assets/DeepSeek.png'
+import anthropicIcon from '@/assets/Anthropic.png'
+import zhipuIcon from '@/assets/zhipu.png'
 
 const tools = [
   { id: 'editor', nameKey: 'dashboard.editor', icon: Code2, iconColor: 'text-emerald-400' },
@@ -119,6 +70,8 @@ function getProviderIcon(providerId: string): string | undefined {
   if (id.includes('lmstudio') || id.includes('lm_studio') || id.includes('lm-studio')) return lmStudioIcon
   if (id.includes('ollama')) return ollamaIcon
   if (id.includes('deepseek')) return deepseekIcon
+  if (id.includes('anthropic') || id === 'anthropic') return anthropicIcon
+  if (id.includes('zhipu') || id.includes('zhipuai') || id.includes('glm')) return zhipuIcon
   return undefined
 }
 
@@ -450,8 +403,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const [streamingReasoning, setStreamingReasoning] = useState('')
   const [streamError, setStreamError] = useState<string | null>(null)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('Auto')
-  const [modelOptions, setModelOptions] = useState<ModelOption[]>([{ name: 'Auto', providerId: '' }])
+  const [selectedModel, setSelectedModel] = useState('')
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
+  const [selectedAgent, setSelectedAgent] = useState(() => localStorage.getItem('novaclaw-selected-agent') || '')
+  const [agentProfiles, setAgentProfiles] = useState<{ id: string; name: string }[]>([])
+  const [agentOpen, setAgentOpen] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
   const [workspaceOpen, setWorkspaceOpen] = useState(false)
   const [showTreeBrowser, setShowTreeBrowser] = useState(false)
@@ -465,6 +421,12 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const hasFlushedFirstReasoningRef = useRef(false) // 标记是否已刷新第一次思考内容
   const streamingJustEndedRef = useRef(false) // 标记流式刚结束，阻止 contextMessages 覆盖
   const [isRethinking, setIsRethinking] = useState(false) // 标记是否处于二次思考阶段
+  const [subagentActivity, setSubagentActivity] = useState<{
+    id: string
+    name: string
+    task: string
+    status: 'running' | 'done' | 'error'
+  } | null>(null)
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInput(e.target.value)
@@ -500,7 +462,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const loadModels = useCallback(() => {
     listProviders().then(providers => {
       if (providers && providers.length > 0) {
-        const options: ModelOption[] = [{ name: 'Auto', providerId: '' }]
+        const options: ModelOption[] = []
         for (const p of providers) {
           for (const m of p.models) {
             options.push({ name: m, providerId: p.name })
@@ -508,13 +470,19 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         }
         setModelOptions(options)
       }
-    }).catch(() => {
-      // Backend offline, keep ['Auto']
-    })
+    }).catch(() => {})
     // 页面加载时同时获取后端保存的默认模型
     getDefaultModel().then(defaultModelName => {
       if (defaultModelName) {
         setDefaultModelName(defaultModelName)
+      }
+    }).catch(() => {})
+
+    // 加载智能体列表
+    fetch('http://127.0.0.1:3000/api/agents').then(r => r.json()).then(body => {
+      if (body.success && Array.isArray(body.data)) {
+        const profiles: { id: string; name: string }[] = body.data.map((a: any) => ({ id: a.id, name: a.name }))
+        setAgentProfiles(profiles)
       }
     }).catch(() => {})
   }, [listProviders, getDefaultModel, setDefaultModelName])
@@ -536,13 +504,13 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   // Save default model when user changes selection
   const handleModelChange = useCallback((modelName: string) => {
     setSelectedModel(modelName)
-    setDefaultModelName(modelName === 'Auto' ? '' : modelName)
-    setDefaultModel(modelName === 'Auto' ? '' : modelName).catch(() => {})
+    setDefaultModelName(modelName)
+    setDefaultModel(modelName).catch(() => {})
   }, [setDefaultModelName, setDefaultModel])
 
   // 获取当前选中模型对应的图标
   const selectedModelIcon = useCallback(() => {
-    if (selectedModel === 'Auto') return undefined
+    if (!selectedModel) return undefined
     const opt = modelOptions.find(o => o.name === selectedModel)
     return opt ? getProviderIcon(opt.providerId) : undefined
   }, [selectedModel, modelOptions])
@@ -576,10 +544,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     const ac = startChatStream(
       {
         message: userContent,
-        model: selectedModel === 'Auto' ? undefined : selectedModel,
+        model: selectedModel || undefined,
         session_id: sessionId,
         workspace: workspacePath || undefined,
         images: images.length > 0 ? images : undefined,
+        agent_id: selectedAgent || undefined, // 空 = 默认智能体（不用 profile 覆盖）
       },
       {
         onChunk: (chunk) => {
@@ -712,6 +681,23 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             setIsRethinking(true)
 
           } else if (step.stepType === 'tool_chunk') {
+            // 检测子 Agent 进度事件
+            if (step.content.startsWith('{"type":"subagent"')) {
+              try {
+                const evt = JSON.parse(step.content)
+                if (evt.type === 'subagent') {
+                  if (evt.action === 'start') {
+                    const name = evt.agent_id || ''
+                    setSubagentActivity({ id: name, name, task: evt.task || '', status: 'running' })
+                  } else if (evt.action === 'done') {
+                    setSubagentActivity(prev => prev ? { ...prev, status: evt.error ? 'error' : 'done' } : null)
+                    // 3 秒后自动移除已完成的状态
+                    setTimeout(() => setSubagentActivity(null), 3000)
+                  }
+                }
+              } catch {}
+              return // 不追加到 tool_result
+            }
             // 实时追加终端输出块到对应的工具消息中
             setMessages(prev => {
               const updated = [...prev]
@@ -810,7 +796,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     )
 
     abortRef.current = ac
-  }, [selectedModel, abortRef, workspacePath])
+  }, [selectedModel, abortRef, workspacePath, selectedAgent])
 
   const handleSend = useCallback(() => {
     if ((!input.trim() && pendingImages.length === 0) || isStreaming) return
@@ -1110,7 +1096,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                 {modelOpen && (
                   <>
                     <div className="fixed inset-0 z-10" onClick={() => setModelOpen(false)} />
-                    <div className="absolute bottom-full right-0 mb-1 w-60 py-1 rounded-md bg-card border border-border shadow-lg z-20">
+                    <div className="absolute bottom-full right-0 mb-1 w-60 py-1 rounded-md bg-card border border-border shadow-lg z-20 max-h-64 overflow-y-auto">
                       {modelOptions.map((opt) => (
                         <button
                           key={opt.name}
@@ -1120,18 +1106,72 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                             setModelOpen(false)
                           }}
                         >
-                          {opt.name === 'Auto' ? (
-                            <span className="text-foreground/50">Auto</span>
-                          ) : (
-                            <>
-                              {getProviderIcon(opt.providerId) && (
-                                <img src={getProviderIcon(opt.providerId)} className="w-4 h-4 rounded shrink-0" alt="" />
-                              )}
-                              <span>{opt.name}</span>
-                            </>
+                          {getProviderIcon(opt.providerId) && (
+                            <img src={getProviderIcon(opt.providerId)} className="w-4 h-4 rounded shrink-0" alt="" />
+                          )}
+                          <span className="flex-1">{opt.name}</span>
+                          {opt.name === defaultModelName && (
+                            <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                           )}
                         </button>
                       ))}
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* 智能体选择 */}
+              <div className="relative">
+                <button
+                  onClick={() => setAgentOpen(!agentOpen)}
+                  className="flex items-center gap-1 px-2 py-1 rounded text-xs text-foreground/50 hover:bg-foreground/10 transition-colors"
+                  title={t('chat.selectAgent')}
+                >
+                  <Brain className="w-3.5 h-3.5" />
+                  <span className="max-w-[60px] truncate">
+                    {selectedAgent ? agentProfiles.find(a => a.id === selectedAgent)?.name || selectedAgent : t('chat.defaultAgent')}
+                  </span>
+                  <ChevronDown className="w-3 h-3 shrink-0" />
+                </button>
+                {agentOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setAgentOpen(false)} />
+                    <div className="absolute bottom-full right-0 mb-1 w-44 py-1 rounded-md bg-card border border-border shadow-lg z-20">
+                      {/* 默认智能体选项 */}
+                      <button
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-foreground/70 hover:bg-foreground/10 transition-colors"
+                        onClick={() => {
+                          setSelectedAgent('')
+                          localStorage.removeItem('novaclaw-selected-agent')
+                          fetch('http://127.0.0.1:3000/api/set-agent')
+                          setAgentOpen(false)
+                        }}
+                      >
+                        <Cpu className="w-3.5 h-3.5 text-orange-400 shrink-0" />
+                        <span className="flex-1">{t('chat.defaultAgent')}</span>
+                        {selectedAgent === '' && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                      </button>
+                      {agentProfiles.length > 0 && <div className="border-t border-border mx-2 my-1" />}
+                      {agentProfiles.length === 0 ? (
+                        <div className="px-3 py-2 text-xs text-foreground/40">{t('chat.noAgents')}</div>
+                      ) : (
+                        agentProfiles.map((agent) => (
+                          <button
+                            key={agent.id}
+                            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-foreground/70 hover:bg-foreground/10 transition-colors"
+                            onClick={() => {
+                              setSelectedAgent(agent.id)
+                              localStorage.setItem('novaclaw-selected-agent', agent.id)
+                              fetch(`http://127.0.0.1:3000/api/set-agent/${encodeURIComponent(agent.id)}`)
+                              setAgentOpen(false)
+                            }}
+                          >
+                            <Brain className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                            <span className="flex-1">{agent.name}</span>
+                            {agent.id === selectedAgent && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                          </button>
+                        ))
+                      )}
                     </div>
                   </>
                 )}
@@ -1158,6 +1198,34 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             </div>
           </div>
         </div>
+        {/* 子 Agent 工作状态卡片 */}
+        {subagentActivity && (
+          <div className="px-1 pt-2">
+            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs ${
+              subagentActivity.status === 'running'
+                ? 'bg-cyan-500/5 border-cyan-500/20'
+                : subagentActivity.status === 'error'
+                  ? 'bg-red-500/5 border-red-500/20'
+                  : 'bg-green-500/5 border-green-500/20'
+            }`}>
+              {subagentActivity.status === 'running' ? (
+                <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin shrink-0" />
+              ) : subagentActivity.status === 'error' ? (
+                <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+              ) : (
+                <CheckCircle className="w-3.5 h-3.5 text-green-400 shrink-0" />
+              )}
+              <span className={subagentActivity.status === 'running' ? 'text-cyan-300/80' : subagentActivity.status === 'error' ? 'text-red-300/80' : 'text-green-300/80'}>
+                {subagentActivity.status === 'running'
+                  ? `🔄 ${subagentActivity.name}: ${subagentActivity.task.slice(0, 60)}${subagentActivity.task.length > 60 ? '...' : ''}`
+                  : subagentActivity.status === 'error'
+                    ? `✗ ${subagentActivity.name}: 执行失败`
+                    : `✓ ${subagentActivity.name}: 任务完成`
+                }
+              </span>
+            </div>
+          </div>
+        )}
       </div>
       <style>{`
         @keyframes breathing {
