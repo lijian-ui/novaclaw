@@ -8,6 +8,8 @@ use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
@@ -81,6 +83,8 @@ impl TerminalSession {
 
         if cfg!(target_os = "windows") {
             cmd.args(&["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"]);
+            #[cfg(windows)]
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         } else {
             cmd.args(&["--norc"]);
         }

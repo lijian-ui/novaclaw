@@ -8,6 +8,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 
 use novaclaw_backend::APP_STATE;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 /// 文件条目（用于详细目录列表）
 #[derive(Serialize)]
@@ -447,13 +449,17 @@ pub async fn terminal_spawn(app: tauri::AppHandle) -> Result<(), String> {
 
     let (shell, shell_args) = detect_shell();
     
-    let mut child = tokio::process::Command::new(shell)
-        .args(shell_args)
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(shell_args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let mut child = cmd.spawn()
         .map_err(|e| format!("启动 Shell 失败: {}", e))?;
 
     let stdin_pipe = child.stdin.take().ok_or("无法获取 stdin")?;

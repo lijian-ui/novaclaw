@@ -1,8 +1,10 @@
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use std::io::Read;
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::RwLock;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::time::{Duration, Instant};
 
 /// 可运行时更新的黑名单缓存（pub 以便 config.rs 热更新）
@@ -120,41 +122,20 @@ pub fn execute_sync(
     let (shell, args) = build_shell_command(command);
     tracing::debug!("[ExecTool] Shell: {} | Args: {:?}", shell, args);
 
-    // 准备 PTY
-    tracing::debug!("[ExecTool] Creating PTY...");
-    let pty_system = native_pty_system();
-    let pair = match pty_system.openpty(PtySize {
-        rows: 200,
-        cols: 500,
-        pixel_width: 0,
-        pixel_height: 0,
-    }) {
-        Ok(p) => {
-            tracing::debug!("[ExecTool] PTY created successfully");
-            p
-        }
-        Err(e) => {
-            tracing::error!("[ExecTool] Failed to create PTY: {}", e);
-            return CommandOutput {
-                stdout: format!("Failed to create PTY: {}", e),
-                exit_code: None,
-                timed_out: false,
-                truncated: false,
-                blocked: false,
-                block_reason: String::new(),
-            };
-        }
-    };
+    // 使用 std::process::Command 执行命令（避免 portable-pty 在 Windows 上弹出可见控制台）
+    let mut cmd = Command::new(&shell);
+    cmd.args(&args)
+        .current_dir(workdir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
-    // 构建并启动命令
-    let mut cmd_builder = CommandBuilder::new(&shell);
-    cmd_builder.cwd(workdir);
-    for arg in &args {
-        cmd_builder.arg(arg);
+    // Windows 上隐藏控制台窗口
+    #[cfg(windows)]
+    {
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
 
-    tracing::debug!("[ExecTool] Spawning command in PTY...");
-    let mut child = match pair.slave.spawn_command(cmd_builder) {
+    let mut child = match cmd.spawn() {
         Ok(c) => {
             tracing::debug!("[ExecTool] Command spawned");
             c
@@ -172,62 +153,67 @@ pub fn execute_sync(
         }
     };
 
-    let mut reader = match pair.master.try_clone_reader() {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("[ExecTool] Failed to get PTY reader: {}", e);
-            let _ = child.kill();
-            return CommandOutput {
-                stdout: format!("Failed to get PTY reader: {}", e),
-                exit_code: None,
-                timed_out: false,
-                truncated: false,
-                blocked: false,
-                block_reason: String::new(),
-            };
-        }
-    };
-
     let kill_flag = Arc::new(AtomicBool::new(false));
     let kill_flag_clone = kill_flag.clone();
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
 
-    // 后台线程：读取所有 PTY 输出，同时通过回调推送实时块
+    // 后台线程：读取 stdout，同时通过回调推送实时块
     tracing::debug!("[ExecTool] Starting reader thread...");
     let chunk_cb = chunk_callback;
     let reader_thread = std::thread::spawn(move || {
         let mut output = Vec::new();
-        let mut buf = [0u8; 8192];
-        // 使用 500ms 超时轮询，避免 kill_flag 设置后 reader.read() 永远阻塞
-        loop {
-            if kill_flag_clone.load(Ordering::Relaxed) {
-                tracing::trace!("[ExecTool] Reader thread: kill flag set, stopping");
-                break;
-            }
-            match reader.read(&mut buf) {
-                Ok(0) => {
-                    tracing::trace!("[ExecTool] Reader thread: EOF");
+        if let Some(mut reader) = stdout_pipe {
+            let mut buf = [0u8; 8192];
+            loop {
+                if kill_flag_clone.load(Ordering::Relaxed) {
+                    tracing::trace!("[ExecTool] Reader thread: kill flag set, stopping");
                     break;
                 }
-                Ok(n) => {
-                    tracing::trace!("[ExecTool] Reader thread: read {} bytes", n);
-                    output.extend_from_slice(&buf[..n]);
-                    // 推送实时块（清洗 ANSI 后）
-                    if let Some(ref cb) = chunk_cb {
-                        let cleaned = strip_ansi(&buf[..n]);
-                        if !cleaned.is_empty() {
-                            if let Ok(text) = String::from_utf8(cleaned) {
-                                cb(text);
+                match reader.read(&mut buf) {
+                    Ok(0) => {
+                        tracing::trace!("[ExecTool] Reader thread: EOF");
+                        break;
+                    }
+                    Ok(n) => {
+                        output.extend_from_slice(&buf[..n]);
+                        if let Some(ref cb) = chunk_cb {
+                            let cleaned = strip_ansi(&buf[..n]);
+                            if !cleaned.is_empty() {
+                                if let Ok(text) = String::from_utf8(cleaned) {
+                                    cb(text);
+                                }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    tracing::trace!("[ExecTool] Reader thread read error: {}", e);
-                    break;
+                    Err(e) => {
+                        tracing::trace!("[ExecTool] Reader thread read error: {}", e);
+                        break;
+                    }
                 }
             }
         }
         tracing::debug!("[ExecTool] Reader thread finished, total: {} bytes", output.len());
+        output
+    });
+
+    // 后台线程：读取 stderr 并合并
+    let kill_flag_stderr = kill_flag.clone();
+    let stderr_thread = std::thread::spawn(move || {
+        let mut output = Vec::new();
+        if let Some(mut reader) = stderr_pipe {
+            let mut buf = [0u8; 8192];
+            loop {
+                if kill_flag_stderr.load(Ordering::Relaxed) {
+                    break;
+                }
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => output.extend_from_slice(&buf[..n]),
+                    Err(_) => break,
+                }
+            }
+        }
         output
     });
 
@@ -244,8 +230,8 @@ pub fn execute_sync(
         }
 
         if last_warn_time.elapsed() > Duration::from_secs(5) {
-            let elapsed = timeout_secs.saturating_sub(deadline.saturating_duration_since(Instant::now()).as_secs());
-            tracing::debug!("[ExecTool] Waiting for command... elapsed: ~{}s", timeout_secs.saturating_sub(elapsed));
+            let elapsed = deadline.saturating_duration_since(Instant::now()).as_secs();
+            tracing::debug!("[ExecTool] Waiting for command... timeout remaining: ~{}s", elapsed);
             last_warn_time = Instant::now();
         }
 
@@ -257,17 +243,17 @@ pub fn execute_sync(
         std::thread::sleep(Duration::from_secs(1));
     }
 
-    // 关键：关闭 PTY master 写端，触发 reader 收到 EOF → reader 线程自然退出
-    kill_flag.store(true, Ordering::Relaxed);
-    let _ = child.kill();
+    // 超时后杀掉进程
+    if timed_out {
+        tracing::warn!("[ExecTool] Killing command due to timeout");
+        kill_flag.store(true, Ordering::Relaxed);
+        let _ = child.kill();
+    }
     let _ = child.wait();
-    // 释放 PTY master 句柄，否则 Windows 下 reader 收不到 EOF 会一直阻塞
-    drop(pair);
-    // 给 reader 线程一点时间处理 EOF
-    std::thread::sleep(Duration::from_millis(200));
 
     // 等待读取线程完成
-    let raw_output = match reader_thread.join() {
+    tracing::debug!("[ExecTool] Joining reader thread...");
+    let mut raw_output = match reader_thread.join() {
         Ok(out) => {
             tracing::debug!("[ExecTool] Reader thread joined, output size: {} bytes", out.len());
             out
@@ -277,6 +263,15 @@ pub fn execute_sync(
             Vec::new()
         }
     };
+    // 合并 stderr 输出
+    if let Ok(stderr_output) = stderr_thread.join() {
+        if !stderr_output.is_empty() {
+            if !raw_output.is_empty() {
+                raw_output.push(b'\n');
+            }
+            raw_output.extend_from_slice(&stderr_output);
+        }
+    }
 
     // 获取退出码
     let exit_code = child.try_wait().ok().flatten().map(|s| s.success() as i32);
@@ -312,8 +307,7 @@ pub fn execute_sync(
 
 /// 安全地执行 shell 命令（线程安全包装，供工具 handler 调用）
 ///
-/// 在独立线程 + 独立 tokio runtime 中执行 PTY 操作，
-/// 避免阻塞 tokio worker 线程。
+/// 在独立线程中执行命令，避免阻塞 tokio worker 线程。
 pub fn execute_command_safe(
     command: &str,
     workdir: &std::path::Path,
