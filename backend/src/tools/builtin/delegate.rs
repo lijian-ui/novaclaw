@@ -6,18 +6,18 @@ pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
             name: "delegate_task".to_string(),
-            description: "将子任务委派给专门的员工 Agent 处理。员工会独立思考并完成任务，然后汇报结果。使用场景：\n- 需要代码审查时，委派给 code-reviewer\n- 需要数据分析时，委派给 data-analyst\n- 需要网络搜索时，委派给 web-researcher\n\n你可以一次性委派多个不同的任务给不同员工，它们会同时执行，互不阻塞。例如同时分析多个项目的代码：\n  delegate_task(\"code-reviewer\", \"分析项目A\")\n  delegate_task(\"code-reviewer\", \"分析项目B\")\n\n员工列表可在设置页面查看和管理。员工可以自己决定如何完成任务，包括调用可用的工具。"
+            description: "Delegate a subtask to a specialized sub-agent. The sub-agent will think independently and complete the task, then report back.\nUse cases:\n- Need code review → delegate to code-reviewer\n- Need data analysis → delegate to data-analyst\n- Need web search → delegate to web-researcher\n\nYou can delegate multiple different tasks to different agents simultaneously. They will execute in parallel without blocking each other. For example:\n  delegate_task(\"code-reviewer\", \"Analyze project A\")\n  delegate_task(\"code-reviewer\", \"Analyze project B\")\n\nSub-agents can use their own tools to complete assigned tasks."
                 .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "agent_id": {
                         "type": "string",
-                        "description": "员工 ID，例如 code-reviewer、data-analyst、web-researcher"
+                        "description": "Agent ID, e.g. code-reviewer, data-analyst, web-researcher"
                     },
                     "task": {
                         "type": "string",
-                        "description": "要交给员工的具体任务描述"
+                        "description": "The specific task description to delegate to the agent"
                     }
                 },
                 "required": ["agent_id", "task"]

@@ -2,8 +2,39 @@ use novaclaw_backend::{initialize, logging, server};
 
 #[tokio::main]
 async fn main() {
-    // 初始化日志系统（终端 + 文件持久化 + WebSocket 实时推送）
+    // 初始化日志系统
     logging::init();
+
+    // 解析命令行参数：--host <addr> --port <port>
+    let args: Vec<String> = std::env::args().collect();
+    let mut host_override: Option<String> = None;
+    let mut port_override: Option<u16> = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--host" => {
+                i += 1;
+                if i < args.len() {
+                    host_override = Some(args[i].clone());
+                }
+            }
+            "--port" => {
+                i += 1;
+                if i < args.len() {
+                    if let Ok(p) = args[i].parse::<u16>() {
+                        port_override = Some(p);
+                    } else {
+                        tracing::warn!("Invalid --port value: {}, ignored", args[i]);
+                    }
+                }
+            }
+            other => {
+                tracing::warn!("Unknown argument: {}, ignored", other);
+            }
+        }
+        i += 1;
+    }
 
     tracing::info!("Starting NovaClaw backend server...");
 
@@ -11,5 +42,5 @@ async fn main() {
     initialize().await;
 
     // 启动 Axum HTTP/WebSocket 服务器
-    server::start().await;
+    server::start_with_opts(host_override, port_override).await;
 }

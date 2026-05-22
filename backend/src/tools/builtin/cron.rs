@@ -23,7 +23,7 @@ pub async fn register(registry: &ToolRegistry) {
                     },
                     "schedule": {
                         "type": "string",
-                        "description": "CRON EXPRESSION (5 fields, e.g. '0 8 * * *' for daily 8am, '*/30 * * * *' for every 30min). You MUST generate the cron expression based on user's request. DO NOT use natural language!"
+                        "description": "5-field cron expression (e.g. '0 8 * * *' for daily 8am). You MUST generate this — do NOT use natural language!"
                     },
                     "payload": {
                         "type": "string",

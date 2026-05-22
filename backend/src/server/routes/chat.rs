@@ -7,7 +7,7 @@ use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
 use std::pin::Pin;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as _;
@@ -128,7 +128,7 @@ fn make_storage_msg(session_id: &str, role: &str, content: &str, tool_calls: Opt
     }
 }
 
-fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, input_tokens: u64, output_tokens: u64, cached_tokens: u64, last_input_tokens: u64, last_output_tokens: u64) -> storage::Message {
+fn make_storage_msg_with_reasoning(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, first_reasoning: Option<String>, again_reasonings: Option<Vec<String>>, reasoning: Option<String>) -> storage::Message {
     storage::Message {
         id: uuid::Uuid::new_v4().to_string(),
         session_id: session_id.to_string(),
@@ -136,7 +136,22 @@ fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, too
         content: content.to_string(),
         created_at: chrono::Utc::now().to_rfc3339(),
         metadata: None, tool_calls, tool_call_id, tool_name,
-        first_reasoning: None, again_reasonings: None, reasoning: None,
+        first_reasoning, again_reasonings, reasoning,
+        input_tokens: None, output_tokens: None, cached_tokens: None,
+        last_input_tokens: None, last_output_tokens: None,
+        image_paths: None, message_type: None,
+    }
+}
+
+fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, first_reasoning: Option<String>, again_reasonings: Option<Vec<String>>, reasoning: Option<String>, input_tokens: u64, output_tokens: u64, cached_tokens: u64, last_input_tokens: u64, last_output_tokens: u64) -> storage::Message {
+    storage::Message {
+        id: uuid::Uuid::new_v4().to_string(),
+        session_id: session_id.to_string(),
+        role: role.to_string(),
+        content: content.to_string(),
+        created_at: chrono::Utc::now().to_rfc3339(),
+        metadata: None, tool_calls, tool_call_id, tool_name,
+        first_reasoning, again_reasonings, reasoning,
         input_tokens: Some(input_tokens), output_tokens: Some(output_tokens), cached_tokens: Some(cached_tokens),
         last_input_tokens: Some(last_input_tokens), last_output_tokens: Some(last_output_tokens),
         image_paths: None, message_type: None,
@@ -175,8 +190,10 @@ async fn chat(Json(req): Json<ChatRequestHttp>) -> Json<serde_json::Value> {
     let _ = state.session_store.append_message(&session_id, &make_storage_msg(&session_id, "user", &req.message, None, None, None));
     let new_msgs = if history_len <= result.messages.len() { &result.messages[history_len..] } else { &result.messages[..] };
     for m in new_msgs {
+        // 用户消息已在上方保存，跳过避免重复
+        if m.role == "user" { continue; }
         let tcs = m.tool_calls.as_ref().map(|tcs| tcs.iter().map(|tc| storage::ToolCall { id: tc.id.clone(), name: tc.name.clone(), arguments: Some(tc.arguments.clone()) }).collect());
-        let _ = state.session_store.append_message(&session_id, &make_storage_msg(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone()));
+        let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_reasoning(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), m.first_reasoning.clone(), m.again_reasonings.clone(), m.reasoning.clone()));
     }
 
     Json(serde_json::json!({"success": true, "data": {"session_id": session_id, "message_id": uuid::Uuid::new_v4().to_string(), "content": result.content, "role": "assistant"}}))
@@ -243,6 +260,13 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
         let history_msg_count = agent_session.messages.len();
         drop(state);
 
+        // 创建取消标志并注册到 cancel_map
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        {
+            let mut state = APP_STATE.write().await;
+            state.cancel_map.insert(session_id.clone(), cancel_flag.clone());
+        }
+
         let step_sse_tx = sse_tx.clone();
         let step_fwd_handle = tokio::spawn(async move {
             while let Some(step) = step_rx.recv().await {
@@ -278,7 +302,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
             }
 
             let mut runtime = AgentRuntime::new(agent_session, llm_client, tool_registry, &config, skills);
-            let result = runtime.run_turn(&req.message, Some(step_tx), None, &image_data_urls).await;
+            let result = runtime.run_turn(&req.message, Some(step_tx), Some(cancel_flag), &image_data_urls).await;
             let _ = step_fwd_handle.await;
 
             match result {
@@ -293,26 +317,41 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                         else { let keep = crate::agent::runtime::COMPACT_KEEP_LAST_FALLBACK; if agent_result.messages.len() > keep { &agent_result.messages[agent_result.messages.len() - keep..] } else { &agent_result.messages[..] } };
                     let msg_count = new_msgs.len();
                     for (i, m) in new_msgs.iter().enumerate() {
+                        // 用户消息已在上方保存，跳过避免重复
+                        if m.role == "user" { continue; }
                         let tcs = m.tool_calls.as_ref().map(|tcs| tcs.iter().map(|tc| storage::ToolCall { id: tc.id.clone(), name: tc.name.clone(), arguments: Some(tc.arguments.clone()) }).collect());
                         // 仅最后一条 assistant 消息携带 Token 用量
                         if i == msg_count - 1 && m.role == "assistant" && (agent_result.total_input_tokens > 0 || agent_result.total_output_tokens > 0) {
-                            let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_tokens(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), agent_result.total_input_tokens, agent_result.total_output_tokens, agent_result.total_cached_tokens, agent_result.last_input_tokens, agent_result.last_output_tokens));
+                            let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_tokens(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), m.first_reasoning.clone(), m.again_reasonings.clone(), m.reasoning.clone(), agent_result.total_input_tokens, agent_result.total_output_tokens, agent_result.total_cached_tokens, agent_result.last_input_tokens, agent_result.last_output_tokens));
                         } else {
-                            let _ = state.session_store.append_message(&session_id, &make_storage_msg(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone()));
+                            let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_reasoning(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), m.first_reasoning.clone(), m.again_reasonings.clone(), m.reasoning.clone()));
                         }
                     }
                     drop(state);
-                    let _ = agent_sse_tx.send(serde_json::json!({"type": "done", "data": {
-                        "content": agent_result.content,
-                        "session_id": session_id,
-                        "input_tokens": agent_result.total_input_tokens,
-                        "output_tokens": agent_result.total_output_tokens,
-                        "cached_tokens": agent_result.total_cached_tokens,
-                        "last_input_tokens": agent_result.last_input_tokens,
-                        "last_output_tokens": agent_result.last_output_tokens,
-                    }}).to_string()).await;
+                    if agent_result.cancelled {
+                        let _ = agent_sse_tx.send(serde_json::json!({"type": "stopped", "data": {
+                            "session_id": session_id,
+                        }}).to_string()).await;
+                    } else {
+                        let _ = agent_sse_tx.send(serde_json::json!({"type": "done", "data": {
+                            "content": agent_result.content,
+                            "session_id": session_id,
+                            "input_tokens": agent_result.total_input_tokens,
+                            "output_tokens": agent_result.total_output_tokens,
+                            "cached_tokens": agent_result.total_cached_tokens,
+                            "last_input_tokens": agent_result.last_input_tokens,
+                            "last_output_tokens": agent_result.last_output_tokens,
+                            "cache_hit_rate": agent_result.cache_hit_rate,
+                            "cache_hit_tokens": agent_result.total_cached_tokens,
+                        }}).to_string()).await;
+                    }
                 }
                 Err(e) => { let _ = agent_sse_tx.send(serde_json::json!({"type": "error", "data": {"message": e.to_string()}}).to_string()).await; }
+            }
+            // 从 cancel_map 中移除已完成的会话
+            {
+                let mut state = APP_STATE.write().await;
+                state.cancel_map.remove(&session_id);
             }
         });
     });

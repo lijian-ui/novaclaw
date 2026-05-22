@@ -13,7 +13,7 @@ pub async fn register(
     registry
         .register(ToolDef {
             name: "memory".to_string(),
-            description: "Save and search persistent facts. Use this whenever the user states a preference, shares personal details, or says to remember something. Also use it when you notice recurring patterns or conventions.\n\nActions:\n- action='add': Save a fact. content is the text of what to remember.\n- action='search': Find past memories. query is the keyword.\n- action='replace': Update a memory. content must be 'old text | new text'.\n- action='remove': Delete a memory. content is the text to remove.\n\nDo NOT save temporary info (task progress, commit hashes). Use session_search for that."
+            description: "Save and search persistent facts across sessions. Actions: add (save fact), search (find by keyword), replace (update, use 'old | new' format), remove (delete). Not for temporary data — use session_search instead."
                 .to_string(),
             parameters: json!({
                 "type": "object",
@@ -117,7 +117,7 @@ pub async fn register(
         .register(ToolDef {
             name: "session_search".to_string(),
             description:
-                "Search the current session's transcript (JSONL) for temporal information like task progress, bug details, or past decisions. Use this instead of memory/search for session-specific or temporary info. Params: query (required, search keyword), limit (optional, max results, default 5)"
+                "Search the current session history for temporary info like task progress or past decisions. Use instead of memory/search for session-specific data. Params: query (required), limit (optional, default 5)"
                     .to_string(),
             parameters: json!({
                 "type": "object",

@@ -75,32 +75,32 @@ pub async fn register(registry: &ToolRegistry) {
         .register(ToolDef {
             name: "submit_plan".to_string(),
             description:
-                "提交一份执行计划给用户审批。当你面对复杂任务（3个以上步骤或有风险的操作）时，应该先调用此工具列清计划，等待用户确认后再执行。\n\n使用场景:\n- 用户要求做重大修改时\n- 涉及多文件、多步骤的操作\n- 有高风险变更（删除、重构、改数据库等）\n\n提交后请等待用户确认，不要直接开始执行。".to_string(),
+                "Submit an execution plan for user approval. When facing complex tasks (3+ steps or risky operations), call this tool to lay out the plan first, then wait for user confirmation before executing.\n\nUse cases:\n- Major changes requested by user\n- Multi-file, multi-step operations\n- High-risk changes (delete, refactor, database changes, etc.)\n\nAfter submitting, wait for user approval before starting execution.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "goal": {
                         "type": "string",
-                        "description": "计划的目标概述"
+                        "description": "Overview of the plan's goal"
                     },
                     "steps": {
                         "type": "array",
-                        "description": "执行步骤列表",
+                        "description": "List of execution steps",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "title": {
                                     "type": "string",
-                                    "description": "步骤标题"
+                                    "description": "Step title"
                                 },
                                 "description": {
                                     "type": "string",
-                                    "description": "步骤详细描述"
+                                    "description": "Detailed step description"
                                 },
                                 "risk": {
                                     "type": "string",
                                     "enum": ["low", "med", "high"],
-                                    "description": "风险等级: low=低风险, med=中风险(可能影响现有功能), high=高风险(可能破坏系统)"
+                                    "description": "Risk level: low (safe), med (may affect existing functionality), high (may break the system)"
                                 }
                             },
                             "required": ["title", "description"]
@@ -108,7 +108,7 @@ pub async fn register(registry: &ToolRegistry) {
                     },
                     "summary": {
                         "type": "string",
-                        "description": "计划总结，说明整体影响和预期结果"
+                        "description": "Plan summary describing overall impact and expected outcomes"
                     }
                 },
                 "required": ["goal", "steps", "summary"]

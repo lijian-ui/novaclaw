@@ -3,6 +3,24 @@ use crate::soul::SoulManager;
 
 /// System Prompt 构建器
 /// 参考 claw-code 的 SystemPromptBuilder 和 hermes-agent 的 8 层组装模式
+///
+/// # 缓存优化：冻结前缀 vs 易变后缀
+///
+/// 此构建器将 system prompt 分为两个部分：
+///
+/// - **build_frozen()** — 会话生命周期内完全不变的层：
+///   1. Identity (SOUL.md)
+///   3. System rules
+///   4. Output format
+///   5. --- boundary
+///
+/// - **build_volatile()** — 每次请求可能变化的层：
+///   2. Memory (跨会话记忆，随用户操作变化)
+///   6. Environment (含日期，每天变化)
+///   7. Skills (技能索引)
+///
+/// 使用方式: frozen 一次构建后存入 AgentSession.frozen_system_prompt，
+/// volatile 每次请求时构建，追加到最后一个 user 消息中。
 pub struct SystemPromptBuilder<'a> {
     #[allow(dead_code)]
     config: &'a AppConfig,
@@ -49,15 +67,20 @@ impl<'a> SystemPromptBuilder<'a> {
         self
     }
 
-    /// 构建完整的系统提示词
+    /// 构建完整的系统提示词（向后兼容，包含所有层）
     pub async fn build(&self) -> String {
+        let frozen = self.build_frozen().await;
+        let volatile = self.build_volatile();
+        format!("{}\n\n{}", frozen, volatile)
+    }
+
+    /// 构建冻结前缀（不含 memory、日期、环境等易变内容）
+    /// 此部分在会话期内固定不变，用于 DeepSeek 精确前缀缓存
+    pub async fn build_frozen(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
 
         // 1. SOUL.md 身份层（最高优先级）
         sections.push(self.build_identity().await);
-
-        // 2. 跨会话记忆层
-        sections.push(self.build_memory());
 
         // 3. 系统规则层
         sections.push(self.build_system_rules());
@@ -68,10 +91,21 @@ impl<'a> SystemPromptBuilder<'a> {
         // 5. 静态/动态边界
         sections.push("---".to_string());
 
+        sections.join("\n\n")
+    }
+
+    /// 构建易变后缀（memory、环境、技能）
+    /// 此部分每次请求都可能变化，放在 user 消息末尾以免影响缓存前缀
+    pub fn build_volatile(&self) -> String {
+        let mut sections: Vec<String> = Vec::new();
+
+        // 2. 跨会话记忆层
+        sections.push(self.build_memory());
+
         // 6. 环境信息层
         sections.push(self.build_environment());
 
-        // 7. 技能索引层（预注入模式：有技能列表时才注入）
+        // 7. 技能索引层
         if !self.skill_list.is_empty() {
             sections.push(self.build_skill_index());
         }
@@ -209,56 +243,12 @@ Strategy: If you know a command will take a long time, use execute_command_bg so
     fn build_output_format(&self) -> String {
         r#"# Output Format
 
-You MUST format all responses in Markdown. Follow these rules strictly:
+You MUST format all responses in Markdown.
 
-## File/Directory listings
-When listing files or directories (e.g. after glob/list_dir/dir commands):
-- Use an **unordered list** (- item) with filenames in inline code (`filename`)  
-- Do NOT use ordered lists (1. 2. 3.) for file listings
-- When showing file contents, use fenced code blocks with the language label
-
-## Code
-- Always use ```language fenced code blocks with the correct language identifier
-- Do NOT use inline code (``) for multi-line code
-
-## Tables
-- Use Markdown tables for structured data comparisons
-- Always include a header row with alignment dashes (| --- | --- |)
-- If data has more than 6 columns, use a bullet list instead
-- For text that uses spaces as column separators: **identify columns by the first row's word boundaries**, then split subsequent rows at the SAME horizontal positions
-- If you cannot cleanly parse space-delimited text into columns, use a **fenced code block** to show the raw content instead of guessing wrong column boundaries
-
-## Examples
-
-Good file listing:
-```markdown
-Working directory contains:
-- `src/` - source code directory
-- `README.md` - project documentation
-- `package.json` - npm configuration
-```
-
-Good table (with clearly separated columns):
-```markdown
-| File | Size | Type |
-| --- | --- | --- |
-| main.rs | 2.1 KB | Rust |
-| app.tsx | 4.5 KB | TypeScript |
-```
-
-When tool result text is space-delimited and ambiguous, wrap it in a code block:
-```markdown
-工具名称 功能描述 主要参数
-read_file 读取文件内容 path
-write_file 写入文件 content
-```
-
-Bad - guessing wrong columns:
-```markdown
-1. src/
-2. README.md
-3. package.json
-```"#.to_string()
+- File/directory listings: use **unordered lists** with inline code filenames (`filename`)
+- Code: use fenced code blocks with the correct language identifier (```language)
+- Tables: use Markdown tables with header and alignment dashes (max 6 columns)
+- Space-delimited text: if it cannot be cleanly parsed, wrap it in a fenced code block"#.to_string()
     }
 
     /// Skill index

@@ -13,7 +13,9 @@ pub struct AgentSession {
     pub model: String,
     /// 系统提示词（可选覆盖）
     pub system_prompt_override: Option<String>,
-    /// 对话消息历史
+    /// 冻结的系统提示词前缀（会话生命周期内只构建一次，用于 DeepSeek 前缀缓存）
+    pub frozen_system_prompt: Option<String>,
+    /// 对话消息历史（仅追加，除 compact_in_place 外不得原地修改）
     pub messages: Vec<AgentMessage>,
     /// 压缩次数
     pub compaction_count: u32,
@@ -25,6 +27,10 @@ pub struct AgentSession {
     pub total_input_tokens: u64,
     /// 总输出 Token 计数
     pub total_output_tokens: u64,
+    /// 缓存命中 Token 数（DeepSeek 精确前缀缓存）
+    pub cache_hit_tokens: u64,
+    /// 缓存未命中 Token 数
+    pub cache_miss_tokens: u64,
 }
 
 /// Agent 消息
@@ -75,19 +81,44 @@ impl AgentSession {
             workspace: workspace.map(|s| s.to_string()),
             model: model.to_string(),
             system_prompt_override: None,
+            frozen_system_prompt: None,
             messages: Vec::new(),
             compaction_count: 0,
             created_at: now.clone(),
             updated_at: now,
             total_input_tokens: 0,
             total_output_tokens: 0,
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 0,
         }
     }
 
-    /// 添加消息到会话历史
+    /// 添加消息到会话历史（仅追加！不允许原地修改已有消息）
     pub fn push_message(&mut self, msg: AgentMessage) {
         self.messages.push(msg);
         self.updated_at = chrono::Utc::now().to_rfc3339();
+    }
+
+    /// 设置冻结的系统提示词前缀（会话期间仅调用一次）
+    /// 返回 true 表示首次设置，false 表示已存在（重复调用被忽略）
+    pub fn set_frozen_system_prompt(&mut self, prompt: String) -> bool {
+        if self.frozen_system_prompt.is_some() {
+            tracing::debug!("[Cache] frozen_system_prompt 已存在，忽略重复设置");
+            return false;
+        }
+        tracing::info!("[Cache] frozen_system_prompt 已设置 ({} 字符)", prompt.len());
+        self.frozen_system_prompt = Some(prompt);
+        true
+    }
+
+    /// 获取缓存命中率（0.0 ~ 1.0）
+    pub fn cache_hit_rate(&self) -> f64 {
+        let total = self.cache_hit_tokens + self.cache_miss_tokens;
+        if total == 0 {
+            0.0
+        } else {
+            self.cache_hit_tokens as f64 / total as f64
+        }
     }
 
     /// 添加用户消息
@@ -145,8 +176,20 @@ impl AgentSession {
         self.messages.len()
     }
 
-    /// 清理旧消息（上下文压缩）
-    pub fn compact(&mut self, keep_last: usize) {
+    /// 上下文就地压缩（⚠️ 仅此方法允许修改 messages 数组内容）
+    ///
+    /// # 缓存影响
+    /// - 压缩后消息数组被重写，下一次 LLM 请求的字节前缀与之前不同
+    /// - 即：下一次请求会触发缓存未命中（cache miss）
+    /// - 但压缩后新的前缀会保持稳定，后续请求可命中新缓存
+    /// - 建议：在需要时调用，不要频繁触发
+    ///
+    /// # 行为
+    /// - 保留前 2 条（系统上下文）和最后 `keep_last` 条
+    /// - 中间的旧消息被一条摘要消息替换
+    /// - `ai_summary` 为 None 时使用简单的计数占位符；为 Some 时使用 LLM 生成的语义摘要
+    /// - 摘要消息 role 设置为 `assistant`（更符合对话语境，防止与 system prompt 混淆）
+    pub fn compact_in_place(&mut self, keep_last: usize, ai_summary: Option<String>) {
         if self.messages.len() <= keep_last + 2 {
             return;
         }
@@ -158,9 +201,18 @@ impl AgentSession {
         let front: Vec<_> = self.messages.iter().take(2).cloned().collect();
         let back: Vec<_> = self.messages.iter().skip(to_remove + 2).cloned().collect();
 
+        let summary_content = match ai_summary {
+            Some(ref s) if !s.trim().is_empty() => {
+                format!("[CONVERSATION HISTORY SUMMARY — earlier turns folded for context efficiency]\n\n{}", s.trim())
+            }
+            _ => {
+                format!("[CONVERSATION HISTORY SUMMARY — removed {} historical messages, showing recent conversation content]", to_remove)
+            }
+        };
+
         let summary = AgentMessage {
-            role: "system".to_string(),
-            content: format!("[Context compressed: removed {} historical messages, showing recent conversation content]", to_remove),
+            role: "assistant".to_string(), // 使用 assistant 角色，保持对话连贯性
+            content: summary_content,
             tool_calls: None,
             tool_call_id: None,
             tool_name: None,
@@ -174,9 +226,23 @@ impl AgentSession {
         self.messages.push(summary);
         self.messages.extend(back);
         self.compaction_count += 1;
+        if ai_summary.is_some() {
+            tracing::info!(
+                "[Cache] compact_in_place (AI 摘要): 移除了 {} 条消息，剩余 {} 条 (压缩次数: {})，下次请求会触发缓存未命中",
+                to_remove,
+                self.messages.len(),
+                self.compaction_count
+            );
+        } else {
+            tracing::info!(
+                "[Cache] compact_in_place: 移除了 {} 条消息，剩余 {} 条 (压缩次数: {})，下次请求会触发缓存未命中",
+                to_remove,
+                self.messages.len(),
+                self.compaction_count
+            );
+        }
 
-        // 压缩后清理孤立 tool_calls：如果一条 assistant 消息的 tool_calls
-        // 在后续消息中没有完整的 tool 响应，则移除这些 tool_calls
+        // 压缩后清理孤立 tool_calls
         Self::strip_orphan_tool_calls(&mut self.messages);
     }
 

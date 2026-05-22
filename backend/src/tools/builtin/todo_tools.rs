@@ -97,29 +97,29 @@ pub async fn register(registry: &ToolRegistry) {
         .register(ToolDef {
             name: "todo_write".to_string(),
             description:
-                "写入完整的待办任务列表（替换模式）。一次调用设置整个清单，之前的清单会被完全替换。\n\n每个任务可以设置状态: pending(待办), in_progress(进行中), completed(已完成)\n每次只能有一个任务处于 in_progress 状态。\n可以为任务设置优先级: high, medium, low。\n\n使用场景:\n- 开始复杂任务时先列计划\n- 执行过程中更新任务状态\n- 完成任务后标记为 completed".to_string(),
+                "Write the full todo task list (replace mode). One call sets the entire list, completely replacing the previous one.\n\nEach task can have a status: pending, in_progress, completed\nOnly one task can be in_progress at a time.\nTasks can have priority: high, medium, low.\n\nUse cases:\n- Plan before starting complex tasks\n- Update task status during execution\n- Mark tasks as completed when done".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "items": {
                         "type": "array",
-                        "description": "任务列表（替换整个清单）",
+                        "description": "List of tasks (replaces the entire list)",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "content": {
                                     "type": "string",
-                                    "description": "任务描述"
+                                    "description": "Task description"
                                 },
                                 "status": {
                                     "type": "string",
                                     "enum": ["pending", "in_progress", "completed"],
-                                    "description": "任务状态: pending=待办, in_progress=进行中, completed=已完成"
+                                    "description": "Task status: pending, in_progress, completed"
                                 },
                                 "priority": {
                                     "type": "string",
                                     "enum": ["high", "medium", "low"],
-                                    "description": "优先级 (默认 medium)"
+                                    "description": "Task priority (default: medium)"
                                 }
                             },
                             "required": ["content", "status"]
@@ -172,7 +172,7 @@ pub async fn register(registry: &ToolRegistry) {
         .register(ToolDef {
             name: "todo_list".to_string(),
             description:
-                "查看当前会话的待办任务列表。返回格式化的任务清单，包含状态和进度。"
+                "View the current session's todo task list. Returns a formatted list with status and progress."
                     .to_string(),
             parameters: json!({
                 "type": "object",

@@ -8,11 +8,22 @@ use std::path::Path;
 
 use crate::APP_STATE;
 
-/// 启动 Axum HTTP/WebSocket 服务器
+/// 启动 Axum HTTP/WebSocket 服务器（默认从配置文件读取 host/port）
 pub async fn start() {
+    start_with_opts(None, None).await
+}
+
+/// 启动 Axum HTTP/WebSocket 服务器（支持命令行参数覆盖 host/port）
+/// 端口被占用时自动尝试下一个可用端口（最多尝试 MAX_PORT_ATTEMPTS 次）
+const MAX_PORT_ATTEMPTS: u16 = 100;
+
+pub async fn start_with_opts(
+    host_override: Option<String>,
+    port_override: Option<u16>,
+) {
     let state = APP_STATE.read().await;
-    let port = state.config.port;
-    let host = state.config.host.clone();
+    let base_port = port_override.unwrap_or(state.config.port);
+    let host = host_override.unwrap_or_else(|| state.config.host.clone());
     drop(state);
 
     // CORS 配置
@@ -21,7 +32,7 @@ pub async fn start() {
         .allow_methods(Any)
         .allow_headers(Any);
 
-        // 启动 Cron 调度器
+    // 启动 Cron 调度器
     crate::cron::start_scheduler().await;
 
     // 构建路由：静态文件托管优先于 API 路由
@@ -32,15 +43,39 @@ pub async fn start() {
         .layer(cors)
         .layer(tower_http::trace::TraceLayer::new_for_http());
 
-    let addr: SocketAddr = format!("{}:{}", host, port)
-        .parse()
-        .expect("Invalid address");
-    
-    tracing::info!("NovaClaw server starting on http://{}", addr);
+    // 尝试绑定端口，被占用时自动顺延
+    let mut actual_port = base_port;
+    let listener = loop {
+        let addr: SocketAddr = format!("{}:{}", host, actual_port)
+            .parse()
+            .expect("Invalid address");
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("Failed to bind address");
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => {
+                if actual_port != base_port {
+                    tracing::warn!(
+                        "端口 {} 被占用，已自动切换到端口 {}",
+                        base_port,
+                        actual_port
+                    );
+                }
+                tracing::info!("NovaClaw server starting on http://{}", addr);
+                break listener;
+            }
+            Err(e) => {
+                actual_port += 1;
+                if actual_port - base_port >= MAX_PORT_ATTEMPTS {
+                    panic!(
+                        "无法绑定端口: 在 {}~{} 范围内均被占用 ({})",
+                        base_port,
+                        base_port + MAX_PORT_ATTEMPTS - 1,
+                        e
+                    );
+                }
+                tracing::warn!("端口 {} 绑定失败 ({}), 尝试端口 {}", actual_port - 1, e, actual_port);
+            }
+        }
+    };
 
     axum::serve(listener, app)
         .await

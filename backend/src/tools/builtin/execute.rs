@@ -8,8 +8,7 @@ pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
             name: "execute_command".to_string(),
-            description: "Execute any shell command in the workspace directory. Pass only the raw command (e.g. 'dir', 'ls -la', 'npm run build'), do NOT wrap it in powershell/cmd/bash/shell invocation - the tool handles that automatically.\n\nUse this for QUICK commands that finish in seconds (e.g. 'ls', 'git status', 'cargo check'). For long-running commands (e.g. 'npm install', 'cargo build'), use execute_command_bg instead — it runs the command in the background and returns immediately, then you can check the result with poll_command.\n\nParams: command (required), description (optional), timeout (optional, default 60s, max 300), workdir (optional)"
-                .to_string(),
+            description: "Execute a shell command (quick, returns result directly). For long-running commands, use execute_command_bg. Params: command (required), description (optional), timeout (default 60s, max 300), workdir (optional)".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -107,7 +106,7 @@ pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
             name: "execute_command_bg".to_string(),
-            description: "Execute a shell command in the BACKGROUND and return immediately with a task_id. Use this for LONG-RUNNING commands like 'npm install', 'cargo build', 'pip install', 'python train.py' that take more than a few seconds.\n\nAfter submitting, you can:\n1. Continue doing other work (reading files, searching, etc.)\n2. Later call poll_command(task_id) to check if the command finished\n3. The command runs with a 10-minute timeout\n\nFor QUICK commands (finished in seconds), use execute_command instead — it returns the result directly without needing a second call.\n\nParams: command (required), description (optional), workdir (optional)".to_string(),
+            description: "Execute a shell command in BACKGROUND, returns a task_id immediately. Use for long-running commands. Check result later with poll_command. Params: command (required), description (optional), workdir (optional)".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -166,7 +165,7 @@ pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
             name: "poll_command".to_string(),
-            description: "Check the status and result of a background command previously submitted via execute_command_bg.\n\nReturns the current status (running/done/failed) and any accumulated output. If the command is still running, you can check again later.\n\nParams: task_id (required) — the ID returned by execute_command_bg".to_string(),
+            description: "Check the status of a background command. Params: task_id (required)".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {

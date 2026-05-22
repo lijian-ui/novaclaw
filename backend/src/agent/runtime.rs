@@ -104,6 +104,7 @@ pub struct AgentResult {
     pub total_cached_tokens: u64,
     pub last_input_tokens: u64,
     pub last_output_tokens: u64,
+    pub cache_hit_rate: f64,
 }
 
 pub struct AgentRuntime {
@@ -131,6 +132,8 @@ pub struct AgentRuntime {
     last_input_tokens: u64,
     /// 最后一次 LLM 请求的输出 Token（"本次输出"）
     last_output_tokens: u64,
+    /// 易变后缀（memory + 日期 + 环境 + 技能），每次 run_turn 构建
+    volatile_suffix: Option<String>,
 }
 
 impl AgentRuntime {
@@ -161,8 +164,15 @@ impl AgentRuntime {
             total_cached_tokens: 0,
             last_input_tokens: 0,
             last_output_tokens: 0,
+            volatile_suffix: None,
         }
     }
+
+    // ── 工具结果压缩阈值（超过此字符数的工具结果，在轮次结束后压缩） ──
+    const TOOL_RESULT_COMPRESS_LIMIT: usize = 6000;
+
+    // ── 预检：消息历史总字符数触发压缩的阈值 ──
+    const PREFLIGHT_CHAR_LIMIT: usize = 500_000;
 
     pub async fn run_turn(
         &mut self,
@@ -177,19 +187,25 @@ impl AgentRuntime {
 
         self.session.push_user_with_images(user_input, images);
 
+        // ── P0: 上下文压缩检查 ──
         let compact_keep = if self.config.compact_keep > 0 {
             self.config.compact_keep
         } else {
             COMPACT_KEEP_LAST_FALLBACK
         };
         if self.config.compact_threshold > 0 && self.session.message_count() > self.config.compact_threshold {
+            let keep = compact_keep;
             tracing::info!(
-                "[Agent] 消息数 {} 超过阈值 {}，触发上下文压缩，保留最近 {} 条",
+                "[Agent] 消息数 {} 超过阈值 {}，触发上下文压缩 (compact_in_place)，保留最近 {} 条",
                 self.session.message_count(),
                 self.config.compact_threshold,
-                compact_keep
+                keep
             );
-            self.session.compact(compact_keep);
+
+            // P1: 生成 AI 摘要（优先使用 flash 模型，降级到当前模型）
+            let ai_summary = self.generate_ai_summary(keep).await;
+            self.session.compact_in_place(keep, ai_summary);
+
             tracing::info!(
                 "[Agent] 压缩完成，当前消息数: {}，累计压缩次数: {}",
                 self.session.message_count(),
@@ -197,7 +213,13 @@ impl AgentRuntime {
             );
         }
 
-        let system_prompt = self.build_system_prompt().await;
+        // ── P0: 首次运行时构建并冻结 system prompt ──
+        if self.session.frozen_system_prompt.is_none() {
+            let frozen = self.build_frozen_system_prompt().await;
+            self.session.set_frozen_system_prompt(frozen);
+        }
+        // volatile 后缀每次构建（含 memory、日期等变化信息）
+        self.volatile_suffix = Some(self.build_volatile_suffix().await);
 
         loop {
             iterations += 1;
@@ -234,9 +256,12 @@ impl AgentRuntime {
                 );
                 self.session.push_user(&summary_prompt);
 
+                // ⚠️ 预检：优雅终止前检查上下文，避免超长请求浪费
+                self.maybe_compact_for_preflight();
+
                 // 用无工具的调用做最后一次 LLM 响应
                 let (summary_msg, _, cancelled, _) = self
-                    .call_llm_with_tools_and_retry(&system_prompt, &step_tx, cancel.clone())
+                    .call_llm_with_tools_and_retry(&step_tx, cancel.clone())
                     .await?;
 
                 if cancelled {
@@ -251,8 +276,11 @@ impl AgentRuntime {
 
             tracing::info!("[Agent] ReAct 迭代 {}/{}", iterations, self.max_iterations);
 
+            // ⚠️ 预检：每轮 LLM 调用前检查上下文大小
+            self.maybe_compact_for_preflight();
+
             let (assistant_message, reasoning_blocks, cancelled, _) = self
-                .call_llm_with_tools_and_retry(&system_prompt, &step_tx, cancel.clone())
+                .call_llm_with_tools_and_retry(&step_tx, cancel.clone())
                 .await?;
 
             if cancelled {
@@ -540,8 +568,27 @@ impl AgentRuntime {
             }
         }
 
+        // ── P1: 轮末压缩大工具结果 — 超过阈值的 tool 结果压缩为摘要 ──
+        // 当前轮模型看到完整结果，下一轮起看到压缩版
+        let mut compressed_count = 0u32;
+        for msg in self.session.messages.iter_mut().rev() {
+            if msg.role == "tool" && msg.content.len() > Self::TOOL_RESULT_COMPRESS_LIMIT {
+                let full_len = msg.content.len();
+                msg.content = format!(
+                    "[工具结果已压缩: 原始 {} 字符 | {} 行]\n\n{}",
+                    full_len,
+                    full_len / 80, // 粗略行数
+                    &msg.content[..Self::TOOL_RESULT_COMPRESS_LIMIT.min(full_len)]
+                );
+                compressed_count += 1;
+            }
+        }
+        if compressed_count > 0 {
+            tracing::info!("[Compress] 轮末压缩了 {} 个大工具结果", compressed_count);
+        }
+
         tracing::info!(
-            "[Agent] ReAct 完成: {} 次迭代, {} 字符输出, max_iterations_reached={}. Token: 本次输入 {}, 本次输出 {}, 缓存 {}, 累计输入 {}, 累计输出 {}",
+            "[Agent] ReAct 完成: {} 次迭代, {} 字符输出, max_iterations_reached={}. Token: 本次输入 {}, 本次输出 {}, 缓存 {}, 累计输入 {}, 累计输出 {}, 缓存命中率 {:.1}%",
             iterations,
             final_content.len(),
             max_iterations_reached,
@@ -549,7 +596,8 @@ impl AgentRuntime {
             self.last_output_tokens,
             self.total_cached_tokens,
             self.session.total_input_tokens,
-            self.session.total_output_tokens
+            self.session.total_output_tokens,
+            self.session.cache_hit_rate() * 100.0
         );
 
         let first_reasoning = self.session.messages.iter()
@@ -577,6 +625,7 @@ impl AgentRuntime {
             total_cached_tokens: self.total_cached_tokens,
             last_input_tokens: self.last_input_tokens,
             last_output_tokens: self.last_output_tokens,
+            cache_hit_rate: self.session.cache_hit_rate(),
         })
     }
 
@@ -616,13 +665,12 @@ impl AgentRuntime {
 
     async fn call_llm_with_tools_and_retry(
         &mut self,
-        system_prompt: &str,
         step_tx: &Option<mpsc::Sender<AgentStep>>,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<(AgentMessage, Vec<String>, bool, u64), AppError> {
         let mut attempts = 0u32;
         loop {
-            match self.call_llm_with_tools(system_prompt, step_tx, cancel.clone()).await {
+            match self.call_llm_with_tools(step_tx, cancel.clone()).await {
                 Ok((msg, blocks, cancelled, input_tokens, output_tokens, cached_tokens)) => {
                     if input_tokens > 0 || output_tokens > 0 {
                         self.session.total_input_tokens += input_tokens;
@@ -630,6 +678,13 @@ impl AgentRuntime {
                         self.total_cached_tokens += cached_tokens;
                         self.last_input_tokens = input_tokens;
                         self.last_output_tokens = output_tokens;
+                        // 统计缓存命中/未命中
+                        if cached_tokens > 0 {
+                            self.session.cache_hit_tokens += cached_tokens;
+                            self.session.cache_miss_tokens += input_tokens.saturating_sub(cached_tokens);
+                        } else {
+                            self.session.cache_miss_tokens += input_tokens;
+                        }
                     }
                     return Ok((msg, blocks, cancelled, cached_tokens));
                 }
@@ -675,10 +730,15 @@ impl AgentRuntime {
 
     async fn call_llm_with_tools(
         &mut self,
-        system_prompt: &str,
         step_tx: &Option<mpsc::Sender<AgentStep>>,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     ) -> Result<(AgentMessage, Vec<String>, bool, u64, u64, u64), AppError> {
+        // 使用会话级冻结的 system prompt（确保每轮字节序列一致）
+        let system_prompt = self.session.frozen_system_prompt
+            .as_ref()
+            .expect("[Cache] frozen_system_prompt 必须在首次调用前设置")
+            .clone();
+
         let tools = if self.grace_terminating {
             // 优雅终止：不传工具，LLM 只能返回文本
             Vec::new()
@@ -689,11 +749,11 @@ impl AgentRuntime {
 
         let mut messages: Vec<ChatMessage> = vec![ChatMessage {
             role: "system".to_string(),
-            content: serde_json::Value::String(system_prompt.to_string()),
+            content: serde_json::Value::String(system_prompt),
             tool_calls: None,
             tool_call_id: None,
             name: None,
-            reasoning_content: None,
+            reasoning_content: None, // ⚠️ 不发送 reasoning_content 到 API，避免污染缓存前缀
         }];
 
         let mut first_user_msg_idx = None;
@@ -737,8 +797,22 @@ impl AgentRuntime {
                 }),
                 tool_call_id: msg.tool_call_id.clone(),
                 name: msg.tool_name.clone(),
-                reasoning_content: msg.reasoning.clone(),
+                // ⚠️ 不发送 reasoning_content 到 API：避免污染缓存前缀字节序列
+                reasoning_content: None,
             });
+        }
+
+        // ── P0: 将 volatile 后缀追加到最后一个 user 消息末尾 ──
+        // 这样 `frozen_system + history` 整体保持稳定，缓存前缀不受 volatile 影响
+        if let Some(ref volatile) = self.volatile_suffix {
+            if let Some(last_msg) = messages.last_mut() {
+                if last_msg.role == "user" {
+                    if let serde_json::Value::String(ref content) = last_msg.content {
+                        let augmented = format!("{}\n\n---\n## Context & Environment\n\n{}", content, volatile);
+                        last_msg.content = serde_json::Value::String(augmented);
+                    }
+                }
+            }
         }
 
         let llm_tools: Vec<crate::llm::types::ToolDef> = tools
@@ -986,7 +1060,8 @@ impl AgentRuntime {
         Ok((agent_msg, reasoning_blocks, was_cancelled, input_tokens, output_tokens, cached_tokens))
     }
 
-    async fn build_system_prompt(&self) -> String {
+    /// 构建冻结的 system prompt（仅首次运行）
+    async fn build_frozen_system_prompt(&self) -> String {
         if let Some(ref override_prompt) = self.session.system_prompt_override {
             return override_prompt.clone();
         }
@@ -999,11 +1074,10 @@ impl AgentRuntime {
             "Linux"
         };
 
-        // 从全局状态获取 SoulManager 和 MemoryStore
-        let (soul_manager, memory_content) = {
+        // 从全局状态获取 SoulManager（冻结部分需要 soul 身份）
+        let soul_manager = {
             let state = crate::APP_STATE.read().await;
-            let memory = state.memory_store.list_memories();
-            (state.soul_manager.clone(), if memory.is_empty() { None } else { Some(memory) })
+            state.soul_manager.clone()
         };
 
         crate::agent::prompt::SystemPromptBuilder::new(
@@ -1011,13 +1085,260 @@ impl AgentRuntime {
             os_name,
             self.session.workspace.as_deref(),
         )
-        .with_skills(self.skills.iter().map(|s| {
-            format!("{}: {}", s.name, s.description)
-        }).collect())
         .with_soul_manager(soul_manager)
-        .with_memory(memory_content)
-        .build()
+        .with_skills(Vec::new()) // skills 放入 volatile 部分
+        .build_frozen()          // ⚠️ 只构建冻结部分
         .await
+    }
+
+    /// 查找可用的 flash 模型（用于摘要等辅助任务），找不到则返回 None
+    /// 检查逻辑: 模型名包含 "flash"（不区分大小写）
+    fn find_flash_model(&self) -> Option<String> {
+        // 优先从 APP_STATE 中查找
+        let state = crate::APP_STATE.try_read().ok()?;
+        for provider in &state.models_config.providers {
+            for model in &provider.models {
+                if model.to_lowercase().contains("flash") {
+                    return Some(model.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// 生成 AI 摘要（用于上下文压缩时的语义摘要）
+    /// 优先使用 flash 模型，降级到当前会话模型
+    /// 失败时返回 None（调用方会使用简单的占位符）
+    async fn generate_ai_summary(&self, keep_last: usize) -> Option<String> {
+        // 需要至少 4 条历史消息（除了前 2 条 + 要保留的后 keep_last 条之外还有内容）
+        let to_compress_end = self.session.messages.len().saturating_sub(keep_last);
+        if to_compress_end <= 3 {
+            return None;
+        }
+
+        // 前 2 条是系统上下文，skip 掉
+        let target_messages: Vec<&crate::agent::session::AgentMessage> = self.session.messages[2..to_compress_end]
+            .iter()
+            .filter(|m| m.role != "system") // 跳过 system 角色
+            .collect();
+
+        if target_messages.is_empty() {
+            return None;
+        }
+
+        // 如果待摘要消息太多，只取最近的部分（避免摘要本身的 token 消耗过大）
+        let start_idx = if target_messages.len() > 30 {
+            target_messages.len() - 30
+        } else {
+            0
+        };
+        let messages_to_summarize: Vec<&crate::agent::session::AgentMessage> =
+            target_messages[start_idx..].to_vec();
+
+        let msg_count = messages_to_summarize.len();
+
+        // 格式化为可读文本
+        let mut formatted = String::new();
+        for msg in &messages_to_summarize {
+            let role_tag = match msg.role.as_str() {
+                "user" => "User",
+                "assistant" => "Assistant",
+                "tool" => "  [Tool Result]",
+                _ => &msg.role,
+            };
+            let content_preview: &str = if msg.content.len() > 500 {
+                // 工具结果截断
+                if msg.role == "tool" {
+                    let preview: String = msg.content.chars().take(500).collect();
+                    // 保留末尾标记
+                    if msg.tool_name.is_some() {
+                        formatted.push_str(&format!("{} ({}): {}...\n", role_tag, msg.tool_name.as_ref().unwrap(), preview));
+                    } else {
+                        formatted.push_str(&format!("{}: {}...\n", role_tag, preview));
+                    }
+                    continue;
+                }
+                &msg.content[..500]
+            } else {
+                &msg.content
+            };
+
+            if msg.role == "tool" {
+                if let Some(ref name) = msg.tool_name {
+                    formatted.push_str(&format!("  [Tool: {}]\n{}\n", name, content_preview));
+                } else {
+                    formatted.push_str(&format!("  [Tool Result]\n{}\n", content_preview));
+                }
+            } else {
+                formatted.push_str(&format!("{}: {}\n", role_tag, content_preview));
+            }
+
+            // 限制总输入，避免摘要 LLM 调用本身消耗过大 token
+            if formatted.len() > 4000 {
+                formatted.push_str("...(历史记录截断)");
+                break;
+            }
+        }
+
+        if formatted.trim().is_empty() {
+            return None;
+        }
+
+        // 确定使用哪个模型
+        let flash_model = self.find_flash_model();
+        let use_model = flash_model.as_deref().unwrap_or(&self.session.model);
+        let is_flash = flash_model.is_some();
+
+        // 构建摘要 prompt
+        let system_msg = crate::llm::types::ChatMessage {
+            role: "system".to_string(),
+            content: serde_json::Value::String(
+                "You are a conversation summarizer. Create a concise but informative summary of the conversation history below. \
+                Focus on preserving actionable information: the main goal/task, key decisions, important findings, errors/blockers, \
+                what was completed vs in progress, and any code changes or configurations. \
+                Output ONLY the summary, no preamble or explanation. \
+                Use plain text, not markdown. Keep it under 300 words."
+                    .to_string(),
+            ),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+        };
+
+        let user_msg = crate::llm::types::ChatMessage {
+            role: "user".to_string(),
+            content: serde_json::Value::String(format!(
+                "Conversation history to summarize:\n\n{}", formatted
+            )),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning_content: None,
+        };
+
+        let summary_request = crate::llm::types::ChatRequest {
+            model: use_model.to_string(),
+            messages: vec![system_msg, user_msg],
+            temperature: Some(0.3),
+            stream: false,
+            tools: None,
+            stream_options: None,
+        };
+
+        tracing::info!(
+            "[Summary] 生成 AI 摘要: 模型={}{}, 待摘要消息={}, 输入长度={}",
+            use_model,
+            if is_flash { " (flash)" } else { " (降级/默认)" },
+            msg_count,
+            formatted.len()
+        );
+
+        // 调用 LLM（非流式）
+        match self.llm_client.chat(&summary_request).await {
+            Ok(resp) => {
+                let summary = resp.choices
+                    .first()
+                    .and_then(|c| c.message.as_ref())
+                    .and_then(|m| m.content.as_ref())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty());
+
+                if let Some(ref s) = summary {
+                    tracing::info!("[Summary] 摘要生成成功: {} 字符", s.len());
+                } else {
+                    tracing::warn!("[Summary] LLM 返回了空的摘要内容");
+                }
+                summary
+            }
+            Err(e) => {
+                tracing::warn!("[Summary] 摘要生成失败 (将使用占位符): {}", e);
+                None
+            }
+        }
+    }
+
+    /// 构建易变后缀（含 memory、日期、环境、技能）
+    async fn build_volatile_suffix(&self) -> String {
+        // 如果使用了 system_prompt_override，冻结部分已含所有内容
+        if self.session.system_prompt_override.is_some() {
+            return String::new();
+        }
+
+        let os_name = if cfg!(target_os = "windows") {
+            "Windows"
+        } else if cfg!(target_os = "macos") {
+            "macOS"
+        } else {
+            "Linux"
+        };
+
+        let (memory_content, skills) = {
+            let state = crate::APP_STATE.read().await;
+            let memory = state.memory_store.list_memories();
+            let mem = if memory.is_empty() { None } else { Some(memory) };
+            let skills: Vec<String> = self.skills.iter().map(|s| {
+                format!("{}: {}", s.name, s.description)
+            }).collect();
+            (mem, skills)
+        };
+
+        let builder = crate::agent::prompt::SystemPromptBuilder::new(
+            &self.config,
+            os_name,
+            self.session.workspace.as_deref(),
+        )
+        .with_skills(skills)
+        .with_memory(memory_content);
+
+        builder.build_volatile()
+    }
+
+    /// 机械截断：丢弃最早的一对 user+assistant 消息
+    #[allow(dead_code)]
+    fn truncate_messages_for_request(&mut self) {
+        if self.session.messages.len() <= 4 {
+            // 太短了无法截断
+            return;
+        }
+        // 跳过前 2 条（系统上下文），找到第一对 user+assistant
+        let mut remove_up_to = 2usize;
+        for i in 2..self.session.messages.len() - 2 {
+            if self.session.messages[i].role == "user" {
+                remove_up_to = i + 1;
+                // 看下一条是否是 assistant
+                if i + 1 < self.session.messages.len() && self.session.messages[i + 1].role == "assistant" {
+                    remove_up_to = i + 2;
+                }
+                break;
+            }
+        }
+        let removed = remove_up_to - 2;
+        self.session.messages.drain(2..remove_up_to);
+        tracing::warn!(
+            "[Preflight] 机械截断：移除了 {} 条消息，剩余 {} 条",
+            removed,
+            self.session.messages.len()
+        );
+    }
+
+    /// 预检：检查消息历史大小，必要时触发压缩
+    /// 在每次 LLM 调用前调用，防止超长请求浪费
+    fn maybe_compact_for_preflight(&mut self) {
+        // 估算消息总字符数（粗略）
+        let total_chars: usize = self.session.messages.iter()
+            .map(|m| m.content.len() + 100) // +100 为 JSON 开销
+            .sum();
+
+        // 如果估算超过阈值，强制压缩
+        if total_chars > Self::PREFLIGHT_CHAR_LIMIT {
+            let keep = if self.config.compact_keep > 0 { self.config.compact_keep } else { COMPACT_KEEP_LAST_FALLBACK };
+            tracing::warn!(
+                "[Preflight] 消息总字符估算 {} 超过 500KB，触发前置压缩",
+                total_chars
+            );
+            self.session.compact_in_place(keep, None);
+        }
     }
 
     pub fn session(&self) -> &AgentSession {
