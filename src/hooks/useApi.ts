@@ -134,9 +134,9 @@ export function startChatStream(
             } else if (parsed.type === 'error') {
               onError(payload?.message || '未知错误')
             }
-          } catch {
-            // 忽略解析错误
-          }
+        } catch (parseErr) {
+          console.warn('[SSE] 解析事件数据失败:', dataLine, parseErr)
+        }
         }
       }
     } catch (err: unknown) {

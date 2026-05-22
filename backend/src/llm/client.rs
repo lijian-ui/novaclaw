@@ -47,20 +47,20 @@ pub struct LlmClient {
 
 impl LlmClient {
     /// 创建新的 LLM 客户端
-    pub fn new(provider: ProviderConfig, timeout_secs: u32) -> Self {
+    pub fn new(provider: ProviderConfig, timeout_secs: u32) -> Result<Self, AppError> {
         let http = Client::builder()
             // 连接超时：连接不上时快速失败，不等完整 timeout
             .connect_timeout(std::time::Duration::from_secs(10))
             // 请求总超时（含连接、发送、等待响应）
             .timeout(std::time::Duration::from_secs(timeout_secs as u64))
             .build()
-            .expect("Failed to create HTTP client");
+            .map_err(|e| AppError::Internal(format!("创建 HTTP 客户端失败: {}", e)))?;
 
-        Self {
+        Ok(Self {
             http,
             provider: Arc::new(provider),
             timeout_secs,
-        }
+        })
     }
 
     /// 获取标准化后的 API Base URL

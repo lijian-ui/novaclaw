@@ -12,15 +12,12 @@ const INITIAL_CHAT_PERCENT = 0.40
 const INITIAL_FILE_PERCENT = 0.15
 
 function App() {
-  // 全局禁用所有输入框的拼写检查（波浪线）
+  // 全局禁用所有输入框的拼写检查（波浪线）- 使用 CSS 方式，避免 MutationObserver 性能开销
   useEffect(() => {
-    const disableSpellcheck = () => {
-      document.querySelectorAll('input, textarea').forEach(el => el.setAttribute('spellcheck', 'false'))
-    }
-    disableSpellcheck()
-    const observer = new MutationObserver(disableSpellcheck)
-    observer.observe(document.body, { childList: true, subtree: true })
-    return () => observer.disconnect()
+    const style = document.createElement('style')
+    style.textContent = 'input, textarea { spellcheck: false; -webkit-spellcheck: false; }'
+    document.head.appendChild(style)
+    return () => style.remove()
   }, [])
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)

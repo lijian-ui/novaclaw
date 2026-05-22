@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, Pencil, Trash2, X, Brain, ArrowLeft, ChevronDown, Check, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { API_BASE } from '@/hooks/useApi'
 
-const AGENTS_API = 'http://127.0.0.1:3000/api/agents'
+const AGENTS_API = `${API_BASE}/agents`
 
 interface SubAgentProfile {
   id: string
@@ -151,7 +152,7 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
                       <button onClick={async () => {
                           // 加载 SOUL.md 内容
                           try {
-                            const res = await fetch(`http://127.0.0.1:3000/api/agents/${profile.id}/soul`)
+                            const res = await fetch(`${API_BASE}/agents/${profile.id}/soul`)
                             const body = await res.json()
                             if (body.success) {
                               profile.system_prompt = body.data || ''
@@ -255,7 +256,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
   const [modelOpen, setModelOpen] = useState(false)
 
   useEffect(() => {
-    fetch('http://127.0.0.1:3000/api/models-config').then(r => r.json()).then(body => {
+    fetch(`${API_BASE}/models-config`).then(r => r.json()).then(body => {
       if (body.success && body.data?.providers) {
         const names: string[] = []
         for (const p of body.data.providers) {

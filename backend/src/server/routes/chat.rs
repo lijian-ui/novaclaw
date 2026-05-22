@@ -175,7 +175,10 @@ async fn chat(Json(req): Json<ChatRequestHttp>) -> Json<serde_json::Value> {
         Some(p) => p.clone(),
         None => return Json(serde_json::json!({"success": false, "message": format!("未找到模型 '{}' 的提供商配置", model)})),
     };
-    let llm_client = crate::llm::client::LlmClient::new(provider, state.config.llm_timeout);
+    let llm_client = match crate::llm::client::LlmClient::new(provider, state.config.llm_timeout) {
+        Ok(c) => c,
+        Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
+    };
     let history = state.session_store.get_messages(&session_id).unwrap_or_default();
     let mut agent_session = AgentSession::new(&make_session_title(&req.message), &model, None);
     agent_session.id = session_id.clone();
@@ -254,7 +257,10 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
         }
         for m in &history { if m.role != "system" { agent_session.push_message(storage_msg_to_agent_msg(m)); } }
 
-        let llm_client = crate::llm::client::LlmClient::new(provider, state.config.llm_timeout);
+        let llm_client = match crate::llm::client::LlmClient::new(provider, state.config.llm_timeout) {
+            Ok(c) => c,
+            Err(e) => { let _ = sse_tx.send(serde_json::json!({"type": "error", "data": {"message": e.to_string()}}).to_string()).await; return; }
+        };
         let skills = state.skills_loader.list_skills();
         let tool_registry = Arc::new(state.tool_registry.clone());
         let history_msg_count = agent_session.messages.len();
@@ -379,7 +385,10 @@ async fn test_connection(Json(req): Json<TestConnectionReq>) -> Json<serde_json:
     let provider = crate::config::ProviderConfig {
         name: "test".to_string(), api_key: req.api_key, base_url: req.base_url, models: vec![req.model.clone()],
     };
-    let client = crate::llm::client::LlmClient::new(provider, 30);
+    let client = match crate::llm::client::LlmClient::new(provider, 30) {
+        Ok(c) => c,
+        Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
+    };
     let chat_req = ChatRequest {
         model: req.model,
         messages: vec![crate::llm::types::ChatMessage { role: "user".to_string(), content: serde_json::Value::String("Hi".to_string()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None }],

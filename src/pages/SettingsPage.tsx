@@ -12,6 +12,7 @@ import {
 import { useTheme } from '@/contexts/ThemeContext'
 import { useTranslation } from 'react-i18next'
 import i18n from '../i18n'
+import { API_BASE } from '@/hooks/useApi'
 
 interface SettingsSection {
   id: string
@@ -26,7 +27,7 @@ const sections: SettingsSection[] = [
   { id: 'language', titleKey: 'settings.language', icon: Globe, iconColor: 'text-emerald-400' },
 ]
 
-const CONFIG_API = 'http://127.0.0.1:3000/api/config'
+const CONFIG_API = `${API_BASE}/config`
 
 interface AppConfig {
   max_iterations: number

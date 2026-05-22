@@ -174,7 +174,8 @@ impl IMGateway {
         };
 
         // 4. 创建 LLM 客户端和 Agent Runtime
-        let llm_client = LlmClient::new(provider, config.llm_timeout);
+        let llm_client = LlmClient::new(provider, config.llm_timeout)
+            .map_err(|e| AppError::Internal(format!("创建 LLM 客户端失败: {}", e)))?;
         let mut runtime = AgentRuntime::new(
             session,
             llm_client,

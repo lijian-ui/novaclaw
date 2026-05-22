@@ -83,9 +83,8 @@ interface ChatPanelProps {
 }
 
 // ---- Helpers ----
-let mockIdCounter = 0
 function genId() {
-  return `msg_${++mockIdCounter}_${Date.now()}`
+  return `msg_${crypto.randomUUID()}`
 }
 
 export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorkspacePathChange }: ChatPanelProps) {

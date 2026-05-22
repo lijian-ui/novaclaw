@@ -242,7 +242,8 @@ async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
         None => return Err("未找到可用的模型提供商".to_string()),
     };
 
-    let llm_client = crate::llm::client::LlmClient::new(provider, state.config.llm_timeout);
+    let llm_client = crate::llm::client::LlmClient::new(provider, state.config.llm_timeout)
+        .map_err(|e| format!("创建 LLM 客户端失败: {}", e))?;
     let tool_registry = Arc::new(state.tool_registry.clone());
     let config = state.config.clone();
     drop(state);

@@ -2,7 +2,8 @@ pub mod routes;
 pub mod ws;
 
 use axum::Router;
-use tower_http::{cors::{CorsLayer, Any}, services::ServeDir};
+use tower_http::cors::{CorsLayer, Any, AllowOrigin};
+use tower_http::services::ServeDir;
 use std::net::SocketAddr;
 use std::path::Path;
 
@@ -26,9 +27,18 @@ pub async fn start_with_opts(
     let host = host_override.unwrap_or_else(|| state.config.host.clone());
     drop(state);
 
-    // CORS 配置
+    // CORS 配置：限制为本地来源，避免安全风险
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(AllowOrigin::predicate(|origin: &axum::http::HeaderValue, _request_parts: &axum::http::request::Parts| {
+            let origin_str = origin.to_str().unwrap_or("");
+            origin_str == "http://localhost:5173"
+                || origin_str == "http://127.0.0.1:5173"
+                || origin_str == "http://localhost:3000"
+                || origin_str == "http://127.0.0.1:3000"
+                || origin_str == "tauri://localhost"
+                || origin_str.starts_with("http://localhost")
+                || origin_str.starts_with("http://127.0.0.1")
+        }))
         .allow_methods(Any)
         .allow_headers(Any);
 

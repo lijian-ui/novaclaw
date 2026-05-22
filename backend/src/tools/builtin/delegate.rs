@@ -87,7 +87,8 @@ pub async fn register(registry: &ToolRegistry) {
                         };
 
                         let llm_client =
-                            crate::llm::client::LlmClient::new(provider, config.llm_timeout);
+                            crate::llm::client::LlmClient::new(provider, config.llm_timeout)
+                                .map_err(|e| format!("创建 LLM 客户端失败: {}", e))?;
 
                         let sub_tools = if agent_config.enabled_tools.is_empty() {
                             full_registry

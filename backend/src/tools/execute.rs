@@ -47,7 +47,7 @@ pub struct CommandOutput {
 
 
 
-/// 检查命令是否被黑名单拦截（子串匹配，大小写不敏感）
+/// 检查命令是否被黑名单拦截（词边界匹配 + 子串匹配，大小写不敏感）
 fn check_command_deny<'a>(command: &str, patterns: &'a [String]) -> Option<&'a str> {
     if patterns.is_empty() {
         tracing::debug!("[ExecTool] 拒绝模式列表为空，不拦截命令: '{}'", command);
@@ -56,12 +56,36 @@ fn check_command_deny<'a>(command: &str, patterns: &'a [String]) -> Option<&'a s
     let cmd_lower = command.to_lowercase();
     for pattern in patterns {
         let pat_lower = pattern.to_lowercase();
-        if cmd_lower.contains(&pat_lower) {
-            tracing::warn!(
-                "[ExecTool] 命令 '{}' 匹配拒绝模式 '{}'，已拦截",
-                command, pattern
-            );
-            return Some(pattern);
+        // 对多词模式（含空格）使用精确子串匹配
+        if pat_lower.contains(' ') {
+            if cmd_lower.contains(&pat_lower) {
+                tracing::warn!(
+                    "[ExecTool] 命令 '{}' 匹配拒绝模式 '{}'，已拦截",
+                    command, pattern
+                );
+                return Some(pattern);
+            }
+        } else {
+            // 对单词模式使用词边界匹配，避免误匹配（如 "del" 误匹配 "model", "ssh" 误匹配 "cross-build"）
+            let mut search_start = 0;
+            while let Some(pos) = cmd_lower[search_start..].find(&pat_lower) {
+                let abs_pos = search_start + pos;
+                // 检查前边界：字符串开头 或 前一个字符不是字母数字
+                let prev_is_boundary = abs_pos == 0
+                    || !cmd_lower.as_bytes()[abs_pos - 1].is_ascii_alphanumeric();
+                // 检查后边界：字符串结尾 或 后一个字符不是字母数字
+                let after_end = abs_pos + pat_lower.len();
+                let next_is_boundary = after_end >= cmd_lower.len()
+                    || !cmd_lower.as_bytes()[after_end].is_ascii_alphanumeric();
+                if prev_is_boundary && next_is_boundary {
+                    tracing::warn!(
+                        "[ExecTool] 命令 '{}' 匹配拒绝模式 '{}'，已拦截",
+                        command, pattern
+                    );
+                    return Some(pattern);
+                }
+                search_start = abs_pos + 1;
+            }
         }
     }
     tracing::debug!("[ExecTool] 命令 '{}' 未匹配任何拒绝模式", command);
