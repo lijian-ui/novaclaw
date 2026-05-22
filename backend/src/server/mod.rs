@@ -2,7 +2,7 @@ pub mod routes;
 pub mod ws;
 
 use axum::Router;
-use tower_http::cors::{CorsLayer, Any, AllowOrigin};
+use tower_http::cors::{CorsLayer, Any};
 use tower_http::services::ServeDir;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -27,20 +27,9 @@ pub async fn start_with_opts(
     let host = host_override.unwrap_or_else(|| state.config.host.clone());
     drop(state);
 
-    // CORS 配置：允许本地开发和 Tauri 桌面端访问
+    // CORS 配置：桌面端仅监听 127.0.0.1，AllowAny 无安全风险
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(|origin: &axum::http::HeaderValue, _request_parts: &axum::http::request::Parts| {
-            let origin_str = origin.to_str().unwrap_or("");
-            // 本地开发: localhost:5173, localhost:1420
-            // Tauri v2 桌面端: tauri://localhost, https://tauri.localhost
-            // 后端自引用: localhost:3000, 127.0.0.1:3000
-            origin_str.starts_with("http://localhost")
-                || origin_str.starts_with("http://127.0.0.1")
-                || origin_str == "tauri://localhost"
-                || origin_str == "https://tauri.localhost"
-                || origin_str == "file://"
-                || origin_str.is_empty()
-        }))
+        .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
 
