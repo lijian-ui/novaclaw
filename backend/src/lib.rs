@@ -8,6 +8,7 @@ pub mod agent;
 pub mod memory;
 pub mod skills;
 pub mod cron;
+pub mod bg_task;
 pub mod mcp;
 pub mod server;
 pub mod security;
@@ -95,6 +96,9 @@ pub async fn initialize() {
                     model: None,
                     enabled_tools: tools.iter().map(|t| t.to_string()).collect(),
                     max_iterations: 0,
+                    temperature: None,
+                    compact_threshold: None,
+                    compact_keep: None,
                 };
                 if let Err(e) = config.save(&paths) {
                     tracing::warn!("创建默认智能体 '{}' 失败: {}", id, e);

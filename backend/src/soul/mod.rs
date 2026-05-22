@@ -58,6 +58,15 @@ pub struct AgentConfig {
     pub enabled_tools: Vec<String>,
     #[serde(default = "default_agent_iterations")]
     pub max_iterations: u32,
+    /// 生成温度（None 表示使用全局默认值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
+    /// 上下文压缩阈值（None 表示使用全局默认值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_threshold: Option<usize>,
+    /// 压缩后保留消息数（None 表示使用全局默认值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_keep: Option<usize>,
 }
 
 fn default_agent_iterations() -> u32 { 0 }

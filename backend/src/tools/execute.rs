@@ -13,10 +13,22 @@ pub static DENY_PATTERNS: once_cell::sync::Lazy<RwLock<Vec<String>>> =
 pub fn load_deny_patterns() -> Vec<String> {
     let patterns = match crate::APP_STATE.try_read() {
         Ok(state) => state.config.deny_patterns.clone(),
-        Err(_) => Vec::new(),
+        Err(_) => {
+            tracing::warn!("[ExecTool] APP_STATE try_read 失败（锁竞争），使用缓存的拒绝模式");
+            if let Ok(cached) = DENY_PATTERNS.read() {
+                if !cached.is_empty() {
+                    tracing::info!("[ExecTool] 从缓存加载 {} 条拒绝模式", cached.len());
+                    return cached.clone();
+                }
+            }
+            Vec::new()
+        }
     };
     if let Ok(mut cached) = DENY_PATTERNS.write() {
         *cached = patterns.clone();
+    }
+    if !patterns.is_empty() {
+        tracing::info!("[ExecTool] 已加载 {} 条拒绝模式: {:?}", patterns.len(), patterns);
     }
     patterns
 }
@@ -35,12 +47,22 @@ pub struct CommandOutput {
 
 /// 检查命令是否被黑名单拦截（子串匹配，大小写不敏感）
 fn check_command_deny<'a>(command: &str, patterns: &'a [String]) -> Option<&'a str> {
+    if patterns.is_empty() {
+        tracing::debug!("[ExecTool] 拒绝模式列表为空，不拦截命令: '{}'", command);
+        return None;
+    }
     let cmd_lower = command.to_lowercase();
     for pattern in patterns {
-        if cmd_lower.contains(&pattern.to_lowercase()) {
+        let pat_lower = pattern.to_lowercase();
+        if cmd_lower.contains(&pat_lower) {
+            tracing::warn!(
+                "[ExecTool] 命令 '{}' 匹配拒绝模式 '{}'，已拦截",
+                command, pattern
+            );
             return Some(pattern);
         }
     }
+    tracing::debug!("[ExecTool] 命令 '{}' 未匹配任何拒绝模式", command);
     None
 }
 
@@ -304,16 +326,20 @@ pub fn execute_command_safe(
     let timeout_secs = timeout_secs.min(300);
     // 如果未传入模式，从缓存/配置加载
     let patterns: Vec<String> = if deny_patterns.is_empty() {
-        load_deny_patterns()
+        let loaded = load_deny_patterns();
+        tracing::debug!("[ExecTool] 从配置加载 {} 条拒绝模式用于命令 '{}'", loaded.len(), command);
+        loaded
     } else {
+        tracing::debug!("[ExecTool] 使用传入的 {} 条拒绝模式用于命令 '{}'", deny_patterns.len(), command);
         deny_patterns.to_vec()
     };
 
     tracing::info!(
-        "[ExecTool] execute_command_safe: '{}' | workdir: {} | timeout: {}s",
+        "[ExecTool] execute_command_safe: '{}' | workdir: {} | timeout: {}s | deny_patterns: {}",
         command,
         workdir.display(),
         timeout_secs,
+        patterns.len(),
     );
 
     std::thread::spawn(move || {

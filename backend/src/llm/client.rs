@@ -23,18 +23,17 @@ impl StreamHandle {
 
 /// 对 base_url 做智能标准化：
 /// - 去除末尾多余斜杠
-/// - 如果 URL 路径中不含 `/v1`，自动追加 `/v1`（兼容 LM Studio / Ollama 等本地服务）
+/// - 如果 URL 路径中不含 `/v1`，自动追加 `/v1`（兼容 OpenAI 格式）
 pub fn normalize_base_url(base_url: &str) -> String {
     let trimmed = base_url.trim_end_matches('/');
-    // 如果已含 /v1/ 或以 /v1 结尾，直接返回
-    if trimmed.ends_with("/v1") || trimmed.contains("/v1/") {
+    // 如果已含 /v1 或 /v4（智谱）等版本路径，直接返回
+    if trimmed.ends_with("/v1") || trimmed.contains("/v1/")
+        || trimmed.ends_with("/v4") || trimmed.contains("/v4/")
+    {
         return trimmed.to_string();
     }
-    // 自动追加 /v1（Ollama / LM Studio 等兼容 OpenAI 的本地服务需要）
-    if trimmed.contains("localhost") || trimmed.contains("127.0.0.1") {
-        return format!("{}/v1", trimmed);
-    }
-    trimmed.to_string()
+    // 自动追加 /v1
+    format!("{}/v1", trimmed)
 }
 
 /// LLM API 客户端

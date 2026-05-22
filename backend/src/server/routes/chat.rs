@@ -206,9 +206,11 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
         let history = state.session_store.get_messages(&session_id).unwrap_or_default();
         let mut agent_session = AgentSession::new(&make_session_title(&req.message), &model, req.workspace.as_deref());
         agent_session.id = session_id.clone();
-        // 如果指定了智能体，从文件系统加载 SOUL.md 作为系统提示词
+        // 如果指定了智能体，从文件系统加载 SOUL.md 和 Agent 配置
+        let mut config = state.config.clone();
         if let Some(ref agent_id) = req.agent_id {
             let paths = crate::soul::SoulPaths::default();
+            // 加载 SOUL.md
             match crate::soul::AgentConfig::get_soul_content(&paths, agent_id) {
                 Ok(soul_content) => {
                     agent_session.system_prompt_override = Some(soul_content);
@@ -218,13 +220,24 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                     tracing::warn!("[Agent] 用户选择的智能体 '{}' 未找到 SOUL.md，使用默认提示词", agent_id);
                 }
             }
+            // 加载 agent.json 并合并温度/压缩配置
+            if let Ok(agent_cfg) = crate::soul::AgentConfig::load(&paths, agent_id) {
+                if let Some(t) = agent_cfg.temperature {
+                    config.temperature = t;
+                }
+                if let Some(c) = agent_cfg.compact_threshold {
+                    config.compact_threshold = c;
+                }
+                if let Some(c) = agent_cfg.compact_keep {
+                    config.compact_keep = c;
+                }
+            }
         } else {
             tracing::debug!("[Agent] 使用默认智能体（未指定 agent_id）");
         }
         for m in &history { if m.role != "system" { agent_session.push_message(storage_msg_to_agent_msg(m)); } }
 
         let llm_client = crate::llm::client::LlmClient::new(provider, state.config.llm_timeout);
-        let config = state.config.clone();
         let skills = state.skills_loader.list_skills();
         let tool_registry = Arc::new(state.tool_registry.clone());
         let history_msg_count = agent_session.messages.len();

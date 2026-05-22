@@ -81,7 +81,8 @@ impl Default for AppConfig {
             tavily_api_key: None,
             deny_patterns: vec![
                 // ─── 文件系统破坏 ───
-                "rm -rf".into(), "rmdir /s".into(), "del /f".into(), "rd /s".into(),
+                "rm -rf".into(), "rmdir /s".into(), "del /f".into(), "del ".into(), "rd /s".into(),
+                "Remove-Item".into(),
                 "format ".into(), "dd if=".into(),
                 // ─── 磁盘/分区 ───
                 "mkfs".into(), "diskpart".into(), "fdisk".into(), "mount".into(), "umount".into(),

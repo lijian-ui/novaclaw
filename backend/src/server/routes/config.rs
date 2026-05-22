@@ -55,17 +55,15 @@ async fn log_agent_selection(Path(agent_id): Path<String>) -> Json<serde_json::V
     Json(serde_json::json!({"success": true}))
 }
 
-/// 列出所有智能体（排除 default）
+/// 列出所有智能体（包含 default）
 async fn list_agents() -> Json<serde_json::Value> {
     let paths = SoulPaths::default();
     let agent_names = AgentConfig::list_all(&paths);
     let mut agents = Vec::new();
 
     for name in agent_names {
-        if name == "default" { continue; }
         match AgentConfig::load(&paths, &name) {
             Ok(config) => {
-                // 检查是否有 SOUL.md
                 let has_soul = std::path::Path::new(&paths.soul_path(&name)).exists();
                 agents.push(serde_json::json!({
                     "id": config.id,
@@ -74,11 +72,13 @@ async fn list_agents() -> Json<serde_json::Value> {
                     "model": config.model,
                     "enabled_tools": config.enabled_tools,
                     "max_iterations": config.max_iterations,
+                    "temperature": config.temperature,
+                    "compact_threshold": config.compact_threshold,
+                    "compact_keep": config.compact_keep,
                     "has_soul": has_soul,
                 }));
             }
             Err(_) => {
-                // 有目录但无 agent.json，仍然列出基本信息
                 let has_soul = std::path::Path::new(&paths.soul_path(&name)).exists();
                 agents.push(serde_json::json!({
                     "id": name,
@@ -87,6 +87,9 @@ async fn list_agents() -> Json<serde_json::Value> {
                     "model": null,
                     "enabled_tools": [],
                     "max_iterations": 0,
+                    "temperature": null,
+                    "compact_threshold": null,
+                    "compact_keep": null,
                     "has_soul": has_soul,
                 }));
             }
@@ -110,6 +113,9 @@ async fn upsert_agent(Path(agent_id): Path<String>, Json(body): Json<serde_json:
             .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default(),
         max_iterations: body.get("max_iterations").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+        temperature: body.get("temperature").and_then(|v| v.as_f64()),
+        compact_threshold: body.get("compact_threshold").and_then(|v| v.as_u64()).map(|v| v as usize),
+        compact_keep: body.get("compact_keep").and_then(|v| v.as_u64()).map(|v| v as usize),
     };
 
     match config.save(&paths) {
@@ -127,7 +133,16 @@ async fn upsert_agent(Path(agent_id): Path<String>, Json(body): Json<serde_json:
     }
 }
 
-/// 删除智能体
+/// 获取智能体的 SOUL.md 内容
+async fn get_agent_soul(Path(agent_id): Path<String>) -> Json<serde_json::Value> {
+    let paths = SoulPaths::default();
+    match AgentConfig::get_soul_content(&paths, &agent_id) {
+        Ok(content) => Json(serde_json::json!({"success": true, "data": content})),
+        Err(e) => Json(serde_json::json!({"success": false, "message": e})),
+    }
+}
+
+/// 删除智能体（default 不可删除）
 async fn delete_agent(Path(agent_id): Path<String>) -> Json<serde_json::Value> {
     let paths = SoulPaths::default();
     match AgentConfig::remove(&paths, &agent_id) {
@@ -147,5 +162,6 @@ pub fn routes() -> Router {
         .route("/set-agent/:agent_id", get(log_agent_selection))
         .route("/agents", get(list_agents))
         .route("/agents/:agent_id", put(upsert_agent))
+        .route("/agents/:agent_id/soul", get(get_agent_soul))
         .route("/agents/:agent_id", delete(delete_agent))
 }

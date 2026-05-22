@@ -105,6 +105,15 @@ pub async fn register(registry: &ToolRegistry) {
 
                         let mut sub_config = config.clone();
                         sub_config.max_iterations = agent_config.max_iterations as usize;
+                        if let Some(t) = agent_config.temperature {
+                            sub_config.temperature = t;
+                        }
+                        if let Some(c) = agent_config.compact_threshold {
+                            sub_config.compact_threshold = c;
+                        }
+                        if let Some(c) = agent_config.compact_keep {
+                            sub_config.compact_keep = c;
+                        }
 
                         let mut agent = crate::agent::runtime::AgentRuntime::new(
                             sub_session,

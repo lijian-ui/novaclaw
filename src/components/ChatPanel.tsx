@@ -71,7 +71,7 @@ function getProviderIcon(providerId: string): string | undefined {
   if (id.includes('ollama')) return ollamaIcon
   if (id.includes('deepseek')) return deepseekIcon
   if (id.includes('anthropic') || id === 'anthropic') return anthropicIcon
-  if (id.includes('zhipu') || id.includes('zhipuai') || id.includes('glm')) return zhipuIcon
+  if (id.includes('zhipu') || id.includes('zhipuai') || id.includes('glm') || id.includes('智谱')) return zhipuIcon
   return undefined
 }
 

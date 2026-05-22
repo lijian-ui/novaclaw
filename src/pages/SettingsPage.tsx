@@ -4,13 +4,9 @@ import {
   Sun,
   Moon,
   Monitor,
-  MessageSquare,
-  Bot,
   Palette,
-  Type,
   Globe,
   ChevronRight,
-  Cpu,
   Shield,
 } from 'lucide-react'
 import { useTheme } from '@/contexts/ThemeContext'
@@ -26,8 +22,6 @@ interface SettingsSection {
 
 const sections: SettingsSection[] = [
   { id: 'appearance', titleKey: 'settings.appearance', icon: Palette, iconColor: 'text-violet-400' },
-  { id: 'chat', titleKey: 'settings.chat', icon: MessageSquare, iconColor: 'text-blue-400' },
-  { id: 'agent', titleKey: 'settings.agent', icon: Cpu, iconColor: 'text-orange-400' },
   { id: 'security', titleKey: 'settings.security', icon: Shield, iconColor: 'text-red-400' },
   { id: 'language', titleKey: 'settings.language', icon: Globe, iconColor: 'text-emerald-400' },
 ]
@@ -154,154 +148,6 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
     </div>
   )
 
-  const renderChat = () => (
-    <div className="space-y-4">
-      {/* 默认助手 */}
-      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-blue-500/10">
-              <Bot className="w-4 h-4 text-blue-400" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-foreground/90">{t('settings.defaultAssistant')}</p>
-              <p className="text-xs text-foreground/40 mt-0.5">{t('settings.selectModel')}</p>
-            </div>
-          </div>
-          <select className="px-3 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none cursor-pointer">
-            <option>{t('settings.autoSelect')}</option>
-          </select>
-        </div>
-      </div>
-
-      {/* 消息发送 */}
-      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-foreground/5">
-              <MessageSquare className="w-4 h-4 text-foreground/50" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-foreground/90">{t('settings.enterSend')}</p>
-              <p className="text-xs text-foreground/40 mt-0.5">{t('settings.enterSendDesc')}</p>
-            </div>
-          </div>
-          <button
-            className={`relative w-8 h-4 rounded-full transition-colors ${
-              true ? 'bg-green-500' : 'bg-foreground/20'
-            }`}
-          >
-            <div
-              className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${
-                true ? 'translate-x-4' : 'translate-x-0.5'
-              }`}
-            />
-          </button>
-        </div>
-      </div>
-
-      {/* 代码高亮 */}
-      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-foreground/5">
-              <Type className="w-4 h-4 text-foreground/50" />
-            </div>
-            <div>
-              <p className="text-sm font-medium text-foreground/90">{t('settings.codeHighlight')}</p>
-              <p className="text-xs text-foreground/40 mt-0.5">{t('settings.codeHighlightDesc')}</p>
-            </div>
-          </div>
-          <button
-            className={`relative w-8 h-4 rounded-full transition-colors ${
-              true ? 'bg-green-500' : 'bg-foreground/20'
-            }`}
-          >
-            <div
-              className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${
-                true ? 'translate-x-4' : 'translate-x-0.5'
-              }`}
-            />
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-
-  const renderAgent = () => (
-    <div className="space-y-4">
-      {/* 最大迭代次数 */}
-      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <label className="text-sm font-medium text-foreground/90 mb-1 block">{t('settings.agentMaxIterations')}</label>
-        <p className="text-xs text-foreground/40 mb-3">{t('settings.agentMaxIterationsDesc')}</p>
-        <input
-          type="number" min={0} max={999}
-          value={config?.max_iterations ?? 0}
-          onChange={e => setConfig(prev => prev ? { ...prev, max_iterations: parseInt(e.target.value) || 0 } : null)}
-          className="w-24 px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 outline-none focus:border-foreground/20 transition-colors"
-        />
-      </div>
-
-      {/* Temperature */}
-      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <label className="text-sm font-medium text-foreground/90 mb-1 block">{t('settings.temperature')}</label>
-        <p className="text-xs text-foreground/40 mb-3">{t('settings.temperatureDesc')}</p>
-        <div className="flex items-center gap-4">
-          <input
-            type="range" min={0} max={200} step={5}
-            value={Math.round((config?.temperature ?? 0.7) * 100)}
-            onChange={e => setConfig(prev => prev ? { ...prev, temperature: parseInt(e.target.value) / 100 } : null)}
-            className="flex-1 h-1.5 bg-foreground/10 rounded-lg appearance-none cursor-pointer accent-blue-500"
-          />
-          <span className="text-sm text-foreground/70 font-mono w-10 text-right">{(config?.temperature ?? 0.7).toFixed(2)}</span>
-        </div>
-      </div>
-
-      {/* 上下文压缩 */}
-      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
-        <label className="text-sm font-medium text-foreground/90 mb-1 block">{t('settings.compactThreshold')}</label>
-        <p className="text-xs text-foreground/40 mb-3">{t('settings.compactThresholdDesc')}</p>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-foreground/50">{t('settings.compactAfter')}</span>
-          <input
-            type="number" min={0} max={999}
-            value={config?.compact_threshold ?? 40}
-            onChange={e => setConfig(prev => prev ? { ...prev, compact_threshold: parseInt(e.target.value) || 0 } : null)}
-            className="w-20 px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 outline-none focus:border-foreground/20 transition-colors"
-          />
-          <span className="text-xs text-foreground/50">{t('settings.compactMessages')}</span>
-          <span className="text-xs text-foreground/50 ml-1">{t('settings.keep')}</span>
-          <input
-            type="number" min={1} max={200}
-            value={config?.compact_keep ?? 20}
-            onChange={e => setConfig(prev => prev ? { ...prev, compact_keep: parseInt(e.target.value) || 20 } : null)}
-            className="w-20 px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 outline-none focus:border-foreground/20 transition-colors"
-          />
-          <span className="text-xs text-foreground/50">{t('settings.compactLatest')}</span>
-        </div>
-      </div>
-
-      {/* 统一保存按钮 */}
-      <div className="flex items-center gap-3">
-        <button
-          onClick={() => saveConfig({
-            max_iterations: config?.max_iterations ?? 0,
-            temperature: config?.temperature ?? 0.7,
-            compact_threshold: config?.compact_threshold ?? 40,
-            compact_keep: config?.compact_keep ?? 20,
-          })}
-          disabled={agentSaveStatus === 'saving'}
-          className="px-6 py-2 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-sm text-white font-medium transition-colors"
-        >
-          {agentSaveStatus === 'saving' ? t('settings.saving') : agentSaveStatus === 'saved' ? t('settings.saved') : t('settings.saveAgent')}
-        </button>
-        {agentSaveStatus === 'error' && (
-          <span className="text-xs text-red-400/80">{t('settings.saveError')}</span>
-        )}
-      </div>
-    </div>
-  )
-
   const renderLanguage = () => (
     <div className="space-y-4">
       {/* 界面语言 */}
@@ -383,8 +229,6 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
   const renderSection = () => {
     switch (activeSection) {
       case 'appearance': return renderAppearance()
-      case 'chat': return renderChat()
-      case 'agent': return renderAgent()
       case 'security': return renderSecurity()
       case 'language': return renderLanguage()
       default: return null

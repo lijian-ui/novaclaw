@@ -12,6 +12,9 @@ interface SubAgentProfile {
   model: string | null
   enabled_tools: string[]
   max_iterations: number
+  temperature: number | null
+  compact_threshold: number | null
+  compact_keep: number | null
 }
 
 interface AgentSettingsProps {
@@ -30,15 +33,17 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
     setLoading(true)
     fetch(AGENTS_API).then(r => r.json()).then(body => {
       if (body.success && Array.isArray(body.data)) {
-        // 将后端返回的列表转换为 SubAgentProfile（需要单独加载 SOUL.md）
         const items: SubAgentProfile[] = body.data.map((a: any) => ({
           id: a.id,
           name: a.name,
           description: a.description || '',
-          system_prompt: '', // SOUL.md 内容单独加载
+          system_prompt: '',
           model: a.model || null,
           enabled_tools: a.enabled_tools || [],
           max_iterations: a.max_iterations ?? 0,
+          temperature: a.temperature ?? null,
+          compact_threshold: a.compact_threshold ?? null,
+          compact_keep: a.compact_keep ?? null,
         }))
         setProfiles(items)
       }
@@ -54,8 +59,10 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
         model: profile.model || '',
         enabled_tools: profile.enabled_tools,
         max_iterations: profile.max_iterations,
+        temperature: profile.temperature,
+        compact_threshold: profile.compact_threshold,
+        compact_keep: profile.compact_keep,
       }
-      // system_prompt 单独发给后端写入 SOUL.md
       if (profile.system_prompt) {
         body.system_prompt = profile.system_prompt
       }
@@ -74,6 +81,7 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
   }, [loadProfiles])
 
   const handleDeleteProfile = useCallback(async (id: string) => {
+    if (id === 'default') return
     try {
       await fetch(`${AGENTS_API}/${id}`, { method: 'DELETE' })
       setDeleteConfirm(null)
@@ -114,35 +122,57 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
           </div>
         ) : (
           <div className="space-y-2">
-            {profiles.map((profile) => (
-              <div key={profile.id} className="rounded-xl border border-border bg-foreground/[0.02] p-3.5">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <Brain className="w-4 h-4 text-cyan-400 shrink-0" />
-                      <span className="text-sm font-medium text-foreground/90">{profile.name}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50 font-mono">{profile.id}</span>
+            {[...profiles].sort((a, b) => a.id === 'default' ? -1 : b.id === 'default' ? 1 : 0).map((profile) => {
+              const isDefault = profile.id === 'default'
+              return (
+                <div key={profile.id} className={`rounded-xl border p-3.5 ${
+                  isDefault ? 'border-orange-500/30 bg-orange-500/[0.03]' : 'border-border bg-foreground/[0.02]'
+                }`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <Brain className={`w-4 h-4 shrink-0 ${isDefault ? 'text-orange-400' : 'text-cyan-400'}`} />
+                        <span className="text-sm font-medium text-foreground/90">{isDefault ? '默认智能体' : profile.name}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50 font-mono">{profile.id}</span>
+                        {isDefault && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 border border-orange-500/20">默认</span>
+                        )}
+                      </div>
+                      <p className="text-xs text-foreground/50 mt-1 line-clamp-2">{isDefault && !profile.description ? '系统默认智能体' : profile.description}</p>
+                      <div className="flex items-center gap-3 mt-2 text-[10px] text-foreground/40 flex-wrap">
+                        <span>{profile.model || t('settings.inheritModel')}</span>
+                        <span>{profile.enabled_tools.length} 工具</span>
+                        <span>{t('settings.maxIter', { n: profile.max_iterations })}</span>
+                        {profile.temperature !== null && <span>温度 {profile.temperature.toFixed(2)}</span>}
+                        {profile.compact_threshold !== null && <span>压缩 {profile.compact_threshold}→{profile.compact_keep}</span>}
+                      </div>
                     </div>
-                    <p className="text-xs text-foreground/50 mt-1 line-clamp-2">{profile.description}</p>
-                    <div className="flex items-center gap-3 mt-2 text-[10px] text-foreground/40">
-                      <span>{profile.model || t('settings.inheritModel')}</span>
-                      <span>{profile.enabled_tools.length} 工具</span>
-                      <span>{t('settings.maxIter', { n: profile.max_iterations })}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={async () => {
+                          // 加载 SOUL.md 内容
+                          try {
+                            const res = await fetch(`http://127.0.0.1:3000/api/agents/${profile.id}/soul`)
+                            const body = await res.json()
+                            if (body.success) {
+                              profile.system_prompt = body.data || ''
+                            }
+                          } catch {}
+                          setEditingProfile(profile); setShowProfileForm(true)
+                        }}
+                        className="p-1.5 rounded hover:bg-foreground/10 transition-colors">
+                        <Pencil className="w-3.5 h-3.5 text-foreground/40" />
+                      </button>
+                      {!isDefault && (
+                        <button onClick={() => setDeleteConfirm(profile.id)}
+                          className="p-1.5 rounded hover:bg-red-500/10 transition-colors">
+                          <Trash2 className="w-3.5 h-3.5 text-red-400/60" />
+                        </button>
+                      )}
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button onClick={() => { setEditingProfile(profile); setShowProfileForm(true) }}
-                      className="p-1.5 rounded hover:bg-foreground/10 transition-colors">
-                      <Pencil className="w-3.5 h-3.5 text-foreground/40" />
-                    </button>
-                    <button onClick={() => setDeleteConfirm(profile.id)}
-                      className="p-1.5 rounded hover:bg-red-500/10 transition-colors">
-                      <Trash2 className="w-3.5 h-3.5 text-red-400/60" />
-                    </button>
                   </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
@@ -173,6 +203,32 @@ interface ProfileFormProps {
   onCancel: () => void
 }
 
+// 所有内置工具列表（不变常量）
+const ALL_TOOLS: { name: string; description: string }[] = [
+  { name: 'read_file', description: '读取文件内容' },
+  { name: 'write_file', description: '写入文件内容' },
+  { name: 'edit_file', description: '修改文件内容' },
+  { name: 'glob', description: '搜索匹配的文件路径' },
+  { name: 'grep', description: '在文件中搜索文本' },
+  { name: 'memory', description: '读取/保存长期记忆' },
+  { name: 'session_search', description: '搜索历史对话' },
+  { name: 'web_search', description: '搜索网络信息' },
+  { name: 'web_fetch', description: '抓取网页内容' },
+  { name: 'skill_view', description: '查看技能说明' },
+  { name: 'todo_write', description: '写入待办任务列表' },
+  { name: 'todo_list', description: '查看待办任务列表' },
+  { name: 'submit_plan', description: '提交执行计划' },
+  { name: 'search_replace', description: '搜索替换文件内容' },
+  { name: 'list_dir', description: '列出目录文件' },
+  { name: 'rename_file', description: '重命名文件' },
+  { name: 'apply_patch', description: '应用代码补丁' },
+  { name: 'execute_command', description: '执行终端命令（快速）' },
+  { name: 'execute_command_bg', description: '后台执行命令' },
+  { name: 'poll_command', description: '查询后台命令结果' },
+  { name: 'cron', description: '管理定时任务' },
+  { name: 'delegate_task', description: '委托任务给子智能体' },
+]
+
 function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
   const { t } = useTranslation()
   const isEditing = !!initial
@@ -183,33 +239,20 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
   const [description, setDescription] = useState(initial?.description ?? '')
   const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? '')
   const [model, setModel] = useState(initial?.model ?? '')
-  const [enabledTools, setEnabledTools] = useState<string[]>(initial?.enabled_tools ?? [])
+  // 空 enabled_tools 表示"全部工具可用"，前端默认全选
+  const [enabledTools, setEnabledTools] = useState<string[]>(
+    initial?.enabled_tools && initial.enabled_tools.length > 0
+      ? initial.enabled_tools
+      : ALL_TOOLS.map(t => t.name)
+  )
   const [maxIterations, setMaxIterations] = useState(initial?.max_iterations ?? 0)
+  const [temperature, setTemperature] = useState<number | null>(initial?.temperature ?? null)
+  const [compactThreshold, setCompactThreshold] = useState<number | null>(initial?.compact_threshold ?? null)
+  const [compactKeep, setCompactKeep] = useState<number | null>(initial?.compact_keep ?? null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
 
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [modelOpen, setModelOpen] = useState(false)
-  const [allTools] = useState<{ name: string; description: string }[]>(() => [
-    { name: 'read_file', description: '读取文件内容' },
-    { name: 'write_file', description: '写入文件内容' },
-    { name: 'edit_file', description: '修改文件内容' },
-    { name: 'glob', description: '搜索匹配的文件路径' },
-    { name: 'grep', description: '在文件中搜索文本' },
-    { name: 'memory', description: '读取/保存长期记忆' },
-    { name: 'session_search', description: '搜索历史对话' },
-    { name: 'web_search', description: '搜索网络信息' },
-    { name: 'web_fetch', description: '抓取网页内容' },
-    { name: 'skill_view', description: '查看技能说明' },
-    { name: 'todo', description: '管理待办事项' },
-    { name: 'search_replace', description: '搜索替换文件内容' },
-    { name: 'list_dir', description: '列出目录文件' },
-    { name: 'rename_file', description: '重命名文件' },
-    { name: 'apply_patch', description: '应用代码补丁' },
-    { name: 'lsp', description: '语言服务器协议查询' },
-    { name: 'execute_command', description: '执行终端命令' },
-    { name: 'cron', description: '管理定时任务' },
-    { name: 'delegate_task', description: '委托任务给子智能体' },
-  ])
 
   useEffect(() => {
     fetch('http://127.0.0.1:3000/api/models-config').then(r => r.json()).then(body => {
@@ -243,14 +286,22 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
         name: name.trim(), description: description.trim(),
         system_prompt: systemPrompt, model: model || null,
         enabled_tools: enabledTools, max_iterations: maxIterations,
+        temperature,
+        compact_threshold: compactThreshold,
+        compact_keep: compactKeep,
       })
     } finally { setSaving(false) }
   }
 
+  const isDefault = initial?.id === 'default'
+
   return (
     <div className="space-y-3 rounded-xl border border-border bg-foreground/[0.02] p-4">
       <div className="flex items-center justify-between">
-        <span className="text-sm font-medium text-foreground/90">{isEditing ? t('settings.editEmployee') : t('settings.addEmployee')}</span>
+        <span className="text-sm font-medium text-foreground/90">
+          {isEditing ? t('settings.editEmployee') : t('settings.addEmployee')}
+          {isDefault && <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400">默认智能体</span>}
+        </span>
         <button onClick={onCancel} className="p-1 rounded hover:bg-foreground/10"><X className="w-4 h-4 text-foreground/40" /></button>
       </div>
       <div className="grid grid-cols-2 gap-3">
@@ -271,7 +322,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
           className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20" />
       </div>
       <div>
-        <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeePrompt')}</label>
+        <label className="block text-[10px] text-foreground/50 mb-1">SOUL<span className="text-foreground/30 ml-1">（灵魂文件，定义智能体行为）</span></label>
         <textarea ref={promptRef} value={systemPrompt} onChange={e => setSystemPrompt(e.target.value)}
           onInput={() => { const el = promptRef.current; if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px' } }}
           rows={3}
@@ -310,10 +361,65 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
           <span className="text-[9px] text-foreground/30 mt-0.5 block">{t('settings.employeeIterationsDesc')}</span>
         </div>
       </div>
+
+      {/* 温度设置 */}
+      <div>
+        <label className="block text-[10px] text-foreground/50 mb-1">生成温度
+          <span className="text-foreground/30 ml-1">（留空使用全局默认值 0.70）</span>
+        </label>
+        <div className="flex items-center gap-3">
+          <input
+            type="range" min={0} max={200} step={5}
+            value={temperature !== null ? Math.round(temperature * 100) : 70}
+            onChange={e => setTemperature(parseInt(e.target.value) / 100)}
+            className="flex-1 h-1.5 bg-foreground/10 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+          />
+          <span className="text-xs text-foreground/70 font-mono w-16 text-right">
+            {temperature !== null ? temperature.toFixed(2) : '默认'}
+          </span>
+          {temperature !== null && (
+            <button onClick={() => setTemperature(null)}
+              className="text-[10px] px-1.5 py-0.5 rounded hover:bg-foreground/10 text-foreground/40">
+              重置
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* 上下文压缩设置 */}
+      <div>
+        <label className="block text-[10px] text-foreground/50 mb-1">上下文压缩
+          <span className="text-foreground/30 ml-1">（留空使用全局默认值）</span>
+        </label>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-[10px] text-foreground/50">超过</span>
+          <input
+            type="number" min={0} max={999} placeholder="40"
+            value={compactThreshold ?? ''}
+            onChange={e => setCompactThreshold(e.target.value ? parseInt(e.target.value) : null)}
+            className="w-16 px-2 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20"
+          />
+          <span className="text-[10px] text-foreground/50">条消息时压缩，保留</span>
+          <input
+            type="number" min={1} max={200} placeholder="20"
+            value={compactKeep ?? ''}
+            onChange={e => setCompactKeep(e.target.value ? parseInt(e.target.value) : null)}
+            className="w-16 px-2 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20"
+          />
+          <span className="text-[10px] text-foreground/50">条</span>
+          {(compactThreshold !== null || compactKeep !== null) && (
+            <button onClick={() => { setCompactThreshold(null); setCompactKeep(null) }}
+              className="text-[10px] px-1.5 py-0.5 rounded hover:bg-foreground/10 text-foreground/40">
+              重置
+            </button>
+          )}
+        </div>
+      </div>
+
       <div>
         <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeeTools')}</label>
         <div className="rounded-lg bg-foreground/5 border border-border overflow-hidden">
-          {allTools.length === 0 ? (
+          {ALL_TOOLS.length === 0 ? (
             <div className="text-xs text-foreground/40 py-3 px-3">{t('settings.employeeToolsLoading')}</div>
           ) : (
             <table className="w-full text-xs">
@@ -322,10 +428,10 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
                   <th className="w-10 px-3 py-2 text-left">
                     <input
                       type="checkbox"
-                      checked={enabledTools.length === allTools.length}
+                      checked={enabledTools.length === ALL_TOOLS.length}
                       onChange={() => {
-                        if (enabledTools.length === allTools.length) setEnabledTools([])
-                        else setEnabledTools(allTools.map(t => t.name))
+                        if (enabledTools.length === ALL_TOOLS.length) setEnabledTools([])
+                        else setEnabledTools(ALL_TOOLS.map(t => t.name))
                       }}
                       className="w-3.5 h-3.5 rounded border-foreground/30 accent-amber-500"
                     />
@@ -335,7 +441,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
                 </tr>
               </thead>
               <tbody>
-                {allTools.map(tool => {
+                {ALL_TOOLS.map(tool => {
                   const sel = enabledTools.includes(tool.name)
                   return (
                     <tr key={tool.name} onClick={() => toggleTool(tool.name)}
@@ -354,7 +460,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
           )}
           <div className="flex items-center justify-between px-3 py-2 border-t border-border">
             <span className="text-[10px] text-foreground/30">
-              {enabledTools.length === 0 ? t('settings.employeeToolsAll') : t('settings.employeeToolsCount', { n: enabledTools.length, total: allTools.length })}
+              {enabledTools.length === 0 ? t('settings.employeeToolsAll') : t('settings.employeeToolsCount', { n: enabledTools.length, total: ALL_TOOLS.length })}
             </span>
             {enabledTools.length > 0 && (
               <button onClick={() => setEnabledTools([])} className="text-[10px] text-red-400/60 hover:text-red-400">{t('settings.employeeToolsClear')}</button>
