@@ -101,7 +101,7 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
         </div>
         {!showProfileForm && (
           <button onClick={() => { setEditingProfile(null); setShowProfileForm(true) }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-400 text-xs transition-colors">
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 text-white text-xs font-medium transition-colors">
             <Plus className="w-3.5 h-3.5" />{t('agentSettings.addSubAgent')}
           </button>
         )}
@@ -471,7 +471,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
       </div>
       <div className="flex items-center gap-2 pt-1">
         <button onClick={handleSubmit} disabled={saving || !id.trim() || !name.trim()}
-          className="px-4 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-xs text-white font-medium">{saving ? t('settings.saving') : isEditing ? t('settings.save') : t('settings.add')}</button>
+          className="px-4 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-xs text-white font-medium">{saving ? t('settings.saving') : isEditing ? t('settings.save') : t('settings.add')}</button>
         <button onClick={onCancel} className="px-4 py-1.5 rounded-lg bg-foreground/5 hover:bg-foreground/10 text-xs text-foreground/60">{t('settings.cancel')}</button>
       </div>
     </div>

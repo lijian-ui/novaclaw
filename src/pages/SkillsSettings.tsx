@@ -69,7 +69,7 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
         <button
           onClick={() => fileInputRef.current?.click()}
           disabled={uploading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 text-xs transition-colors disabled:opacity-50"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-500 hover:bg-blue-400 disabled:opacity-50 text-white text-xs font-medium transition-colors"
         >
           <Upload className="w-3.5 h-3.5" />
           {uploading ? t('settings.uploading') : t('settings.uploadSkill')}

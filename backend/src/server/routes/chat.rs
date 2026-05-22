@@ -395,10 +395,9 @@ async fn test_connection(Json(req): Json<TestConnectionReq>) -> Json<serde_json:
         temperature: None, stream: false, tools: None, stream_options: None,
     };
     match client.chat(&chat_req).await {
-        Ok(resp) => {
-            let msg = resp.choices.first().and_then(|c| c.message.as_ref()).and_then(|m| m.content.as_deref()).unwrap_or("");
-            Json(serde_json::json!({"success": true, "message": msg}))
-        },
+        Ok(_resp) => {
+            Json(serde_json::json!({"success": true, "message": "连接成功"}))
+        }
         Err(e) => Json(serde_json::json!({"success": false, "message": e.to_string()})),
     }
 }
