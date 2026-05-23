@@ -398,6 +398,6 @@ pub fn init() {
         .with(file_layer)
         .with(broadcast_layer);
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("设置全局 tracing 订阅者失败");
+    // 使用 try_init 避免在已有全局订阅者时 panic（如 Tauri 桌面端）
+    tracing::subscriber::set_global_default(subscriber).ok();
 }

@@ -82,8 +82,9 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // 先初始化后端（确保 Soul/智能体等目录创建），再启动 HTTP 服务
+            // 先初始化后端（日志、Soul/智能体等目录），再启动 HTTP 服务
             tauri::async_runtime::spawn(async move {
+                novaclaw_backend::logging::init();
                 novaclaw_backend::initialize().await;
                 novaclaw_backend::start_server().await;
             });
