@@ -99,6 +99,9 @@ notify = { version = "6", optional = true }
 # ZIP 解压（技能上传）
 zip = "2"
 
+[features]
+tauri = []
+
 [profile.release]
 opt-level = 3
 lto = true

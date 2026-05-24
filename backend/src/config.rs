@@ -542,12 +542,26 @@ pub fn ensure_directories_exists() {
         get_cron_dir(),
     ];
 
+    tracing::info!("=== 目录初始化 ===");
+    tracing::info!("基础目录: {:?}", get_base_dir());
+    tracing::info!("配置目录: {:?}", get_config_dir());
+    tracing::info!("工作目录: {:?}", get_workspace_dir());
+    tracing::info!("技能目录: {:?}", get_skills_dir());
+    tracing::info!("记忆目录: {:?}", get_memories_dir());
+    tracing::info!("会话目录: {:?}", get_sessions_dir());
+    tracing::info!("日志目录: {:?}", get_logs_dir());
+    tracing::info!("定时任务目录: {:?}", get_cron_dir());
+    tracing::info!("=================");
+
     for dir in dirs {
         if !dir.exists() {
+            tracing::info!("目录不存在，尝试创建: {:?}", dir);
             match fs::create_dir_all(&dir) {
-                Ok(_) => tracing::info!("创建目录: {:?}", dir),
+                Ok(_) => tracing::info!("成功创建目录: {:?}", dir),
                 Err(e) => tracing::error!("创建目录失败: {} - {:?}", e, dir),
             }
+        } else {
+            tracing::info!("目录已存在: {:?}", dir);
         }
     }
 }

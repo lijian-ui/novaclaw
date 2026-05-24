@@ -4,7 +4,7 @@ use axum::{
     Json, Router,
 };
 use crate::APP_STATE;
-use crate::config::ModelsConfig;
+use crate::config::{ModelsConfig, ProviderConfig};
 
 /// 列出所有模型
 async fn list_models() -> Json<serde_json::Value> {
@@ -85,20 +85,39 @@ async fn get_models_config() -> Json<serde_json::Value> {
 }
 
 /// 保存完整的模型配置
-async fn save_models_config(Json(config): Json<ModelsConfig>) -> Json<serde_json::Value> {
+async fn save_models_config(Json(input): Json<serde_json::Value>) -> Json<serde_json::Value> {
+    tracing::info!("[HTTP API] 收到保存模型配置请求: {:?}", input);
+    
+    let providers = input["providers"].as_array()
+        .map(|arr| arr.clone())
+        .unwrap_or_default();
+    let default_model = input["default_model"].as_str().unwrap_or("").to_string();
+    
+    let config = ModelsConfig {
+        default_model,
+        providers: providers.iter()
+            .filter_map(|p| {
+                serde_json::from_value::<ProviderConfig>(p.clone()).ok()
+            })
+            .collect(),
+    };
+    
+    tracing::info!("[HTTP API] 解析后的配置: {:?}", config);
+    
     let mut state = APP_STATE.write().await;
     state.models_config = config;
+    
     match state.models_config.save() {
         Ok(_) => {
             tracing::info!(
-                "模型配置已保存 ({} 个提供商, 默认模型: {:?})",
+                "[HTTP API] 模型配置已保存 ({} 个提供商, 默认模型: {:?})",
                 state.models_config.providers.len(),
                 state.models_config.default_model
             );
             Json(serde_json::json!({ "success": true }))
         }
         Err(e) => {
-            tracing::error!("保存模型配置失败: {}", e);
+            tracing::error!("[HTTP API] 保存模型配置失败: {}", e);
             Json(serde_json::json!({
                 "success": false,
                 "message": format!("保存失败: {}", e),

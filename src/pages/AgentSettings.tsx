@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, Pencil, Trash2, X, Brain, ArrowLeft, ChevronDown, Check, Loader2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
-import { API_BASE } from '@/hooks/useApi'
-
-const AGENTS_API = `${API_BASE}/agents`
+import { getApiBase } from '@/hooks/useApi'
 
 interface SubAgentProfile {
   id: string
@@ -32,7 +30,7 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
 
   const loadProfiles = useCallback(() => {
     setLoading(true)
-    fetch(AGENTS_API).then(r => r.json()).then(body => {
+    fetch(`${getApiBase()}/agents`).then(r => r.json()).then(body => {
       if (body.success && Array.isArray(body.data)) {
         const items: SubAgentProfile[] = body.data.map((a: any) => ({
           id: a.id,
@@ -67,7 +65,7 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
       if (profile.system_prompt) {
         body.system_prompt = profile.system_prompt
       }
-      const res = await fetch(`${AGENTS_API}/${profile.id}`, {
+      const res = await fetch(`${getApiBase()}/agents/${profile.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -84,7 +82,7 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
   const handleDeleteProfile = useCallback(async (id: string) => {
     if (id === 'default') return
     try {
-      await fetch(`${AGENTS_API}/${id}`, { method: 'DELETE' })
+      await fetch(`${getApiBase()}/agents/${id}`, { method: 'DELETE' })
       setDeleteConfirm(null)
       loadProfiles()
     } catch {}
@@ -152,7 +150,7 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
                       <button onClick={async () => {
                           // 加载 SOUL.md 内容
                           try {
-                            const res = await fetch(`${API_BASE}/agents/${profile.id}/soul`)
+                            const res = await fetch(`${getApiBase()}/agents/${profile.id}/soul`)
                             const body = await res.json()
                             if (body.success) {
                               profile.system_prompt = body.data || ''
@@ -256,7 +254,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
   const [modelOpen, setModelOpen] = useState(false)
 
   useEffect(() => {
-    fetch(`${API_BASE}/models-config`).then(r => r.json()).then(body => {
+    fetch(`${getApiBase()}/models-config`).then(r => r.json()).then(body => {
       if (body.success && body.data?.providers) {
         const names: string[] = []
         for (const p of body.data.providers) {

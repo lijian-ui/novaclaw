@@ -12,7 +12,7 @@ import {
 import { useTheme } from '@/contexts/ThemeContext'
 import { useTranslation } from 'react-i18next'
 import i18n from '../i18n'
-import { API_BASE } from '@/hooks/useApi'
+import { getApiBase } from '@/hooks/useApi'
 
 interface SettingsSection {
   id: string
@@ -26,8 +26,6 @@ const sections: SettingsSection[] = [
   { id: 'security', titleKey: 'settings.security', icon: Shield, iconColor: 'text-red-400' },
   { id: 'language', titleKey: 'settings.language', icon: Globe, iconColor: 'text-emerald-400' },
 ]
-
-const CONFIG_API = `${API_BASE}/config`
 
 interface AppConfig {
   max_iterations: number
@@ -55,7 +53,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
 
   // 加载配置
   useEffect(() => {
-    fetch(CONFIG_API).then(r => r.json()).then(body => {
+    fetch(`${getApiBase()}/config`).then(r => r.json()).then(body => {
       if (body.success && body.data) {
         setConfig(body.data)
       }
@@ -80,7 +78,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
     setAgentSaveStatus('saving')
     try {
       const merged = { ...config, ...updates }
-      const res = await fetch(CONFIG_API, {
+      const res = await fetch(`${getApiBase()}/config`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(merged),

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { ArrowLeft, Info, AlertTriangle, XCircle, Bug, Terminal, Loader2, BugOff } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { getApiBase } from '@/hooks/useApi'
 
 type LogLevel = 'all' | 'info' | 'warn' | 'error' | 'debug'
 
@@ -13,7 +14,6 @@ interface LogEntry {
 }
 
 const WS_URL = 'ws://127.0.0.1:3000/ws/logs'
-const API_BASE = 'http://127.0.0.1:3000/api/logs'
 
 const levelConfig: Record<string, { label: string; icon: React.ElementType; color: string }> = {
   all: { label: '全部', icon: Terminal, color: '' },
@@ -56,7 +56,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
   const loadHistory = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await fetch(`${API_BASE}`)
+      const res = await fetch(`${getApiBase()}/logs`)
       const data = await res.json()
       if (data.success && Array.isArray(data.data)) {
         setLogs(data.data.map((entry: any) => {
@@ -125,7 +125,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
   // 挂载时同步后端日志级别（如果之前开启了 Debug）
   useEffect(() => {
     if (debugMode) {
-      fetch(`${API_BASE}/level`, {
+      fetch(`${getApiBase()}/logs/level`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ level: 'debug' }),
@@ -139,7 +139,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
     setDebugMode(next)
     localStorage.setItem('novaclaw_log_debug', String(next))
     try {
-      await fetch(`${API_BASE}/level`, {
+      await fetch(`${getApiBase()}/logs/level`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ level: next ? 'debug' : 'info' }),

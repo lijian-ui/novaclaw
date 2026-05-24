@@ -47,8 +47,8 @@
       },
       "nsis": {
         "installerIcon": "icons/icon.ico",
-        "headerImage": "icons/header.bmp",
-        "sidebarImage": "icons/sidebar.bmp",
+        "headerImage": null,
+        "sidebarImage": null,
         "installMode": "currentUser",
         "displayLanguageSelector": true,
         "languages": ["SimpChinese", "English"]

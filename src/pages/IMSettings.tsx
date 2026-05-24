@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, ArrowLeft, Webhook } from 'lucide-react'
-import { API_BASE } from '@/hooks/useApi'
+import { getApiBase } from '@/hooks/useApi'
 import { useTranslation } from 'react-i18next'
 import dingtalkIcon from '@/assets/dingtalk.png'
 import feishuIcon from '@/assets/feishu.png'
@@ -75,7 +75,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
 
   const loadChannels = useCallback(async () => {
     try {
-      const response = await fetch(`${API_BASE}/config/im_channels`)
+      const response = await fetch(`${getApiBase()}/config/im_channels`)
       if (response.ok) {
         const data = await response.json()
         setChannels(data.channels || [])
@@ -94,7 +94,7 @@ export function IMSettings({ onBack }: IMSettingsProps) {
     setChannels(newChannels)
     setSaveError(null)
     try {
-      const response = await fetch(`${API_BASE}/config/im_channels`, {
+      const response = await fetch(`${getApiBase()}/config/im_channels`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ channels: newChannels }),

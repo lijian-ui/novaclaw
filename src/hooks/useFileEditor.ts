@@ -1,13 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type { EditorTab, UseFileEditorReturn } from '@/types/fileEditor'
 import { getFileWebSocket, onFileWsMessage } from '@/hooks/useFileWs'
-import { API_BASE } from '@/hooks/useApi'
+import { getApiBase } from '@/hooks/useApi'
 
 const SAVE_DEBOUNCE_MS = 1500
 
 /** REST API 文件操作（统一走 Axum 后端，三平台通用） */
 async function apiReadFile(path: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/files/read`, {
+  const res = await fetch(`${getApiBase()}/files/read`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path }),
   })
@@ -17,7 +17,7 @@ async function apiReadFile(path: string): Promise<string> {
 }
 
 async function apiWriteFile(path: string, content: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/files/write`, {
+  const res = await fetch(`${getApiBase()}/files/write`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ path, content }),
   })

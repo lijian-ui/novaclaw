@@ -129,15 +129,32 @@ pub async fn get_config_json() -> Result<String, String> {
 /// 保存应用配置
 #[tauri::command]
 pub async fn save_config_json(config_json: String) -> Result<(), String> {
+    tracing::info!("开始保存项目配置...");
+    let config_path = novaclaw_backend::config::AppConfig::config_path();
+    tracing::info!("配置文件路径: {:?}", config_path);
+    
     let config: novaclaw_backend::config::AppConfig =
-        serde_json::from_str(&config_json).map_err(|e| format!("反序列化错误: {}", e))?;
+        serde_json::from_str(&config_json).map_err(|e| {
+            tracing::error!("反序列化配置失败: {}", e);
+            format!("反序列化错误: {}", e)
+        })?;
+    
     let mut state = APP_STATE.write().await;
-    state.config = config;
-    state.config.save().map_err(|e| format!("保存失败: {}", e))?;
-    let reloaded = novaclaw_backend::config::AppConfig::reload();
-    state.config = reloaded;
-    tracing::info!("Tauri 项目配置已保存并重新加载");
-    Ok(())
+    state.config = config.clone();
+    
+    match state.config.save() {
+        Ok(_) => {
+            tracing::info!("项目配置已成功保存到 {:?}", config_path);
+            let reloaded = novaclaw_backend::config::AppConfig::reload();
+            state.config = reloaded;
+            tracing::info!("项目配置已重新加载");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("保存项目配置失败: {} (路径: {:?})", e, config_path);
+            Err(format!("保存失败: {}", e))
+        }
+    }
 }
 
 /// 获取模型配置（从文件重新加载后返回 JSON 字符串）
@@ -154,15 +171,32 @@ pub async fn get_models_json() -> Result<String, String> {
 /// 保存模型配置
 #[tauri::command]
 pub async fn save_models_json(models_json: String) -> Result<(), String> {
+    tracing::info!("开始保存模型配置...");
+    let models_path = novaclaw_backend::config::ModelsConfig::models_path();
+    tracing::info!("模型配置文件路径: {:?}", models_path);
+    
     let config: novaclaw_backend::config::ModelsConfig =
-        serde_json::from_str(&models_json).map_err(|e| format!("反序列化错误: {}", e))?;
+        serde_json::from_str(&models_json).map_err(|e| {
+            tracing::error!("反序列化模型配置失败: {}", e);
+            format!("反序列化错误: {}", e)
+        })?;
+    
     let mut state = APP_STATE.write().await;
-    state.models_config = config;
-    state.models_config.save().map_err(|e| format!("保存失败: {}", e))?;
-    let reloaded = novaclaw_backend::config::ModelsConfig::reload();
-    state.models_config = reloaded;
-    tracing::info!("Tauri 模型配置已保存并重新加载");
-    Ok(())
+    state.models_config = config.clone();
+    
+    match state.models_config.save() {
+        Ok(_) => {
+            tracing::info!("模型配置已成功保存到 {:?}", models_path);
+            let reloaded = novaclaw_backend::config::ModelsConfig::reload();
+            state.models_config = reloaded;
+            tracing::info!("Tauri 模型配置已保存并重新加载");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("保存模型配置失败: {} (路径: {:?})", e, models_path);
+            Err(format!("保存失败: {}", e))
+        }
+    }
 }
 
 /// 获取数据目录（基础目录）

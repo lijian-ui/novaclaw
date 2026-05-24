@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import type { FileEntry } from '@/types/fileEditor'
 import { getFileWebSocket, onFileWsMessage, sendFileWs } from '@/hooks/useFileWs'
-import { API_BASE } from '@/hooks/useApi'
+import { getApiBase } from '@/hooks/useApi'
 import { ConfirmDialog } from './ui/ConfirmDialog'
 
 interface FileExplorerProps {
@@ -23,7 +23,7 @@ interface ContextMenuState {
 
 /** REST API 文件操作（统一走 Axum 后端，三平台通用） */
 async function apiPost<T>(endpoint: string, body: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE}${endpoint}`, {
+  const res = await fetch(`${getApiBase()}${endpoint}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -58,7 +58,7 @@ async function apiCopy(source: string, dest: string): Promise<void> {
 }
 
 async function apiGetPaths(): Promise<Record<string, string>> {
-  const res = await fetch(`${API_BASE}/paths`)
+  const res = await fetch(`${getApiBase()}/paths`)
   const json = await res.json()
   if (!json.success) throw new Error(json.message || '获取路径失败')
   return json.data

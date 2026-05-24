@@ -84,6 +84,7 @@ pub async fn start_with_opts(
 }
 
 /// 前端静态文件托管处理
+#[cfg(not(feature = "tauri"))]
 fn static_files_handler() -> Router {
     // 按顺序尝试多个可能的前端资源目录
     let possible_dirs = [
@@ -104,6 +105,13 @@ fn static_files_handler() -> Router {
     }
 
     tracing::warn!("No frontend dist directory found. Static files will not be served.");
+    Router::new()
+}
+
+/// Tauri 环境下不提供静态文件服务（前端资源已嵌入）
+#[cfg(feature = "tauri")]
+fn static_files_handler() -> Router {
+    tracing::info!("Running in Tauri mode, static files served by Tauri.");
     Router::new()
 }
 

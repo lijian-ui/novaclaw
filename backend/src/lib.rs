@@ -235,7 +235,7 @@ pub async fn initialize() {
 }
 
 /// 启动 Axum HTTP/WebSocket 服务器（供桌面版调用）
+/// 注意：此函数假设 `initialize()` 已经在调用前执行过
 pub async fn start_server() {
-    initialize().await;
     server::start().await;
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Folder, FolderOpen, ChevronRight, ChevronDown, RefreshCw, HardDrive } from 'lucide-react'
-import { API_BASE } from '@/hooks/useApi'
+import { getApiBase } from '@/hooks/useApi'
 
 interface DirEntry {
   name: string
@@ -37,7 +37,7 @@ export function TreeBrowser({ initialPath, onSelect, onCancel }: TreeBrowserProp
     }))
 
     try {
-      const res = await fetch(`${API_BASE}/files/list-tree`, {
+      const res = await fetch(`${getApiBase()}/files/list-tree`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path }),

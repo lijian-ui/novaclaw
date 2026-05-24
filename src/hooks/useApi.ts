@@ -3,32 +3,42 @@ import axios from 'axios'
 import type { Session, Message, Model, Skill, CronJob, Layout, ChatRequest, ChatResponse, Config, ProviderConfig } from '@/types'
 
 // 后端地址：Tauri 桌面端直连 3000 端口，浏览器开发环境用 Vite proxy
-const isTauri = (): boolean =>
-  typeof window !== 'undefined' && !!(window as any).__TAURI__?.invoke
+export const getApiBase = (): string => {
+  // Vite 的 import.meta.env.DEV 在开发模式下为 true，生产构建为 false
+  // Tauri 桌面端使用生产构建，所以 DEV=false，走直连后端
+  // 浏览器开发模式 DEV=true，走 Vite proxy
+  const isDevelopment = typeof import.meta !== 'undefined' && (import.meta as any).env?.DEV === true
 
-const API_HOST = isTauri() ? 'http://127.0.0.1:3000' : ''
-export const API_BASE = `${API_HOST}/api`
+  if (isDevelopment) {
+    return '/api'
+  }
+  // Tauri 桌面端或生产环境：直连后端
+  return 'http://127.0.0.1:3000/api'
+}
 
 const api = axios.create({
-  baseURL: API_BASE,
   timeout: 30000,
 })
 
-// 调试日志：打印所有 API 请求的完整 URL 及响应状态
+// 请求拦截器：动态设置 baseURL
 api.interceptors.request.use(config => {
-  console.debug(`[API] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`)
+  // 每次请求时动态检测是否在 Tauri 环境中
+  if (!config.baseURL || config.baseURL === '/api') {
+    config.baseURL = getApiBase()
+  }
+  console.log(`[API Request] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`)
   return config
 })
 api.interceptors.response.use(
   response => {
-    console.debug(`[API] ${response.config.method?.toUpperCase()} ${response.config.url} → ${response.status}`)
+    console.log(`[API Response] ${response.config.method?.toUpperCase()} ${response.config.url} → ${response.status}`)
     return response
   },
   error => {
     if (axios.isCancel(error) || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED') {
       return Promise.reject(error)
     }
-    console.error(`[API] ${error.config?.method?.toUpperCase()} ${error.config?.url} → ${error.response?.status || error.message}`)
+    console.error(`[API Error] ${error.config?.method?.toUpperCase()} ${error.config?.url} → ${error.response?.status || error.message}`)
     return Promise.reject(error)
   },
 )
@@ -58,7 +68,7 @@ export function startChatStream(
 
   void (async () => {
     try {
-      const response = await fetch(`${API_BASE}/chat/stream`, {
+      const response = await fetch(`${getApiBase()}/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
@@ -154,7 +164,7 @@ export function startChatStream(
 /** 取消正在进行的 SSE 流式生成 */
 export async function cancelChatStream(sessionId: string): Promise<boolean> {
   try {
-    const response = await fetch(`${API_BASE}/chat/cancel`, {
+    const response = await fetch(`${getApiBase()}/chat/cancel`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: sessionId }),
@@ -334,7 +344,7 @@ export function useApi() {
     try {
       // 读取文件内容为二进制，直接 POST 发送
       const arrayBuffer = await file.arrayBuffer()
-      const response = await fetch(`${API_BASE}/skills/upload`, {
+      const response = await fetch(`${getApiBase()}/skills/upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/zip' },
         body: arrayBuffer,
