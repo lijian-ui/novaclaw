@@ -83,9 +83,14 @@ export function Dashboard({ activeTool, onOpenTool, terminalOpen, onToggleTermin
 
   return (
     <div className="h-full flex flex-col bg-mainbg">
-      {/* Header - 只保留标题，按钮已移到 ChatPanel */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
+      {/* Header - 与 ChatPanel header 保持相同高度（右侧等距占位） */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0 min-h-[52px]">
         <span className="text-sm font-medium text-foreground/90">{t('dashboard.title')}</span>
+        <div className="flex items-center gap-1 opacity-0 pointer-events-none select-none">
+          <div className="w-7 h-7" />
+          <div className="w-7 h-7" />
+          <div className="w-7 h-7" />
+        </div>
       </div>
 
       {/* Content */}
