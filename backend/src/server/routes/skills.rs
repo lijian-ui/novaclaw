@@ -94,12 +94,15 @@ async fn upload_skill(
 
         // 提取技能名称：从路径中取第一级目录名
         let path = std::path::Path::new(&entry_path);
-        let skill_name = match path.parent() {
-            Some(parent) => parent.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(""),
-            None => "",
-        };
+        let skill_name = path
+            .components()
+            .next()
+            .and_then(|c| c.as_os_str().to_str())
+            .unwrap_or("");
+        // 如果 skill_name 等于文件名（扁平 ZIP 无根目录），跳过
+        if skill_name == path.file_name().and_then(|n| n.to_str()).unwrap_or("") {
+            continue;
+        }
 
         if skill_name.is_empty() {
             continue;

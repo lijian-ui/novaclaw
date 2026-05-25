@@ -81,7 +81,7 @@
     "employeeToolsName": "工具名称",
     "employeeToolsDesc": "描述",
     "employeeToolsAll": "允许所有工具（不限制）",
-    "employeeToolsCount": "已选 {n}/{total} 个工具",
+    "employeeToolsCount": "已选 {{n}}/{{total}} 个工具",
     "employeeToolsLoading": "加载工具列表中...",
     "employeeToolsClear": "清除选择",
     "employeeIterationsDesc": "0 表示不限制（继承 Leader）",

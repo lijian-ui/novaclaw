@@ -81,7 +81,7 @@
     "employeeToolsName": "Tool",
     "employeeToolsDesc": "Description",
     "employeeToolsAll": "Allow all tools (unrestricted)",
-    "employeeToolsCount": "{n}/{total} tools selected",
+    "employeeToolsCount": "{{n}}/{{total}} tools selected",
     "employeeToolsLoading": "Loading tools...",
     "employeeToolsClear": "Clear selection",
     "employeeIterationsDesc": "0 = unlimited (inherit from Leader)",
