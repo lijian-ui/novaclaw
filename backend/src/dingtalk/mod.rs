@@ -40,7 +40,12 @@ use std::sync::Arc;
 /// 钉钉客户端（统一外观）
 ///
 /// 包装了 WebSocket 连接管理、Token 管理和消息发送功能。
+/// 支持多账号：每个客户端实例对应一个钉钉机器人，通过 account_id 区分。
 pub struct DingTalkClient {
+    /// 账号标识
+    pub account_id: String,
+    /// 账号名称
+    pub account_name: Option<String>,
     /// WebSocket 连接管理器
     pub connection: DingTalkConnection,
     /// 消息发送器（REST API）
@@ -55,7 +60,12 @@ pub struct DingTalkClient {
 
 impl DingTalkClient {
     /// 创建 DingTalk 客户端并自动启动 WebSocket 连接
-    pub async fn new(client_id: String, client_secret: String) -> Self {
+    pub async fn new(
+        account_id: String,
+        account_name: Option<String>,
+        client_id: String,
+        client_secret: String,
+    ) -> Self {
         let http_client = reqwest::Client::new();
         let handler_registry = Arc::new(HandlerRegistry::new());
 
@@ -85,6 +95,8 @@ impl DingTalkClient {
         );
 
         Self {
+            account_id,
+            account_name,
             connection,
             message_sender,
             card_sender,
@@ -95,9 +107,11 @@ impl DingTalkClient {
 
     /// 创建 DingTalk 客户端（自定义连接配置）
     pub async fn new_with_config(
+        account_id: String,
+        account_name: Option<String>,
         client_id: String,
         client_secret: String,
-        config: ConnectionConfig,
+        connection_config: ConnectionConfig,
     ) -> Self {
         let http_client = reqwest::Client::new();
         let handler_registry = Arc::new(HandlerRegistry::new());
@@ -112,7 +126,7 @@ impl DingTalkClient {
             http_client.clone(),
             token_manager.clone(),
             handler_registry.clone(),
-            config,
+            connection_config,
         )
         .await;
 
@@ -128,6 +142,8 @@ impl DingTalkClient {
         );
 
         Self {
+            account_id,
+            account_name,
             connection,
             message_sender,
             card_sender,

@@ -83,17 +83,19 @@ impl ConversationType {
 /// 跨平台会话来源标识
 ///
 /// 用来统一所有平台的会话查找和标识。
-/// 参考 Hermes Agent 的 SessionSource 设计。
+/// 多账号模式下包含 account_id 以区分不同机器人。
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSource {
+    pub account_id: String,
     pub platform: PlatformType,
     pub conversation_id: String,
     pub sender_id: Option<String>,
 }
 
 impl SessionSource {
-    pub fn new(platform: PlatformType, conversation_id: String) -> Self {
+    pub fn new(account_id: String, platform: PlatformType, conversation_id: String) -> Self {
         Self {
+            account_id,
             platform,
             conversation_id,
             sender_id: None,
@@ -108,7 +110,7 @@ impl SessionSource {
 
 impl fmt::Display for SessionSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.platform, self.conversation_id)
+        write!(f, "{}:{}:{}", self.account_id, self.platform, self.conversation_id)
     }
 }
 
@@ -120,6 +122,8 @@ impl fmt::Display for SessionSource {
 pub struct IncomingMessage {
     /// 消息 ID（平台原生）
     pub id: String,
+    /// 来源账号 ID（多账号模式下唯一标识机器人）
+    pub account_id: String,
     /// 来源平台
     pub platform: PlatformType,
     /// 会话 ID
@@ -149,6 +153,8 @@ pub struct IncomingMessage {
 /// 消息发送目标
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageTarget {
+    /// 目标账号 ID
+    pub account_id: String,
     /// 目标平台
     pub platform: PlatformType,
     /// 会话 ID
@@ -159,8 +165,9 @@ pub struct MessageTarget {
 }
 
 impl MessageTarget {
-    pub fn new(platform: PlatformType, conversation_id: String) -> Self {
+    pub fn new(account_id: String, platform: PlatformType, conversation_id: String) -> Self {
         Self {
+            account_id,
             platform,
             conversation_id,
             conversation_type: ConversationType::Private,

@@ -18,15 +18,23 @@ use tokio::sync::mpsc;
 /// 钉钉 IM 适配器
 ///
 /// 包装 DingTalkClient，实现 IMAdapter trait。
+/// 每个 DingTalkAdapter 实例对应一个钉钉机器人账号。
 pub struct DingTalkAdapter {
     client: Arc<DingTalkClient>,
     /// 当前正在流式回复的卡片（可选）
     current_card: std::sync::Mutex<Option<(AICardInstance, mpsc::UnboundedSender<String>)>>,
+    /// 账号标识
+    pub account_id: String,
 }
 
 impl DingTalkAdapter {
     pub fn new(client: Arc<DingTalkClient>) -> Self {
-        Self { client, current_card: std::sync::Mutex::new(None) }
+        let account_id = client.account_id.clone();
+        Self {
+            client,
+            current_card: std::sync::Mutex::new(None),
+            account_id,
+        }
     }
 }
 
@@ -92,6 +100,7 @@ impl IMAdapter for DingTalkAdapter {
         } else {
             // 兜底：通过 send_markdown 回复
             let target = MessageTarget {
+                account_id: self.account_id.clone(),
                 platform: PlatformType::DingTalk,
                 conversation_id: original.conversation_id.clone(),
                 conversation_type: original.conversation_type.clone(),

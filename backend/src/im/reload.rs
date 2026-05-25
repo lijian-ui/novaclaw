@@ -1,6 +1,7 @@
 //! IM 配置热加载
 
 use crate::dingtalk;
+use crate::im::registry::AccountInfo;
 use crate::im::IMGateway;
 
 /// 根据当前配置文件重新初始化所有 IM 连接
@@ -19,37 +20,67 @@ pub async fn reload_gateway() {
 
         match channel.effective_type() {
             "dingtalk" => {
-                if channel.use_stream_mode() {
-                    tracing::info!("正在连接钉钉 Stream 模式...");
-                    let cid = match channel.config.client_id.as_ref() {
-                        Some(c) => c,
-                        None => { tracing::warn!("钉钉渠道 '{}' 缺少 client_id，跳过", channel.name); continue; }
-                    };
-                    let cs = match channel.config.client_secret.as_ref() {
-                        Some(c) => c,
-                        None => { tracing::warn!("钉钉渠道 '{}' 缺少 client_secret，跳过", channel.name); continue; }
-                    };
-                    let dt_client = std::sync::Arc::new(dingtalk::DingTalkClient::new(cid.clone(), cs.clone()).await);
+                let account_ids = channel.enabled_account_ids();
 
-                    let dt_adapter = std::sync::Arc::new(dingtalk::adapter::DingTalkAdapter::new(dt_client.clone()));
+                if account_ids.is_empty() {
+                    if channel.use_webhook_mode() {
+                        tracing::info!("钉钉 Webhook 模式已配置 (id={})", channel.id);
+                    } else {
+                        tracing::warn!("钉钉渠道 '{}' 没有有效的账号配置", channel.name);
+                    }
+                    continue;
+                }
+
+                for account_id in &account_ids {
+                    let account_cfg = match channel.get_account(account_id) {
+                        Some(c) => c,
+                        None => { tracing::warn!("账号 '{}' 配置获取失败，跳过", account_id); continue; }
+                    };
+
+                    if !account_cfg.enabled {
+                        tracing::info!("钉钉账号已禁用，跳过: {}", account_id);
+                        continue;
+                    }
+
+                    tracing::info!("正在连接钉钉账号: {} (name={:?})", account_id, account_cfg.name);
+
+                    let dt_client = std::sync::Arc::new(
+                        dingtalk::DingTalkClient::new(
+                            account_id.clone(),
+                            account_cfg.name.clone(),
+                            account_cfg.credentials.client_id.clone(),
+                            account_cfg.credentials.client_secret.clone(),
+                        )
+                        .await,
+                    );
+
+                    let dt_adapter = std::sync::Arc::new(
+                        dingtalk::adapter::DingTalkAdapter::new(dt_client.clone())
+                    );
 
                     // 注册回调处理器
                     {
                         let incoming_tx = gateway.incoming_tx.clone();
+                        let acc_id = account_id.clone();
                         dt_client
                             .register_handler(
-                                crate::im::handler::IMGatewayCallbackHandler::new(incoming_tx),
+                                crate::im::handler::IMGatewayCallbackHandler::new(
+                                    incoming_tx,
+                                    acc_id,
+                                ),
                             )
                             .await;
                     }
 
-                    gateway.register(dt_adapter).await;
-                    tracing::info!("钉钉 Stream 模式已注册到 IMGateway");
-                } else if channel.use_webhook_mode() {
-                    tracing::info!("钉钉 Webhook 模式已配置 (webhook={})",
-                        channel.config.webhook.as_ref().map(|s| s.chars().take(40).collect::<String>()).unwrap_or_else(|| "?".to_string()));
-                } else {
-                    tracing::warn!("钉钉渠道 '{}' 没有有效的配置", channel.name);
+                    gateway.register(AccountInfo {
+                        account_id: account_id.clone(),
+                        platform: crate::im::types::PlatformType::DingTalk,
+                        adapter: dt_adapter.clone(),
+                        enabled: true,
+                        name: account_cfg.name.clone(),
+                    }).await;
+
+                    tracing::info!("钉钉账号已注册: {} (name={:?})", account_id, account_cfg.name);
                 }
             }
             _ => {
@@ -62,5 +93,5 @@ pub async fn reload_gateway() {
     let mut g = crate::IM_GATEWAY.write().await;
     *g = Some(gateway);
 
-    tracing::info!("IM 热加载完成 ({} 个渠道配置)", im_config.channels.len());
+    tracing::info!("IM 热加载完成");
 }

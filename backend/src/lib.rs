@@ -171,9 +171,10 @@ pub async fn initialize() {
         }
     });
 
-    // ─── 初始化 IM Gateway ─────────────────────────────
+    // ─── 初始化 IM Gateway（支持多账号） ────────────────
     let gateway = im::IMGateway::new();
     let im_config = im::config::load();
+    let mut total_accounts = 0usize;
 
     for channel in &im_config.channels {
         if !channel.enabled {
@@ -183,38 +184,71 @@ pub async fn initialize() {
 
         match channel.channel_type.as_str() {
             "dingtalk" => {
-                if channel.use_stream_mode() {
-                    tracing::info!("正在连接钉钉 Stream 模式...");
-                    let cid = match channel.config.client_id.as_ref() {
-                        Some(c) => c,
-                        None => { tracing::warn!("钉钉渠道 '{}' 缺少 client_id，跳过", channel.name); continue; }
-                    };
-                    let cs = match channel.config.client_secret.as_ref() {
-                        Some(c) => c,
-                        None => { tracing::warn!("钉钉渠道 '{}' 缺少 client_secret，跳过", channel.name); continue; }
-                    };
-                    let dt_client = Arc::new(dingtalk::DingTalkClient::new(cid.clone(), cs.clone()).await);
+                let account_ids = channel.enabled_account_ids();
 
-                    let dt_adapter = Arc::new(dingtalk::adapter::DingTalkAdapter::new(dt_client.clone()));
+                if account_ids.is_empty() {
+                    if channel.use_webhook_mode() {
+                        tracing::info!("钉钉 Webhook 模式已配置 (id={})", channel.id);
+                    } else {
+                        tracing::warn!("钉钉渠道 '{}' 没有有效的账号配置", channel.name);
+                    }
+                    continue;
+                }
+
+                for account_id in &account_ids {
+                    let account_cfg = match channel.get_account(account_id) {
+                        Some(c) => c,
+                        None => { tracing::warn!("账号 '{}' 配置获取失败，跳过", account_id); continue; }
+                    };
+
+                    if !account_cfg.enabled {
+                        tracing::info!("钉钉账号已禁用，跳过: {}", account_id);
+                        continue;
+                    }
+
+                    tracing::info!(
+                        "正在连接钉钉账号: {} (name={:?})",
+                        account_id, account_cfg.name
+                    );
+
+                    let dt_client = Arc::new(
+                        dingtalk::DingTalkClient::new(
+                            account_id.clone(),
+                            account_cfg.name.clone(),
+                            account_cfg.credentials.client_id.clone(),
+                            account_cfg.credentials.client_secret.clone(),
+                        )
+                        .await,
+                    );
+
+                    let dt_adapter = Arc::new(
+                        dingtalk::adapter::DingTalkAdapter::new(dt_client.clone())
+                    );
 
                     // 注册回调处理器：将钉钉入站消息转发到 IMGateway
                     {
                         let incoming_tx = gateway.incoming_tx.clone();
+                        let acc_id = account_id.clone();
                         dt_client
                             .register_handler(
-                                crate::im::handler::IMGatewayCallbackHandler::new(incoming_tx),
+                                crate::im::handler::IMGatewayCallbackHandler::new(
+                                    incoming_tx,
+                                    acc_id,
+                                ),
                             )
                             .await;
                     }
 
-                    gateway.register(dt_adapter).await;
-                    tracing::info!("钉钉 Stream 模式已注册到 IMGateway");
-                } else if channel.use_webhook_mode() {
-                    tracing::info!("钉钉 Webhook 模式已配置 (webhook={})", 
-                        channel.config.webhook.as_ref().map(|s| s.chars().take(40).collect::<String>()).unwrap_or("?".to_string()));
-                    // Webhook 模式不需要注册适配器，由 HTTP 调用直接发送
-                } else {
-                    tracing::warn!("钉钉渠道 '{}' 没有有效的配置（需要 webhook 或 client_id+client_secret）", channel.name);
+                    gateway.register(im::registry::AccountInfo {
+                        account_id: account_id.clone(),
+                        platform: im::types::PlatformType::DingTalk,
+                        adapter: dt_adapter.clone(),
+                        enabled: true,
+                        name: account_cfg.name.clone(),
+                    }).await;
+
+                    total_accounts += 1;
+                    tracing::info!("钉钉账号已注册: {} (name={:?})", account_id, account_cfg.name);
                 }
             }
             _ => {
@@ -229,7 +263,7 @@ pub async fn initialize() {
         *g = Some(gateway);
     }
 
-    tracing::info!("IMGateway 初始化完成 ({} 个渠道配置)", im_config.channels.len());
+    tracing::info!("IMGateway 初始化完成 ({} 个账号)", total_accounts);
 
     // MCP 连接改为惰性初始化：首次工具调用时自动连接，启动时不阻塞
 }

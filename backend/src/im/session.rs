@@ -13,6 +13,7 @@ use tokio::sync::RwLock;
 /// 从入站消息提取会话来源
 pub fn session_source_from_incoming(msg: &IncomingMessage) -> SessionSource {
     SessionSource {
+        account_id: msg.account_id.clone(),
         platform: msg.platform.clone(),
         conversation_id: msg.conversation_id.clone(),
         sender_id: msg.sender_id.clone(),
@@ -89,10 +90,10 @@ impl IMSessionManager {
             state.models_config.default_model.clone()
         };
 
-        // 生成确定性 session_id：基于 platform + conversation_id 的哈希
+        // 生成确定性 session_id：基于 account_id + platform + conversation_id 的哈希
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        format!("{}_{}", source.platform, source.conversation_id).hash(&mut hasher);
+        format!("{}_{}_{}", source.account_id, source.platform, source.conversation_id).hash(&mut hasher);
         let sid = format!("im_{:x}", hasher.finish());
 
         // 检查映射（内存缓存）
@@ -201,6 +202,7 @@ mod tests {
     ) -> IncomingMessage {
         IncomingMessage {
             id: "1".into(),
+            account_id: "default".into(),
             platform: PlatformType::DingTalk,
             conversation_id: "cid".into(),
             sender_id: sender.map(|s| s.into()),
