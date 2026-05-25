@@ -106,7 +106,8 @@
     "terminal": "终端",
     "schedule": "定时任务",
     "logs": "日志",
-    "settings": "设置"
+    "settings": "设置",
+    "editor": "文件编辑器"
   },
   "chat": {
     "sendMessage": "发送消息",

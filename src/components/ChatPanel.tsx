@@ -10,7 +10,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import {
   ChevronDown,
-  Plus,
   Code2,
   Puzzle,
   Brain,
@@ -946,6 +945,10 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                             onOpenFilePanel?.()
                           } else {
                             onOpenTool?.(tool.id)
+                            // 主控台折叠时点击工具自动展开
+                            if (consoleCollapsed) {
+                              onToggleConsole?.()
+                            }
                           }
                         }}
                       >

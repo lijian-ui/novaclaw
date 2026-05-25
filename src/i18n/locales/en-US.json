@@ -106,7 +106,8 @@
     "terminal": "Terminal",
     "schedule": "Schedule",
     "logs": "Logs",
-    "settings": "Settings"
+    "settings": "Settings",
+    "editor": "File Editor"
   },
   "chat": {
     "sendMessage": "Send message",

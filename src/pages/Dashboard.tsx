@@ -48,7 +48,7 @@ interface DashboardProps {
   onToggleTerminal?: () => void
 }
 
-export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel, terminalOpen, onToggleTerminal }: DashboardProps) {
+export function Dashboard({ activeTool, onOpenTool, terminalOpen, onToggleTerminal }: DashboardProps) {
   const { t } = useTranslation()
   
   const tools = useMemo(() => toolDefs.map(tool => ({
