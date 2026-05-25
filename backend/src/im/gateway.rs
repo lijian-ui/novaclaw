@@ -123,7 +123,8 @@ impl IMGateway {
 
             let sender = msg.sender_name.as_deref().unwrap_or("?");
             tracing::info!(
-                "IM → Agent: [{}] {}: {}",
+                "[{}] IM → Agent: [{}] {}: {}",
+                msg.account_id,
                 msg.platform,
                 sender,
                 &msg.text[..msg.text.len().min(80)],

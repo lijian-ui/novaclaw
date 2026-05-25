@@ -133,8 +133,9 @@ impl IMSessionManager {
         }
 
         // 没有已有会话，创建新的
+        let bot_label = format!("({})", msg.account_id);
         let conv_type_label = match msg.conversation_type {
-            ConversationType::Private => "私聊".to_string(),
+            ConversationType::Private => format!("私聊{}", bot_label),
             ConversationType::Group => {
                 if let Some(title) = &msg.conversation_title {
                     format!("群聊「{}」", title)
