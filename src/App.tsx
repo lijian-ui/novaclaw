@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Routes, Route } from 'react-router-dom'
-import { Maximize2, Minimize2 } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
 import { ChatPanel } from '@/components/ChatPanel'
 import { Dashboard } from '@/pages/Dashboard'

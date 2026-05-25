@@ -329,7 +329,7 @@ function CodeBlock({ className, children }: { className?: string; children: stri
 
   const handleCopy = useCallback(() => {
     const text = Array.isArray(children) ? children.join('') : String(children)
-    navigator.clipboard.writeText(text)
+    doCopy(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }, [children])
@@ -505,11 +505,13 @@ function TerminalBlock({
 // ─── 复制按钮组件 ────────────────────────────────────────────────────
 function MessageCopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
-  const handleCopy = () => {
-    navigator.clipboard.writeText(text)
+
+  const handleCopy = useCallback(() => {
+    doCopy(text)
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
-  }
+  }, [text])
+
   return (
     <button
       onClick={handleCopy}
@@ -519,6 +521,27 @@ function MessageCopyButton({ text }: { text: string }) {
       {copied ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-foreground/50" />}
     </button>
   )
+}
+
+/** 复制文本到剪贴板，兼容 Tauri webview 和浏览器 */
+function doCopy(text: string) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).catch(() => fallbackCopy(text))
+  } else {
+    fallbackCopy(text)
+  }
+}
+
+/** 降级方案：通过隐藏 textarea 执行复制 */
+function fallbackCopy(text: string) {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  document.execCommand('copy')
+  document.body.removeChild(textarea)
 }
 
 // ─── 类型定义 ────────────────────────────────────────────────────

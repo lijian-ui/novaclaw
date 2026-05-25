@@ -91,7 +91,7 @@ function genId() {
   return `msg_${crypto.randomUUID()}`
 }
 
-export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorkspacePathChange }: ChatPanelProps) {
+export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorkspacePathChange, onToggleConsole, consoleCollapsed }: ChatPanelProps) {
   const { t } = useTranslation()
   const { currentSession, setCurrentSession, messages: contextMessages, refreshSessionList, defaultModelName, refreshModelKey, setDefaultModelName } = useChat()
   const sessionIdRef = useRef<string | undefined>(undefined)
