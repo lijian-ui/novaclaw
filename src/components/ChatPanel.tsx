@@ -31,6 +31,8 @@ import {
   CheckCircle,
   AlertCircle,
   Check,
+  Maximize2,
+  Minimize2,
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
 import { TreeBrowser } from './TreeBrowser'
@@ -80,6 +82,8 @@ interface ChatPanelProps {
   onOpenTool?: (tool: string) => void
   workspacePath?: string
   onWorkspacePathChange?: (path: string) => void
+  onToggleConsole?: () => void
+  consoleCollapsed?: boolean
 }
 
 // ---- Helpers ----
@@ -933,6 +937,17 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
               </>
             )}
           </div>
+          <button
+            onClick={onToggleConsole}
+            className="p-1.5 rounded hover:bg-foreground/10 transition-colors"
+            title={consoleCollapsed ? '展开主控台' : '折叠主控台'}
+          >
+            {consoleCollapsed ? (
+              <Maximize2 className="w-4 h-4 text-foreground/60" />
+            ) : (
+              <Minimize2 className="w-4 h-4 text-foreground/60" />
+            )}
+          </button>
           <button className="p-1.5 rounded hover:bg-foreground/10 transition-colors">
             <User className="w-4 h-4 text-foreground/60" />
           </button>

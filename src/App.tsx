@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Routes, Route } from 'react-router-dom'
+import { Maximize2, Minimize2 } from 'lucide-react'
 import { Sidebar } from '@/components/Sidebar'
 import { ChatPanel } from '@/components/ChatPanel'
 import { Dashboard } from '@/pages/Dashboard'
@@ -10,6 +11,8 @@ import { useFileEditor } from '@/hooks/useFileEditor'
 // 初始宽度比例：边栏10% / 聊天40% / 主控台40% / 文件22%
 const INITIAL_CHAT_PERCENT = 0.40
 const INITIAL_FILE_PERCENT = 0.15
+// 主控台自动折叠宽度阈值（窗口宽度小于此值时自动折叠）
+const CONSOLE_AUTO_HIDE_WIDTH = 1100
 
 function App() {
   // 全局禁用所有输入框的拼写检查（波浪线）- 使用 CSS 方式，避免 MutationObserver 性能开销
@@ -25,6 +28,9 @@ function App() {
   const [fileWidth, setFileWidth] = useState(0)
   const [draggingTarget, setDraggingTarget] = useState<'chat' | 'file' | null>(null)
   const [activeTool, setActiveTool] = useState<string | null>(null)
+  const [consoleCollapsed, setConsoleCollapsed] = useState(() => window.innerWidth < CONSOLE_AUTO_HIDE_WIDTH)
+  const consoleCollapsedRef = useRef(consoleCollapsed)
+  consoleCollapsedRef.current = consoleCollapsed
   const [workspacePath, setWorkspacePathState] = useState(() => localStorage.getItem('novaclaw_workspace') || '')
   const setWorkspacePath = useCallback((path: string) => {
     setWorkspacePathState(path)
@@ -102,6 +108,25 @@ function App() {
     setDraggingTarget(null)
   }, [])
 
+  // 监听窗口变化，自动折叠/展开主控台
+  useEffect(() => {
+    const onResize = () => {
+      const isSmall = window.innerWidth < CONSOLE_AUTO_HIDE_WIDTH
+      if (isSmall && !consoleCollapsedRef.current) {
+        setConsoleCollapsed(true)
+      } else if (!isSmall && consoleCollapsedRef.current && !activeTool) {
+        // 窗口变大且没有打开工具时自动展开
+        setConsoleCollapsed(false)
+      }
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [activeTool])
+
+  const toggleConsole = useCallback(() => {
+    setConsoleCollapsed(prev => !prev)
+  }, [])
+
   // 全局阻止浏览器默认 Ctrl+S 行为
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -140,35 +165,46 @@ function App() {
       </div>
 
       {/* Chat Area with draggable resize */}
-      <div className="flex shrink-0" style={{ width: chatWidth }}>
+      <div className={`flex ${consoleCollapsed ? 'flex-1 min-w-0' : 'shrink-0'}`} style={consoleCollapsed ? undefined : { width: chatWidth }}>
         <div className="flex-1 min-w-0">
-          <ChatPanel onOpenFilePanel={openFilePanel} onOpenTool={setActiveTool} workspacePath={workspacePath} onWorkspacePathChange={setWorkspacePath} />
+          <ChatPanel
+            onOpenFilePanel={openFilePanel}
+            onOpenTool={setActiveTool}
+            workspacePath={workspacePath}
+            onWorkspacePathChange={setWorkspacePath}
+            onToggleConsole={toggleConsole}
+            consoleCollapsed={consoleCollapsed}
+          />
         </div>
-        <div
-          className="w-1.5 cursor-col-resize hover:bg-foreground/5 active:bg-foreground/10 transition-colors shrink-0 relative"
-          onMouseDown={handleChatMouseDown}
-        >
-          <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border" />
-        </div>
+        {!consoleCollapsed && (
+          <div
+            className="w-1.5 cursor-col-resize hover:bg-foreground/5 active:bg-foreground/10 transition-colors shrink-0 relative"
+            onMouseDown={handleChatMouseDown}
+          >
+            <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border" />
+          </div>
+        )}
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 min-w-0">
-        {activeTab ? (
-          <FileEditor
-            tabs={tabs}
-            activeTab={activeTab}
-            onUpdateContent={updateContent}
-            onSave={saveCurrent}
-            onCloseTab={closeTab}
-            onSwitchTab={switchTab}
-            onToggleFilePanel={toggleFilePanel}
-          />
-        ) : (
-          <Routes>
-            <Route path="/" element={<Dashboard activeTool={activeTool} onOpenTool={setActiveTool} onToggleFilePanel={toggleFilePanel} />} />
-            <Route path="/dashboard" element={<Dashboard activeTool={activeTool} onOpenTool={setActiveTool} onToggleFilePanel={toggleFilePanel} />} />
-          </Routes>
+      {/* Main Content (主控台/编辑器) */}
+      <div className={`${consoleCollapsed ? 'w-0 overflow-hidden' : 'flex-1 min-w-0'} transition-all duration-300 ease-in-out`}>
+        {!consoleCollapsed && (
+          activeTab ? (
+            <FileEditor
+              tabs={tabs}
+              activeTab={activeTab}
+              onUpdateContent={updateContent}
+              onSave={saveCurrent}
+              onCloseTab={closeTab}
+              onSwitchTab={switchTab}
+              onToggleFilePanel={toggleFilePanel}
+            />
+          ) : (
+            <Routes>
+              <Route path="/" element={<Dashboard activeTool={activeTool} onOpenTool={setActiveTool} onToggleFilePanel={toggleFilePanel} />} />
+              <Route path="/dashboard" element={<Dashboard activeTool={activeTool} onOpenTool={setActiveTool} onToggleFilePanel={toggleFilePanel} />} />
+            </Routes>
+          )
         )}
       </div>
 
