@@ -79,6 +79,7 @@ async fn upload_skill(
 
     let mut installed_count = 0;
     let mut errors: Vec<String> = Vec::new();
+    let mut skill_names: Vec<String> = Vec::new();
 
     for i in 0..archive.len() {
         let mut entry = match archive.by_index(i) {
@@ -86,63 +87,28 @@ async fn upload_skill(
             Err(_) => continue,
         };
 
-        // 只处理 SKILL.md 文件和目录结构
         let entry_path = match entry.name().to_owned() {
             name if name.ends_with('/') => continue, // 跳过目录条目
             name => name,
         };
 
-        // 提取技能名称：从路径中取第一级目录名
         let path = std::path::Path::new(&entry_path);
+
+        // 提取技能名称：ZIP 根目录名
         let skill_name = path
             .components()
             .next()
             .and_then(|c| c.as_os_str().to_str())
             .unwrap_or("");
-        // 如果 skill_name 等于文件名（扁平 ZIP 无根目录），跳过
-        if skill_name == path.file_name().and_then(|n| n.to_str()).unwrap_or("") {
+
+        // 跳过扁平 ZIP（无根目录）和根目录名为空
+        if skill_name.is_empty()
+            || skill_name == path.file_name().and_then(|n| n.to_str()).unwrap_or("")
+        {
             continue;
         }
 
-        if skill_name.is_empty() {
-            continue;
-        }
-
-        let is_skill_md = path.file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n == "SKILL.md")
-            .unwrap_or(false);
-
-        // 构建目标路径
-        let target_dir = skills_dir.join(skill_name);
-        let target_path = match path.file_name() {
-            Some(name) => target_dir.join(name),
-            None => {
-                tracing::warn!("[Skills] 跳过无效文件名: {:?}", path);
-                continue;
-            }
-        };
-
-        // 创建目录
-        std::fs::create_dir_all(target_dir).ok();
-
-        // 如果是 SKILL.md，尝试解析验证
-        if is_skill_md {
-            let mut content = String::new();
-            if std::io::Read::read_to_string(&mut entry, &mut content).is_err() {
-                errors.push(format!("{}: 读取失败", entry_path));
-                continue;
-            }
-
-            // 验证 SKILL.md 格式（必须有 name 字段）
-            let skill = crate::skills::loader::SkillsLoader::parse_skill_md_raw(&content);
-            if skill.is_none() {
-                errors.push(format!("{}: SKILL.md 格式无效（缺少 name 字段或无内容）", entry_path));
-                continue;
-            }
-        }
-
-        // 写入文件
+        // 读取文件内容（只读一次）
         let entry_data: Vec<u8> = {
             let mut buf = Vec::new();
             if std::io::Read::read_to_end(&mut entry, &mut buf).is_err() {
@@ -151,31 +117,47 @@ async fn upload_skill(
             }
             buf
         };
+
+        let is_skill_md = path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n == "SKILL.md")
+            .unwrap_or(false);
+
+        // 如果是 SKILL.md，验证格式
+        if is_skill_md {
+            let content = String::from_utf8_lossy(&entry_data);
+            if crate::skills::loader::SkillsLoader::parse_skill_md_raw(&content).is_none() {
+                errors.push(format!("{}: SKILL.md 格式无效（缺少 name 字段或无内容）", entry_path));
+                continue;
+            }
+        }
+
+        // 构建目标路径，保留子目录结构
+        // weather_query/scripts/run.sh → skills_dir/weather_query/scripts/run.sh
+        let relative_path = path.strip_prefix(skill_name).unwrap_or(path);
+        let target_path = skills_dir.join(skill_name).join(relative_path);
+
+        // 创建父目录
+        if let Some(parent) = target_path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+
         if let Err(e) = std::fs::write(&target_path, &entry_data) {
             errors.push(format!("{}: 写入失败: {}", entry_path, e));
             continue;
         }
 
-        // 确保目标路径与技能名称一致
         if is_skill_md {
             installed_count += 1;
+            skill_names.push(skill_name.to_string());
         }
     }
 
-    // 清理：如果没有任何技能安装成功，删除可能已创建的空目录
+    // 清理：如果没有安装成功，删除已创建的空目录
     if installed_count == 0 {
-        for i in 0..archive.len() {
-            let entry = match archive.by_index(i) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let path = std::path::Path::new(entry.name());
-            if let Some(parent) = path.parent() {
-                if let Some(name) = parent.file_name().and_then(|n| n.to_str()) {
-                    let dir = skills_dir.join(name);
-                    let _ = std::fs::remove_dir_all(&dir);
-                }
-            }
+        for name in &skill_names {
+            let dir = skills_dir.join(name);
+            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
