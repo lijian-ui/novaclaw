@@ -194,7 +194,7 @@ function App() {
       </div>
 
       {/* Main Content (主控台/编辑器) */}
-      <div className={`${consoleCollapsed ? 'w-0 overflow-hidden' : 'flex-1 min-w-0'} transition-all duration-300 ease-in-out`}>
+      <div className={`${consoleCollapsed ? 'max-w-0 overflow-hidden opacity-0 -translate-x-4' : 'max-w-[2000px] flex-1 min-w-0 opacity-100 translate-x-0'} transition-all duration-500 ease-in-out`}>
         {!consoleCollapsed && (
           activeTab ? (
             <FileEditor

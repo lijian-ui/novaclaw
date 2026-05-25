@@ -39,7 +39,7 @@ import {
 import { ChatMessages, type MessageData } from './ChatMessages'
 import { TreeBrowser } from './TreeBrowser'
 import { compressImage } from '@/lib/imageCompress'
-import { startChatStream, cancelChatStream, useApi } from '@/hooks/useApi'
+import { startChatStream, cancelChatStream, useApi, queryMentions, expandMentions, getApiBase } from '@/hooks/useApi'
 import { useChat } from '@/contexts/ChatContext'
 import { useTranslation } from 'react-i18next'
 import { useTheme } from '@/contexts/ThemeContext'
@@ -113,6 +113,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const [toolsOpen, setToolsOpen] = useState(false)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<MessageData[]>([])
+  // @-mention 相关状态
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const [mentionItems, setMentionItems] = useState<{ name: string; path: string; is_dir: boolean }[]>([])
+  const [mentionIndex, setMentionIndex] = useState(0)
+  const mentionQueryRef = useRef('')
   const currentSessionIdRef = useRef(currentSession?.id)
   const lastSyncMsgCountRef = useRef(0)
 
@@ -404,7 +409,19 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     if (workspacePath) {
       setWorkspaceName(workspacePath.split(/[/\\]/).pop() || 'workspace')
     } else {
-      setWorkspaceName('')
+      // localStorage 为空时从后端获取默认工作目录
+      fetch(`${getApiBase()}/paths`)
+        .then(r => r.json())
+        .then(body => {
+          if (body.success && body.data?.workspace_dir) {
+            const ws = body.data.workspace_dir
+            onWorkspacePathChange?.(ws)
+            setWorkspaceName(ws.split(/[/\\]/).pop() || 'workspace')
+          } else {
+            setWorkspaceName('未设置工作目录')
+          }
+        })
+        .catch(() => setWorkspaceName('未设置工作目录'))
     }
   }, [workspacePath])
 
@@ -439,11 +456,27 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   } | null>(null)
 
   const handleInput = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value)
+    const value = e.target.value
+    setInput(value)
     const el = e.target
     el.style.height = 'auto'
     el.style.height = el.scrollHeight + 'px'
-  }, [])
+
+    // 检测 @-mention
+    const match = value.match(/(?:^|\s)@([^\s]*)$/)
+    if (match) {
+      const query = match[1]
+      mentionQueryRef.current = query
+      setMentionOpen(true)
+      setMentionIndex(0)
+      void queryMentions(workspacePath, query).then(items => {
+        setMentionItems(items)
+      })
+    } else {
+      setMentionOpen(false)
+      setMentionItems([])
+    }
+  }, [workspacePath])
 
   const scrollToBottom = useCallback((smooth = true) => {
     if (messagesEndRef.current) {
@@ -811,23 +844,36 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const handleSend = useCallback(() => {
     if ((!input.trim() && pendingImages.length === 0) || isStreaming) return
 
+    let msg = input.trim() || '请描述这张图片'
+    // 展开 @-mention 引用为文件内容
+    if (msg.includes('@')) {
+      expandMentions(msg, workspacePath).then(expanded => {
+        sendMessage(expanded)
+      }).catch(() => {
+        sendMessage(msg)
+      })
+    } else {
+      sendMessage(msg)
+    }
+  }, [input, isStreaming, pendingImages, workspacePath])
+
+  const sendMessage = useCallback((msg: string) => {
     const userMsg: MessageData = {
       id: genId(),
       role: 'user',
-      content: input.trim() || '(图片)',
+      content: msg,
       images: pendingImages.length > 0 ? pendingImages : undefined,
     }
     setMessages(prev => [...prev, userMsg])
-    const msg = input.trim() || '请描述这张图片'
     const imgs = [...pendingImages]
     setInput('')
+    setMentionOpen(false)
     setPendingImages([])
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto'
     }
-
     startStreaming(msg, imgs)
-  }, [input, isStreaming, startStreaming, pendingImages])
+  }, [startStreaming, pendingImages])
 
   // 打断停止：AbortController 取消 SSE 请求 + 通知后端
   const handleStop = useCallback(() => {
@@ -844,13 +890,56 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      // @-mention 键盘导航
+      if (mentionOpen && mentionItems.length > 0) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault()
+          setMentionIndex(i => Math.min(i + 1, mentionItems.length - 1))
+          return
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault()
+          setMentionIndex(i => Math.max(i - 1, 0))
+          return
+        }
+        if (e.key === 'Enter' && mentionItems[mentionIndex]) {
+          e.preventDefault()
+          insertMention(mentionItems[mentionIndex])
+          return
+        }
+        if (e.key === 'Escape') {
+          setMentionOpen(false)
+          return
+        }
+      }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         handleSend()
       }
     },
-    [handleSend]
+    [handleSend, mentionOpen, mentionItems, mentionIndex]
   )
+
+  /** 插入 @-mention 选择到输入框 */
+  const insertMention = useCallback((item: { name: string; path: string; is_dir: boolean }) => {
+    const el = textareaRef.current
+    if (!el) return
+    const cursorPos = el.selectionStart ?? el.value.length
+    const before = el.value.slice(0, cursorPos)
+    const after = el.value.slice(cursorPos)
+    const atPos = before.lastIndexOf('@')
+    if (atPos === -1) return
+    const mentionText = item.is_dir ? `@${item.path}/ ` : `@${item.path} `
+    const newValue = before.slice(0, atPos) + mentionText + after
+    setInput(newValue)
+    setMentionOpen(false)
+    setMentionItems([])
+    requestAnimationFrame(() => {
+      const pos = atPos + mentionText.length
+      el.setSelectionRange(pos, pos)
+      el.focus()
+    })
+  }, [])
 
   // Close workspace popup on outside click
   useEffect(() => {
@@ -1026,7 +1115,62 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
       <div className="px-3 pb-3 shrink-0">
         <p className="text-[11px] text-foreground/30 mb-2 leading-relaxed text-center">
           {t('chat.chatWith')}
+          <br />
+          <span className="text-[10px]">@ 可选择文件或文件夹作为上下文</span>
         </p>
+
+        {/* @-mention 下拉菜单 */}
+        {mentionOpen && mentionItems.length > 0 && (
+          <div className="relative">
+            <div className="absolute bottom-full left-0 right-0 mb-1 z-50 max-h-52 overflow-y-auto rounded-lg border border-border bg-card shadow-xl">
+              <div className="px-3 py-1.5 text-[11px] text-foreground/50 border-b border-border">
+                @ 选择文件作为上下文
+              </div>
+              {mentionItems.map((item, i) => (
+                <button
+                  key={item.path}
+                  className={`w-full flex items-center gap-2 px-3 py-2 text-xs text-left transition-colors ${
+                    i === mentionIndex
+                      ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                      : 'hover:bg-foreground/5 text-foreground/70'
+                  }`}
+                  onMouseEnter={() => setMentionIndex(i)}
+                  onClick={() => {
+                    const el = textareaRef.current
+                    if (!el) return
+                    const cursorPos = el.selectionStart ?? el.value.length
+                    const before = el.value.slice(0, cursorPos)
+                    const after = el.value.slice(cursorPos)
+                    const atPos = before.lastIndexOf('@')
+                    if (atPos === -1) return
+                    const mentionText = item.is_dir ? `@${item.path}/ ` : `@${item.path} `
+                    const newValue = before.slice(0, atPos) + mentionText + after
+                    setInput(newValue)
+                    setMentionOpen(false)
+                    setMentionItems([])
+                    requestAnimationFrame(() => {
+                      const pos = atPos + mentionText.length
+                      el.setSelectionRange(pos, pos)
+                      el.focus()
+                    })
+                  }}
+                >
+                  {item.is_dir ? (
+                    <Folder className="w-4 h-4 text-amber-400 shrink-0" />
+                  ) : (
+                    <FileText className="w-4 h-4 text-blue-400 shrink-0" />
+                  )}
+                  <span className="font-mono truncate flex-1">{item.path}</span>
+                  {item.is_dir && <span className="text-[10px] text-foreground/40 shrink-0">目录</span>}
+                </button>
+              ))}
+              <div className="px-3 py-1.5 text-[10px] text-foreground/30 border-t border-border">
+                ↑↓ 选择 · Enter 确认 · Esc 关闭
+              </div>
+            </div>
+          </div>
+        )}
+
         <div className="rounded-lg bg-foreground/5 border border-border">
           {/* 待发送图片缩略图 */}
           {pendingImages.length > 0 && (

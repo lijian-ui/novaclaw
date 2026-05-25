@@ -161,6 +161,39 @@ export function startChatStream(
   return abortController
 }
 
+/** @-mention 查询文件列表 */
+export async function queryMentions(
+  workspace: string | undefined,
+  query: string
+): Promise<{ name: string; path: string; is_dir: boolean }[]> {
+  try {
+    const res = await fetch(`${getApiBase()}/mentions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ workspace, query }),
+    })
+    const body = await res.json()
+    return body.success ? (body.data || []) : []
+  } catch {
+    return []
+  }
+}
+
+/** @-mention 展开引用为文件内容 */
+export async function expandMentions(content: string, workspace?: string): Promise<string> {
+  try {
+    const res = await fetch(`${getApiBase()}/mentions/expand`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, workspace }),
+    })
+    const body = await res.json()
+    return body.success ? (body.data || content) : content
+  } catch {
+    return content
+  }
+}
+
 /** 取消正在进行的 SSE 流式生成 */
 export async function cancelChatStream(sessionId: string): Promise<boolean> {
   try {
