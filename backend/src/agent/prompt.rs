@@ -253,16 +253,23 @@ You MUST format all responses in Markdown.
 
     /// Skill index
     fn build_skill_index(&self) -> String {
-        let mut index = String::from("# Available Skills\n\n");
-        index.push_str("Skills are NOT callable tools. You cannot invoke a skill by its name. To use a skill, call `skill_view(name)` to read its instructions first, then use `execute_command` or other real tools to carry out the steps.\n\n");
-        index.push_str("Before responding, scan the following skills. If a skill matches or is partially relevant to your task, use skill_view(name) to load and follow its instructions.\n\n");
+        let mut index = String::from("## Skills (mandatory)\n\n");
+        index.push_str("Before replying, scan the skills below. ");
+        index.push_str("If a skill matches or is even partially relevant to your task, ");
+        index.push_str("you MUST load it with `skill_view(name)` and follow its instructions. ");
+        index.push_str("Err on the side of loading — it is always better to have context ");
+        index.push_str("you don't need than to miss critical steps or established workflows.\n\n");
+        index.push_str("Skills contain specialized knowledge — API endpoints, tool-specific commands, ");
+        index.push_str("and proven workflows that outperform general-purpose approaches. ");
+        index.push_str("Load the skill even if you think you could handle the task with basic tools.\n\n");
         index.push_str("<available_skills>\n");
 
         for skill in &self.skill_list {
             index.push_str(&format!("  - {}\n", skill));
         }
 
-        index.push_str("</available_skills>\n");
+        index.push_str("</available_skills>\n\n");
+        index.push_str("Only proceed without loading a skill if genuinely none are relevant to the task.\n");
         index
     }
 }

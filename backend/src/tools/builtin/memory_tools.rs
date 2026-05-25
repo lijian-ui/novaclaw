@@ -195,7 +195,7 @@ pub async fn register(
         .register(ToolDef {
             name: "skill_view".to_string(),
             description:
-                "View the full content of a specific skill. The skill_dir field tells you the absolute path to the skill folder, use it to reference scripts or assets. Available skills are listed in the system prompt."
+                "Load a skill's full instructions and resources. Skills contain specialized knowledge — API endpoints, commands, and proven workflows. ALWAYS load a relevant skill before attempting a task with generic tools. Call first to get the instructions and a linked_files listing; then call again with file_path to load scripts, templates, or references. Available skills are listed under '## Skills (mandatory)' in the system prompt."
                     .to_string(),
             parameters: json!({
                 "type": "object",
@@ -229,14 +229,46 @@ pub async fn register(
                                 .replace("{SKILL_DIR}", &normalized_dir)
                                 .replace("${SKILL_DIR}", &normalized_dir)
                                 .replace("${HERMES_SKILL_DIR}", &normalized_dir);
-                            Ok(serde_json::json!({
+
+                            // 扫描技能目录下的子目录作为 linked_files
+                            let skill_path = std::path::Path::new(&normalized_dir);
+                            let mut linked_files = serde_json::Map::new();
+                            if let Ok(entries) = std::fs::read_dir(skill_path) {
+                                for entry in entries.flatten() {
+                                    if let Ok(ftype) = entry.file_type() {
+                                        if ftype.is_dir() {
+                                            let dir_name = entry.file_name().to_string_lossy().to_string();
+                                            if let Ok(files) = std::fs::read_dir(entry.path()) {
+                                                let file_list: Vec<String> = files
+                                                    .flatten()
+                                                    .filter(|f| f.file_type().map(|t| t.is_file()).unwrap_or(false))
+                                                    .filter_map(|f| {
+                                                        f.file_name().to_str().map(|s| format!("{}/{}", dir_name, s))
+                                                    })
+                                                    .collect();
+                                                if !file_list.is_empty() {
+                                                    linked_files.insert(dir_name, serde_json::json!(file_list));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            let mut result = serde_json::json!({
                                 "name": skill.name,
                                 "description": skill.description,
                                 "version": skill.version,
                                 "content": content,
                                 "skill_dir": normalized_dir,
-                            })
-                            .to_string())
+                            });
+                            if !linked_files.is_empty() {
+                                result["linked_files"] = serde_json::Value::Object(linked_files);
+                                result["usage_hint"] = serde_json::Value::String(
+                                    "To view linked files, call skill_view with file_path, e.g.: skill_view(name, file_path='scripts/run.sh')".to_string()
+                                );
+                            }
+                            Ok(result.to_string())
                         }
                         None => {
                             let available: Vec<String> = skills_loader_for_view
