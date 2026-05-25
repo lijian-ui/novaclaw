@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useMemo } from 'react'
 import {
   MessageSquare,
   Puzzle,
@@ -7,9 +7,6 @@ import {
   Blocks,
   Settings,
   Terminal,
-  PanelRightClose,
-  Sun,
-  Moon,
   Clock,
   FileText,
 } from 'lucide-react'
@@ -22,7 +19,6 @@ import { SettingsPage } from './SettingsPage'
 import { ScheduledTasksPage } from './ScheduledTasksPage'
 import { LogsPage } from './LogsPage'
 import { TerminalPanel } from '@/components/TerminalPanel'
-import { useTheme } from '@/contexts/ThemeContext'
 import { useTranslation } from 'react-i18next'
 
 interface Tool {
@@ -48,12 +44,12 @@ interface DashboardProps {
   activeTool?: string | null
   onOpenTool?: (tool: string | null) => void
   onToggleFilePanel?: () => void
+  terminalOpen?: boolean
+  onToggleTerminal?: () => void
 }
 
-export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: DashboardProps) {
+export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel, terminalOpen, onToggleTerminal }: DashboardProps) {
   const { t } = useTranslation()
-  const { theme, toggle } = useTheme()
-  const [terminalOpen, setTerminalOpen] = useState(false)
   
   const tools = useMemo(() => toolDefs.map(tool => ({
     ...tool,
@@ -87,30 +83,9 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
 
   return (
     <div className="h-full flex flex-col bg-mainbg">
-      {/* Header */}
+      {/* Header - 只保留标题，按钮已移到 ChatPanel */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
         <span className="text-sm font-medium text-foreground/90">{t('dashboard.title')}</span>
-        <div className="flex items-center gap-1">
-          <button onClick={toggle} className="p-1.5 rounded hover:bg-foreground/10 transition-colors" title={theme === 'dark' ? t('dashboard.toggleThemeLight') : t('dashboard.toggleThemeDark')}>
-            {theme === 'dark' ? <Sun className="w-4 h-4 text-foreground/60" /> : <Moon className="w-4 h-4 text-foreground/60" />}
-          </button>
-          <button
-            onClick={() => setTerminalOpen(!terminalOpen)}
-            className={`p-1.5 rounded hover:bg-foreground/10 transition-colors ${
-              terminalOpen ? 'bg-foreground/10' : ''
-            }`}
-            title={t('dashboard.toggleTerminal')}
-          >
-            <Terminal className="w-4 h-4 text-foreground/60" />
-          </button>
-          <button
-            onClick={onToggleFilePanel}
-            className="p-1.5 rounded hover:bg-foreground/10 transition-colors"
-            title={t('dashboard.toggleFilePanel')}
-          >
-            <PanelRightClose className="w-4 h-4 text-foreground/60" />
-          </button>
-        </div>
       </div>
 
       {/* Content */}
@@ -126,7 +101,7 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
                 key={tool.id}
                 onClick={() => {
                   if (tool.id === 'terminal') {
-                    setTerminalOpen(!terminalOpen)
+                    onToggleTerminal?.()
                   } else {
                     onOpenTool?.(tool.id)
                   }
@@ -142,7 +117,7 @@ export function Dashboard({ activeTool, onOpenTool, onToggleFilePanel }: Dashboa
       </div>
 
       {/* Terminal */}
-      <TerminalPanel visible={terminalOpen} onClose={() => setTerminalOpen(false)} />
+      <TerminalPanel visible={terminalOpen ?? false} onClose={() => onToggleTerminal?.()} />
     </div>
   )
 }

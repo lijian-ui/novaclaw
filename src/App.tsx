@@ -30,6 +30,7 @@ function App() {
   const [consoleCollapsed, setConsoleCollapsed] = useState(() => window.innerWidth < CONSOLE_AUTO_HIDE_WIDTH)
   const consoleCollapsedRef = useRef(consoleCollapsed)
   consoleCollapsedRef.current = consoleCollapsed
+  const [terminalOpen, setTerminalOpen] = useState(false)
   const [workspacePath, setWorkspacePathState] = useState(() => localStorage.getItem('novaclaw_workspace') || '')
   const setWorkspacePath = useCallback((path: string) => {
     setWorkspacePathState(path)
@@ -126,6 +127,10 @@ function App() {
     setConsoleCollapsed(prev => !prev)
   }, [])
 
+  const onToggleTerminal = useCallback(() => {
+    setTerminalOpen(prev => !prev)
+  }, [])
+
   // 全局阻止浏览器默认 Ctrl+S 行为
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -173,6 +178,9 @@ function App() {
             onWorkspacePathChange={setWorkspacePath}
             onToggleConsole={toggleConsole}
             consoleCollapsed={consoleCollapsed}
+            onToggleFilePanel={toggleFilePanel}
+            onToggleTerminal={onToggleTerminal}
+            terminalOpen={terminalOpen}
           />
         </div>
         {!consoleCollapsed && (
@@ -200,8 +208,8 @@ function App() {
             />
           ) : (
             <Routes>
-              <Route path="/" element={<Dashboard activeTool={activeTool} onOpenTool={setActiveTool} onToggleFilePanel={toggleFilePanel} />} />
-              <Route path="/dashboard" element={<Dashboard activeTool={activeTool} onOpenTool={setActiveTool} onToggleFilePanel={toggleFilePanel} />} />
+              <Route path="/" element={<Dashboard activeTool={activeTool} onOpenTool={setActiveTool} onToggleFilePanel={toggleFilePanel} terminalOpen={terminalOpen} onToggleTerminal={onToggleTerminal} />} />
+            <Route path="/dashboard" element={<Dashboard activeTool={activeTool} onOpenTool={setActiveTool} onToggleFilePanel={toggleFilePanel} terminalOpen={terminalOpen} onToggleTerminal={onToggleTerminal} />} />
             </Routes>
           )
         )}

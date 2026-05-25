@@ -33,6 +33,9 @@ import {
   Check,
   Maximize2,
   Minimize2,
+  Sun,
+  Moon,
+  PanelRightClose,
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
 import { TreeBrowser } from './TreeBrowser'
@@ -40,6 +43,7 @@ import { compressImage } from '@/lib/imageCompress'
 import { startChatStream, cancelChatStream, useApi } from '@/hooks/useApi'
 import { useChat } from '@/contexts/ChatContext'
 import { useTranslation } from 'react-i18next'
+import { useTheme } from '@/contexts/ThemeContext'
 
 import openaiIcon from '@/assets/OpenAI.svg'
 import lmStudioIcon from '@/assets/lm-studio.png'
@@ -84,6 +88,9 @@ interface ChatPanelProps {
   onWorkspacePathChange?: (path: string) => void
   onToggleConsole?: () => void
   consoleCollapsed?: boolean
+  onToggleFilePanel?: () => void
+  onToggleTerminal?: () => void
+  terminalOpen?: boolean
 }
 
 // ---- Helpers ----
@@ -91,8 +98,9 @@ function genId() {
   return `msg_${crypto.randomUUID()}`
 }
 
-export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorkspacePathChange, onToggleConsole, consoleCollapsed }: ChatPanelProps) {
+export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorkspacePathChange, onToggleConsole, consoleCollapsed, onToggleFilePanel, onToggleTerminal, terminalOpen }: ChatPanelProps) {
   const { t } = useTranslation()
+  const { theme, toggle: toggleTheme } = useTheme()
   const { currentSession, setCurrentSession, messages: contextMessages, refreshSessionList, defaultModelName, refreshModelKey, setDefaultModelName } = useChat()
   const sessionIdRef = useRef<string | undefined>(undefined)
   const userContentRef = useRef('') // 保存用户消息用于标题生成
@@ -899,8 +907,21 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           )}
         </div>
         <div className="flex items-center gap-1">
-          <button className="p-1.5 rounded hover:bg-foreground/10 transition-colors">
-            <Plus className="w-4 h-4 text-foreground/60" />
+          {/* 主题切换 */}
+          <button onClick={toggleTheme} className="p-1.5 rounded hover:bg-foreground/10 transition-colors" title={theme === 'dark' ? '切换亮色模式' : '切换暗色模式'}>
+            {theme === 'dark' ? <Sun className="w-4 h-4 text-foreground/60" /> : <Moon className="w-4 h-4 text-foreground/60" />}
+          </button>
+          {/* 终端切换 */}
+          <button
+            onClick={onToggleTerminal}
+            className={`p-1.5 rounded hover:bg-foreground/10 transition-colors ${terminalOpen ? 'bg-foreground/10' : ''}`}
+            title="终端"
+          >
+            <Terminal className="w-4 h-4 text-foreground/60" />
+          </button>
+          {/* 文件面板切换 */}
+          <button onClick={onToggleFilePanel} className="p-1.5 rounded hover:bg-foreground/10 transition-colors" title="文件预览">
+            <PanelRightClose className="w-4 h-4 text-foreground/60" />
           </button>
           <div className="relative">
             <button
