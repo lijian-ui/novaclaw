@@ -680,7 +680,7 @@ export function FileExplorer({ onFileOpen, customPath }: FileExplorerProps) {
   return (
     <div className="h-full flex flex-col bg-mainbg select-none" onContextMenu={(e) => handleContextMenu(e, null)}>
       {/* 工具栏 */}
-      <div className="flex items-center gap-1 px-4 py-4 border-b border-border shrink-0">
+      <div className="flex items-center gap-1 px-4 py-3 border-b border-border shrink-0">
         <button title="新建文件" onClick={() => startCreating('file')}
           className={`p-1.5 rounded-md transition-colors ${creatingType ? 'text-blue-400 bg-blue-500/10' : 'text-foreground/40 hover:text-foreground/70 hover:bg-foreground/10'}`}
         ><FilePlus className="w-4 h-4" /></button>
