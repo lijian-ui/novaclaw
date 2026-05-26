@@ -93,6 +93,7 @@ Jeeves 提供了 21 个内置工具，覆盖文件操作、搜索分析、网络
 |---------|------|---------|---------|
 | `cron` | 管理定时任务。Actions: list/create/get/update/remove/run | `action` | `name`, `schedule`, `payload`, `id` |
 | `delegate_task` | 委托子任务给专门的子 Agent（支持并行委托多个） | `agent_id`, `task` | - |
+| `agent_manage` | 管理智能体：创建/查看/更新/删除，设置 SOUL.md 和工具列表 | `action`, `soul` | `id`, `name`, `description`, `model`, `enabled_tools`, `max_iterations`, `temperature` |
 
 ### IM 推送工具
 
@@ -128,4 +129,4 @@ Jeeves 提供了 21 个内置工具，覆盖文件操作、搜索分析、网络
 | 命令执行 | 3 | execute_command, execute_command_bg, poll_command |
 | 系统管理 | 3 | cron, delegate_task, agent_manage |
 | IM 推送 | 1 | im_push |
-| **总计** | **22** | |
+| **总计** | **23** | |
