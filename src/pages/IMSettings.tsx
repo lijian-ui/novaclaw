@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, ArrowLeft, Webhook } from 'lucide-react'
+import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, ArrowLeft, Webhook, Scan } from 'lucide-react'
 import { getApiBase } from '@/hooks/useApi'
 import { useTranslation } from 'react-i18next'
 import dingtalkIcon from '@/assets/dingtalk.png'
@@ -29,6 +29,7 @@ interface IMSettingsProps {
 const channelTypes = [
   { id: 'dingtalk', name: '钉钉', icon: dingtalkIcon, color: 'text-blue-400' },
   { id: 'feishu', name: '飞书', icon: feishuIcon, color: 'text-green-400' },
+  { id: 'weixin', name: '个人微信', icon: '', color: 'text-emerald-400' },
 ]
 
 interface FormState {
@@ -56,8 +57,116 @@ const emptyForm: FormState = {
 }
 
 // 从通道配置推断所属平台类型
+// ─── 微信扫码绑定组件 ──────────────────────────────────────
+function WeChatBind({ onToken }: { onToken: (token: string, id: string) => void }) {
+  const [scanning, setScanning] = useState(false)
+  const [qrUrl, setQrUrl] = useState('')
+  const [sessionId, setSessionId] = useState('')
+  const [status, setStatus] = useState('')
+  const { t } = useTranslation()
+
+  const startScan = useCallback(async () => {
+    setScanning(true)
+    setStatus('正在获取二维码...')
+    try {
+      const res = await fetch(`${getApiBase()}/weixin/qrcode`)
+      const body = await res.json()
+      if (body.success && body.data) {
+        setQrUrl(body.data.qrcode_url)
+        setSessionId(body.data.session)
+        setStatus('wait')
+
+        // 开始轮询状态
+        pollStatus(body.data.session)
+      } else {
+        setStatus('获取二维码失败: ' + (body.message || '未知错误'))
+      }
+    } catch (e) {
+      setStatus('请求失败: ' + (e instanceof Error ? e.message : String(e)))
+    }
+  }, [])
+
+  const pollStatus = useCallback(async (session: string) => {
+    while (true) {
+      try {
+        const res = await fetch(`${getApiBase()}/weixin/status?session=${session}`)
+        const body = await res.json()
+        if (!body.success) {
+          setStatus('轮询失败')
+          break
+        }
+        setStatus(body.status)
+        if (body.status === 'confirmed') {
+          onToken(body.bot_token || '', body.ilink_bot_id || '')
+          setScanning(false)
+          break
+        }
+        if (body.status === 'expired' || body.status === 'invalid') {
+          setScanning(false)
+          break
+        }
+        // wait / scaned 继续轮询
+      } catch {
+        setStatus('连接中断')
+        break
+      }
+    }
+  }, [onToken])
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 mb-2">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-mono">iLink</span>
+        <span className="text-[10px] text-foreground/30">微信官方长轮询协议，需扫码登录</span>
+      </div>
+
+      {!scanning ? (
+        <button
+          onClick={startScan}
+          className="w-full flex items-center justify-center gap-2 py-3 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-white text-sm font-medium transition-colors"
+        >
+          <Scan className="w-4 h-4" />
+          扫码绑定微信
+        </button>
+      ) : (
+        <div className="rounded-lg bg-foreground/5 border border-border p-4">
+          {qrUrl && (
+            <div className="flex flex-col items-center gap-3">
+              <img
+                src={qrUrl}
+                alt="微信扫码"
+                className="w-48 h-48 rounded-lg border border-border"
+                onError={(e) => {
+                  // 如果图片加载失败，显示文字提示
+                  (e.target as HTMLImageElement).style.display = 'none'
+                }}
+              />
+              <div className="text-center">
+                <p className="text-xs text-foreground/70">请用微信扫描二维码</p>
+                <p className={`text-xs mt-1 ${
+                  status === 'confirmed' ? 'text-green-400' :
+                  status === 'scaned' ? 'text-blue-400' :
+                  status === 'expired' ? 'text-red-400' :
+                  'text-foreground/40'
+                }`}>
+                  {status === 'wait' && '等待扫码...'}
+                  {status === 'scaned' && '已扫码，请在手机上确认...'}
+                  {status === 'confirmed' && '✓ 绑定成功'}
+                  {status === 'expired' && '二维码已过期，请重新获取'}
+                  {(status !== 'wait' && status !== 'scaned' && status !== 'confirmed' && status !== 'expired') && status}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function detectChannelType(channel: IMChannel): string {
   if (channel.config.appId || channel.config.appSecret) return 'feishu'
+  if (channel.channel_type === 'weixin') return 'weixin'
   return 'dingtalk'
 }
 
@@ -404,6 +513,18 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                       />
                     </div>
                   </>
+                )}
+
+                {selectedChannelType === 'weixin' && (
+                  <WeChatBind
+                    onToken={(token, id) => {
+                      setForm(f => ({
+                        ...f,
+                        clientId: token,
+                        name: id || '个人微信',
+                      }))
+                    }}
+                  />
                 )}
 
                 {selectedChannelType === 'feishu' && (

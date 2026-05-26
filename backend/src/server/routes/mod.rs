@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod im;
 pub mod mentions;
 pub mod tools;
+pub mod weixin_login;
 
 use axum::{response::IntoResponse, Router};
 
@@ -26,6 +27,7 @@ pub fn build() -> Router {
         .merge(logs::routes())
         .merge(mcp::routes())
         .merge(im::routes())
+        .merge(weixin_login::routes())
         .merge(mentions::routes())
         .merge(tools::routes())
         .fallback(|req: axum::extract::Request| async move {
