@@ -5,7 +5,8 @@ use serde_json::json;
 pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
-            name: "cron".to_string(),
+                        name: "cron".to_string(),
+            display_name: "定时任务".to_string(),
             description:
                 "Manage cron jobs and scheduled tasks. You MUST write a valid 5-field cron expression yourself. Actions: list (list all), create (name + cron expression + payload), get (by id), update (by id), remove (by id), run (by id)"
                     .to_string(),

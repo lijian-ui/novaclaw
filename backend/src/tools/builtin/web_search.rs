@@ -29,7 +29,8 @@ pub async fn register(registry: &ToolRegistry, tinyfish_api_key: &Option<String>
 
     registry
         .register(ToolDef {
-            name: "web_search".to_string(),
+                        name: "web_search".to_string(),
+            display_name: "网络搜索".to_string(),
             description:
                 "Search the web (DuckDuckGo / TinyFish / Tavily). Params: query (required), count (optional, max 10)"
                     .to_string(),

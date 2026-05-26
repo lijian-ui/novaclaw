@@ -5,7 +5,8 @@ use serde_json::json;
 pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
-            name: "delegate_task".to_string(),
+                        name: "delegate_task".to_string(),
+            display_name: "委托任务".to_string(),
             description: "Delegate a subtask to a specialized sub-agent. The sub-agent will think independently and complete the task, then report back.\nUse cases:\n- Need code review → delegate to code-reviewer\n- Need data analysis → delegate to data-analyst\n- Need web search → delegate to web-researcher\n\nYou can delegate multiple different tasks to different agents simultaneously. They will execute in parallel without blocking each other. For example:\n  delegate_task(\"code-reviewer\", \"Analyze project A\")\n  delegate_task(\"code-reviewer\", \"Analyze project B\")\n\nSub-agents can use their own tools to complete assigned tasks."
                 .to_string(),
             parameters: json!({

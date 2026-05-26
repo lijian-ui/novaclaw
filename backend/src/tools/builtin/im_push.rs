@@ -7,7 +7,8 @@ use serde_json::json;
 pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
-            name: "im_push".to_string(),
+                        name: "im_push".to_string(),
+            display_name: "IM推送".to_string(),
             description: r#"Send a message to an IM platform (DingTalk, etc.) via a specific bot account.
 Use this to proactively push notifications, alerts, or scheduled messages to users or groups.
 

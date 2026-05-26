@@ -95,7 +95,8 @@ pub async fn register(registry: &ToolRegistry) {
     // ── todo_write: set 语义，一次替换整个列表 ──
     registry
         .register(ToolDef {
-            name: "todo_write".to_string(),
+                        name: "todo_write".to_string(),
+            display_name: "编辑待办".to_string(),
             description:
                 "Write the full todo task list (replace mode). One call sets the entire list, completely replacing the previous one.\n\nEach task can have a status: pending, in_progress, completed\nOnly one task can be in_progress at a time.\nTasks can have priority: high, medium, low.\n\nUse cases:\n- Plan before starting complex tasks\n- Update task status during execution\n- Mark tasks as completed when done".to_string(),
             parameters: json!({
@@ -170,7 +171,8 @@ pub async fn register(registry: &ToolRegistry) {
     // ── todo_list: 查看当前待办列表 ──
     registry
         .register(ToolDef {
-            name: "todo_list".to_string(),
+                        name: "todo_list".to_string(),
+            display_name: "查看待办".to_string(),
             description:
                 "View the current session's todo task list. Returns a formatted list with status and progress."
                     .to_string(),

@@ -204,6 +204,8 @@ pub struct CircuitBreakerSnapshot {
 #[derive(Clone)]
 pub struct ToolDef {
     pub name: String,
+    /// 中文显示名称（供前端 UI 使用，不进入 LLM 提示词）
+    pub display_name: String,
     pub description: String,
     pub parameters: Value,
     pub handler: Arc<dyn Fn(Value, Option<mpsc::UnboundedSender<String>>) -> Result<String, String> + Send + Sync>,
@@ -257,6 +259,25 @@ impl ToolRegistry {
     pub async fn get(&self, name: &str) -> Option<ToolDef> {
         let tools = self.tools.read().await;
         tools.get(name).cloned()
+    }
+
+    /// 列出所有工具（含展示名称，供前端 API 使用）
+    pub async fn list_tools_info(&self) -> Vec<serde_json::Value> {
+        let tools = self.tools.read().await;
+        let mut list: Vec<serde_json::Value> = tools
+            .values()
+            .map(|t| {
+                serde_json::json!({
+                    "name": t.name,
+                    "display_name": t.display_name,
+                    "description": t.description,
+                })
+            })
+            .collect();
+        list.sort_by(|a, b| {
+            a["name"].as_str().unwrap_or("").cmp(b["name"].as_str().unwrap_or(""))
+        });
+        list
     }
 
     /// 获取所有已注册工具的名称列表（仅名称）

@@ -9,6 +9,7 @@ pub mod logs;
 pub mod mcp;
 pub mod im;
 pub mod mentions;
+pub mod tools;
 
 use axum::{response::IntoResponse, Router};
 
@@ -26,6 +27,7 @@ pub fn build() -> Router {
         .merge(mcp::routes())
         .merge(im::routes())
         .merge(mentions::routes())
+        .merge(tools::routes())
         .fallback(|req: axum::extract::Request| async move {
             tracing::warn!("未匹配路由: {} {}", req.method(), req.uri());
             (axum::http::StatusCode::NOT_FOUND, "route not found").into_response()

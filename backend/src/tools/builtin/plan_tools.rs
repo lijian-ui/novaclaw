@@ -73,7 +73,8 @@ fn format_plan(plan: &PlanDocument) -> String {
 pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
-            name: "submit_plan".to_string(),
+                        name: "submit_plan".to_string(),
+            display_name: "提交计划".to_string(),
             description:
                 "Submit an execution plan for user approval. When facing complex tasks (3+ steps or risky operations), call this tool to lay out the plan first, then wait for user confirmation before executing.\n\nUse cases:\n- Major changes requested by user\n- Multi-file, multi-step operations\n- High-risk changes (delete, refactor, database changes, etc.)\n\nAfter submitting, wait for user approval before starting execution.".to_string(),
             parameters: json!({

@@ -7,7 +7,8 @@ pub async fn register(registry: &ToolRegistry) {
     // read_file tool
     registry
         .register(ToolDef {
-            name: "read_file".to_string(),
+                        name: "read_file".to_string(),
+            display_name: "读取文件".to_string(),
             description:
                 "Read file content. Params: path (required), offset (optional line number), limit (optional max lines)"
                     .to_string(),
@@ -52,7 +53,8 @@ pub async fn register(registry: &ToolRegistry) {
     // write_file tool
     registry
         .register(ToolDef {
-            name: "write_file".to_string(),
+                        name: "write_file".to_string(),
+            display_name: "写入文件".to_string(),
             description:
                 "Write content to a file (auto-creates dirs). Params: path (required), content (required)"
                     .to_string(),
@@ -96,7 +98,8 @@ pub async fn register(registry: &ToolRegistry) {
     // edit_file tool
     registry
         .register(ToolDef {
-            name: "edit_file".to_string(),
+                        name: "edit_file".to_string(),
+            display_name: "编辑文件".to_string(),
             description:
                 "Find and replace text in a file (1 replacement). Params: path (required), old_string (required), new_string (required)"
                     .to_string(),
@@ -152,7 +155,8 @@ pub async fn register(registry: &ToolRegistry) {
     // glob file search tool
     registry
         .register(ToolDef {
-            name: "glob".to_string(),
+                        name: "glob".to_string(),
+            display_name: "搜索文件".to_string(),
             description:
                 "Search files by glob pattern. Params: pattern (required, e.g. **/*.rs or **/*), path (optional directory)"
                     .to_string(),
@@ -219,7 +223,8 @@ pub async fn register(registry: &ToolRegistry) {
     // grep content search tool
     registry
         .register(ToolDef {
-            name: "grep".to_string(),
+                        name: "grep".to_string(),
+            display_name: "搜索文本".to_string(),
             description:
                 "Search text in files with regex. Pass a directory path as 'path' (not a glob pattern). Params: pattern (required), path (optional directory, e.g. '.' or 'scripts'), include (optional file filter like '*.rs')"
                     .to_string(),
@@ -327,7 +332,8 @@ pub async fn register(registry: &ToolRegistry) {
     // search_replace tool - batch find and replace across files
     registry
         .register(ToolDef {
-            name: "search_replace".to_string(),
+                        name: "search_replace".to_string(),
+            display_name: "批量替换".to_string(),
             description:
                 "Batch find and replace text across multiple files using regex. Params: pattern (required, regex), replacement (required), path (optional directory, default workspace), include (optional file filter like '*.rs' or '*.tsx')"
                     .to_string(),
@@ -423,7 +429,8 @@ pub async fn register(registry: &ToolRegistry) {
     // list_dir tool - list directory contents
     registry
         .register(ToolDef {
-            name: "list_dir".to_string(),
+                        name: "list_dir".to_string(),
+            display_name: "列出目录".to_string(),
             description:
                 "List files and directories. Params: path (optional, default workspace). Returns directory entries with name, type, and size"
                     .to_string(),
@@ -495,7 +502,8 @@ pub async fn register(registry: &ToolRegistry) {
     // rename_file tool
     registry
         .register(ToolDef {
-            name: "rename_file".to_string(),
+                        name: "rename_file".to_string(),
+            display_name: "重命名文件".to_string(),
             description:
                 "Rename or move a file/directory. Params: path (required, source), new_path (required, destination)"
                     .to_string(),

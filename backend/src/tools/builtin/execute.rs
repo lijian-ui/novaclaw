@@ -7,7 +7,8 @@ pub async fn register(registry: &ToolRegistry) {
     // ── execute_command: 同步执行（原地等待结果） ──
     registry
         .register(ToolDef {
-            name: "execute_command".to_string(),
+                        name: "execute_command".to_string(),
+            display_name: "执行命令".to_string(),
             description: "Execute a shell command (quick, returns result directly). For long-running commands, use execute_command_bg. Params: command (required), description (optional), timeout (default 60s, max 300), workdir (optional)".to_string(),
             parameters: json!({
                 "type": "object",
@@ -105,7 +106,8 @@ pub async fn register(registry: &ToolRegistry) {
     // ── execute_command_bg: 后台执行（立即返回 task_id） ──
     registry
         .register(ToolDef {
-            name: "execute_command_bg".to_string(),
+                        name: "execute_command_bg".to_string(),
+            display_name: "后台执行".to_string(),
             description: "Execute a shell command in BACKGROUND, returns a task_id immediately. Use for long-running commands. Check result later with poll_command. Params: command (required), description (optional), workdir (optional)".to_string(),
             parameters: json!({
                 "type": "object",
@@ -164,7 +166,8 @@ pub async fn register(registry: &ToolRegistry) {
     // ── poll_command: 查询后台命令结果 ──
     registry
         .register(ToolDef {
-            name: "poll_command".to_string(),
+                        name: "poll_command".to_string(),
+            display_name: "查询任务".to_string(),
             description: "Check the status of a background command. Params: task_id (required)".to_string(),
             parameters: json!({
                 "type": "object",

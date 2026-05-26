@@ -202,31 +202,12 @@ interface ProfileFormProps {
   onCancel: () => void
 }
 
-// 所有内置工具列表（不变常量）
-const ALL_TOOLS: { name: string; description: string }[] = [
-  { name: 'read_file', description: '读取文件内容' },
-  { name: 'write_file', description: '写入文件内容' },
-  { name: 'edit_file', description: '修改文件内容' },
-  { name: 'glob', description: '搜索匹配的文件路径' },
-  { name: 'grep', description: '在文件中搜索文本' },
-  { name: 'memory', description: '读取/保存长期记忆' },
-  { name: 'session_search', description: '搜索历史对话' },
-  { name: 'web_search', description: '搜索网络信息' },
-  { name: 'web_fetch', description: '抓取网页内容' },
-  { name: 'skill_view', description: '查看技能说明' },
-  { name: 'todo_write', description: '写入待办任务列表' },
-  { name: 'todo_list', description: '查看待办任务列表' },
-  { name: 'submit_plan', description: '提交执行计划' },
-  { name: 'search_replace', description: '搜索替换文件内容' },
-  { name: 'list_dir', description: '列出目录文件' },
-  { name: 'rename_file', description: '重命名文件' },
-  { name: 'apply_patch', description: '应用代码补丁' },
-  { name: 'execute_command', description: '执行终端命令（快速）' },
-  { name: 'execute_command_bg', description: '后台执行命令' },
-  { name: 'poll_command', description: '查询后台命令结果' },
-  { name: 'cron', description: '管理定时任务' },
-  { name: 'delegate_task', description: '委托任务给子智能体' },
-]
+// 工具信息接口（从后端 API 动态获取）
+interface ToolInfo {
+  name: string
+  display_name: string
+  description: string
+}
 
 function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
   const { t } = useTranslation()
@@ -242,8 +223,14 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
   const [enabledTools, setEnabledTools] = useState<string[]>(
     initial?.enabled_tools && initial.enabled_tools.length > 0
       ? initial.enabled_tools
-      : ALL_TOOLS.map(t => t.name)
+      : []
   )
+  // 工具列表加载后，如果 enabledTools 为空且没有初始值，默认全选
+  useEffect(() => {
+    if (toolsLoaded && enabledTools.length === 0 && !initial?.enabled_tools?.length) {
+      setEnabledTools(allTools.map(t => t.name))
+    }
+  }, [toolsLoaded, allTools, initial])
   const [maxIterations, setMaxIterations] = useState(initial?.max_iterations ?? 0)
   const [temperature, setTemperature] = useState<number | null>(initial?.temperature ?? null)
   const [compactThreshold, setCompactThreshold] = useState<number | null>(initial?.compact_threshold ?? null)
@@ -252,6 +239,17 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
 
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [modelOpen, setModelOpen] = useState(false)
+  const [allTools, setAllTools] = useState<ToolInfo[]>([])
+  const [toolsLoaded, setToolsLoaded] = useState(false)
+
+  // 从后端动态获取工具列表
+  useEffect(() => {
+    fetch(`${getApiBase()}/tools`).then(r => r.json()).then(body => {
+      if (body.success && body.data) {
+        setAllTools(body.data)
+      }
+    }).catch(() => {}).finally(() => setToolsLoaded(true))
+  }, [])
 
   useEffect(() => {
     fetch(`${getApiBase()}/models-config`).then(r => r.json()).then(body => {
@@ -418,8 +416,10 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
       <div>
         <label className="block text-[10px] text-foreground/50 mb-1">{t('settings.employeeTools')}</label>
         <div className="rounded-lg bg-foreground/5 border border-border overflow-hidden">
-          {ALL_TOOLS.length === 0 ? (
+          {!toolsLoaded ? (
             <div className="text-xs text-foreground/40 py-3 px-3">{t('settings.employeeToolsLoading')}</div>
+          ) : allTools.length === 0 ? (
+            <div className="text-xs text-foreground/40 py-3 px-3">暂无可用工具</div>
           ) : (
             <table className="w-full text-xs">
               <thead>
@@ -427,10 +427,10 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
                   <th className="w-10 px-3 py-2 text-left">
                     <input
                       type="checkbox"
-                      checked={enabledTools.length === ALL_TOOLS.length}
+                      checked={allTools.length > 0 && enabledTools.length === allTools.length}
                       onChange={() => {
-                        if (enabledTools.length === ALL_TOOLS.length) setEnabledTools([])
-                        else setEnabledTools(ALL_TOOLS.map(t => t.name))
+                        if (enabledTools.length === allTools.length) setEnabledTools([])
+                        else setEnabledTools(allTools.map(t => t.name))
                       }}
                       className="w-3.5 h-3.5 rounded border-foreground/30 accent-amber-500"
                     />
@@ -440,7 +440,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
                 </tr>
               </thead>
               <tbody>
-                {ALL_TOOLS.map(tool => {
+                {allTools.map(tool => {
                   const sel = enabledTools.includes(tool.name)
                   return (
                     <tr key={tool.name} onClick={() => toggleTool(tool.name)}
@@ -449,7 +449,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
                         <input type="checkbox" checked={sel} onChange={() => toggleTool(tool.name)}
                           className="w-3.5 h-3.5 rounded border-foreground/30 accent-amber-500" />
                       </td>
-                      <td className={`px-2 py-2 font-medium ${sel ? 'text-amber-600 dark:text-amber-300' : 'text-foreground/70'}`}>{tool.name}</td>
+                      <td className={`px-2 py-2 font-medium ${sel ? 'text-amber-600 dark:text-amber-300' : 'text-foreground/70'}`}>{tool.display_name || tool.name}</td>
                       <td className="px-2 py-2 text-foreground/40 truncate max-w-[200px] hidden sm:table-cell">{tool.description}</td>
                     </tr>
                   )
@@ -459,7 +459,7 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
           )}
           <div className="flex items-center justify-between px-3 py-2 border-t border-border">
             <span className="text-[10px] text-foreground/30">
-              {enabledTools.length === 0 ? t('settings.employeeToolsAll') : t('settings.employeeToolsCount', { n: enabledTools.length, total: ALL_TOOLS.length })}
+              {enabledTools.length === 0 ? t('settings.employeeToolsAll') : t('settings.employeeToolsCount', { n: enabledTools.length, total: allTools.length })}
             </span>
             {enabledTools.length > 0 && (
               <button onClick={() => setEnabledTools([])} className="text-[10px] text-red-400/60 hover:text-red-400">{t('settings.employeeToolsClear')}</button>

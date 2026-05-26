@@ -504,7 +504,8 @@ pub async fn register_tools(registry: &crate::tools::registry::ToolRegistry) {
         };
 
         let tool_def = ToolDef {
-            name: entry_name.clone(),
+                        name: entry_name.clone(),
+            display_name: entry_name.clone(),
             description: full_description,
             parameters: input_schema,
             handler,

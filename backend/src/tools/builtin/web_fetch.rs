@@ -14,7 +14,8 @@ pub async fn register(registry: &ToolRegistry) {
 
     registry
         .register(ToolDef {
-            name: "web_fetch".to_string(),
+                        name: "web_fetch".to_string(),
+            display_name: "抓取网页".to_string(),
             description:
                 "Fetch and read the full content of a web page by URL. Use this after web_search to read the actual content of interesting results. Returns the page content as text."
                     .to_string(),

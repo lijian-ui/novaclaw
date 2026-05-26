@@ -5,7 +5,8 @@ use serde_json::json;
 pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
-            name: "apply_patch".to_string(),
+                        name: "apply_patch".to_string(),
+            display_name: "应用补丁".to_string(),
             description: "Apply a unified diff (patch) to files. The diff format is standard 'diff -u' output with ---/+++ headers and @@ hunks. Params: diff (required, the patch content)"
                 .to_string(),
             parameters: json!({

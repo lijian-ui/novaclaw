@@ -12,7 +12,8 @@ pub async fn register(
     let memory_store_for_memory = memory_store.clone();
     registry
         .register(ToolDef {
-            name: "memory".to_string(),
+                        name: "memory".to_string(),
+            display_name: "持久记忆".to_string(),
             description: "Save and search persistent facts across sessions. Actions: add (save fact), search (find by keyword), replace (update, use 'old | new' format), remove (delete). Not for temporary data — use session_search instead."
                 .to_string(),
             parameters: json!({
@@ -115,7 +116,8 @@ pub async fn register(
     let session_store_for_search = session_store.clone();
     registry
         .register(ToolDef {
-            name: "session_search".to_string(),
+                        name: "session_search".to_string(),
+            display_name: "会话搜索".to_string(),
             description:
                 "Search the current session history for temporary info like task progress or past decisions. Use instead of memory/search for session-specific data. Params: query (required), limit (optional, default 5)"
                     .to_string(),
@@ -193,7 +195,8 @@ pub async fn register(
     let skills_loader_for_view = skills_loader.clone();
     registry
         .register(ToolDef {
-            name: "skill_view".to_string(),
+                        name: "skill_view".to_string(),
+            display_name: "查看技能".to_string(),
             description:
                 "Load a skill's full instructions and resources. Skills contain specialized knowledge — API endpoints, commands, and proven workflows. ALWAYS load a relevant skill before attempting a task with generic tools. Call first to get the instructions and a linked_files listing; then call again with file_path to load scripts, templates, or references. Available skills are listed under '## Skills (mandatory)' in the system prompt."
                     .to_string(),
