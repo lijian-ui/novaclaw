@@ -126,6 +126,6 @@ Jeeves 提供了 21 个内置工具，覆盖文件操作、搜索分析、网络
 | 技能 | 1 | skill_view |
 | 任务计划 | 3 | todo_write, todo_list, submit_plan |
 | 命令执行 | 3 | execute_command, execute_command_bg, poll_command |
-| 系统管理 | 2 | cron, delegate_task |
+| 系统管理 | 3 | cron, delegate_task, agent_manage |
 | IM 推送 | 1 | im_push |
 | **总计** | **22** | |

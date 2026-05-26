@@ -14,6 +14,7 @@ pub mod cron;
 pub mod delegate;
 pub mod memory_tools;
 pub mod im_push;
+pub mod agent_manage;
 
 /// 解析文件路径
 /// 如果是相对路径，优先使用会话的工作目录；没有则使用全局默认 workspace
@@ -70,6 +71,7 @@ pub fn register_all(
             cron::register(&registry_clone).await;
             delegate::register(&registry_clone).await;
             im_push::register(&registry_clone).await;
+            agent_manage::register(&registry_clone).await;
             tracing::info!("内置工具注册完成");
         });
     })

@@ -131,7 +131,7 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <Brain className={`w-4 h-4 shrink-0 ${isDefault ? 'text-orange-400' : 'text-cyan-400'}`} />
-                        <span className="text-sm font-medium text-foreground/90">{isDefault ? '默认智能体' : profile.name}</span>
+                        <span className="text-sm font-medium text-foreground/90">{isDefault ? 'Jeeves' : profile.name}</span>
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50 font-mono">{profile.id}</span>
                         {isDefault && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-orange-500/10 text-orange-400 border border-orange-500/20">默认</span>
