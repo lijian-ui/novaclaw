@@ -28,6 +28,7 @@ Jeeves 提供了 21 个内置工具，覆盖文件操作、搜索分析、网络
 | 工具名称 | 描述 | 必需参数 | 可选参数 |
 |---------|------|---------|---------|
 | `web_search` | 网络搜索（DuckDuckGo / TinyFish / Tavily） | `query` | `count` |
+| `web_fetch` | 抓取指定 URL 的页面内容（配合 web_search 使用） | `url` | `max_length` |
 
 #### 搜索引擎执行顺序
 
@@ -120,11 +121,11 @@ Jeeves 提供了 21 个内置工具，覆盖文件操作、搜索分析、网络
 |------|------|------|
 | 文件操作 | 6 | read_file, write_file, edit_file, list_dir, rename_file, apply_patch |
 | 搜索分析 | 3 | glob, grep, search_replace |
-| 网络搜索 | 1 | web_search |
+| 网络搜索 | 2 | web_search, web_fetch |
 | 记忆会话 | 2 | memory, session_search |
 | 技能 | 1 | skill_view |
 | 任务计划 | 3 | todo_write, todo_list, submit_plan |
 | 命令执行 | 3 | execute_command, execute_command_bg, poll_command |
 | 系统管理 | 2 | cron, delegate_task |
 | IM 推送 | 1 | im_push |
-| **总计** | **21** | |
+| **总计** | **22** | |

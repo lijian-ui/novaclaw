@@ -5,6 +5,7 @@ use super::registry::ToolRegistry;
 
 pub mod file_ops;
 pub mod web_search;
+pub mod web_fetch;
 pub mod apply_patch;
 pub mod plan_tools;
 pub mod todo_tools;
@@ -63,6 +64,7 @@ pub fn register_all(
             todo_tools::register(&registry_clone).await;
             plan_tools::register(&registry_clone).await;
             web_search::register(&registry_clone, &tinyfish_api_key, &tavily_api_key).await;
+            web_fetch::register(&registry_clone).await;
             apply_patch::register(&registry_clone).await;
             execute::register(&registry_clone).await;
             cron::register(&registry_clone).await;
