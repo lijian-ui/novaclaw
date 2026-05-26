@@ -14,6 +14,7 @@ Each agent has its own identity (SOUL.md), tool set, and model configuration.
 
 Actions:
 - "list" — List all agents with their id, name, description, tools, and has_soul status.
+- "list_tools" — List all available tools that can be assigned to agents. Call this before create to see what tools exist.
 - "create" — Create a new agent. Requires: id, name, description. Optional: enabled_tools, model, soul.
 - "view" — View agent details including config and SOUL.md content. Requires: id.
 - "update" — Update agent config (name, description, model, enabled_tools, etc). Requires: id.
@@ -29,8 +30,8 @@ Examples:
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "create", "view", "update", "delete", "set_soul"],
-                        "description": "Action to perform"
+                        "enum": ["list", "list_tools", "create", "view", "update", "delete", "set_soul"],
+                        "description": "Action: list (agents), list_tools (available tools), create, view, update, delete, set_soul"
                     },
                     "id": {
                         "type": "string",
@@ -51,7 +52,7 @@ Examples:
                     "enabled_tools": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "List of tool names this agent can use (empty = all tools)"
+                        "description": "IMPORTANT: Call action='list_tools' FIRST to see all available tool names. Use the actual tool names here (e.g. ['read_file', 'web_search']). If omitted or empty, ALL tools are available — only restrict when the agent genuinely shouldn't access certain tools."
                     },
                     "soul": {
                         "type": "string",
@@ -66,7 +67,7 @@ Examples:
                         "description": "LLM temperature (optional, uses global default if omitted)"
                     }
                 },
-                "required": ["action"]
+                "required": ["action", "soul"]
             }),
             handler: std::sync::Arc::new(
                 move |args: serde_json::Value,
@@ -101,6 +102,15 @@ Examples:
                                 }
                             }
                             Ok(json!({"success": true, "data": agents}).to_string())
+                        }
+
+                        "list_tools" => {
+                            let rt = tokio::runtime::Handle::current();
+                            let tools = rt.block_on(async {
+                                let state = crate::APP_STATE.read().await;
+                                state.tool_registry.list_tools_info().await
+                            });
+                            Ok(json!({"success": true, "data": tools}).to_string())
                         }
 
                         "create" => {

@@ -15,6 +15,7 @@ pub mod security;
 pub mod soul;
 pub mod dingtalk;
 pub mod im;
+pub mod weixin;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -249,6 +250,52 @@ pub async fn initialize() {
 
                     total_accounts += 1;
                     tracing::info!("钉钉账号已注册: {} (name={:?})", account_id, account_cfg.name);
+                }
+            }
+            "weixin" => {
+                let account_ids = channel.enabled_account_ids();
+                if account_ids.is_empty() {
+                    tracing::warn!("微信渠道 '{}' 没有有效的账号配置", channel.name);
+                    continue;
+                }
+
+                for account_id in &account_ids {
+                    let account_cfg = match channel.get_account(account_id) {
+                        Some(c) => c,
+                        None => continue,
+                    };
+
+                    if !account_cfg.enabled { continue; }
+
+                    let base_url = account_cfg.policies.allow_from.as_ref()
+                        .and_then(|v| v.first()).map(|s| s.as_str())
+                        .unwrap_or("https://ilinkai.weixin.qq.com");
+
+                    let wx_client = std::sync::Arc::new(
+                        crate::weixin::WeixinClient::new(
+                            base_url.to_string(),
+                            account_id.clone(),
+                            account_cfg.credentials.client_id.clone(),
+                        )
+                    );
+
+                    let wx_adapter = std::sync::Arc::new(
+                        crate::weixin::WeixinAdapter::new(wx_client.clone(), account_id.clone())
+                    );
+
+                    // 启动长轮询
+                    wx_adapter.start_polling(gateway.incoming_tx.clone());
+
+                    gateway.register(crate::im::registry::AccountInfo {
+                        account_id: account_id.clone(),
+                        platform: crate::im::types::PlatformType::Custom("weixin".to_string()),
+                        adapter: wx_adapter,
+                        enabled: true,
+                        name: account_cfg.name.clone(),
+                    }).await;
+
+                    total_accounts += 1;
+                    tracing::info!("微信账号已注册: {} (name={:?})", account_id, account_cfg.name);
                 }
             }
             _ => {

@@ -21,15 +21,16 @@ pub fn session_source_from_incoming(msg: &IncomingMessage) -> SessionSource {
 }
 
 /// 生成平台中文名称
-pub fn platform_chinese_name(platform: &PlatformType) -> &'static str {
+pub fn platform_chinese_name(platform: &PlatformType) -> String {
     match platform {
-        PlatformType::DingTalk => "钉钉",
-        PlatformType::WeChatWork => "企业微信",
-        PlatformType::Feishu => "飞书",
-        PlatformType::Slack => "Slack",
-        PlatformType::Discord => "Discord",
-        PlatformType::Telegram => "Telegram",
-        PlatformType::Custom(_) => "自定义平台",
+        PlatformType::DingTalk => "钉钉".to_string(),
+        PlatformType::WeChatWork => "企业微信".to_string(),
+        PlatformType::Feishu => "飞书".to_string(),
+        PlatformType::Slack => "Slack".to_string(),
+        PlatformType::Discord => "Discord".to_string(),
+        PlatformType::Telegram => "Telegram".to_string(),
+        PlatformType::Custom(s) if s == "weixin" => "个人微信".to_string(),
+        PlatformType::Custom(s) => format!("自定义({})", s),
     }
 }
 

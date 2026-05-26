@@ -72,9 +72,10 @@ pub async fn register(registry: &ToolRegistry) {
                             String::from_utf8_lossy(&bytes).to_string()
                         };
 
-                        let truncated = if text.len() > max_length {
+                        let text_len = text.len();
+                        let truncated = if text_len > max_length {
                             format!("{}...\n\n[内容已截断，共 {} 字符，显示前 {} 字符]",
-                                &text[..max_length], text.len(), max_length)
+                                &text[..max_length], text_len, max_length)
                         } else {
                             text
                         };
@@ -83,7 +84,7 @@ pub async fn register(registry: &ToolRegistry) {
                             "url": url,
                             "status": status.as_u16(),
                             "content": truncated,
-                            "content_length": text.len(),
+                            "content_length": text_len,
                         }).to_string())
                     })
                 },
