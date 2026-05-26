@@ -139,7 +139,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         >
           <ChevronRight className="w-4 h-4 text-foreground/60" />
         </button>
-        <img src={appIcon} alt="NovaClaw" className="w-6 h-6 rounded cursor-pointer" />
+        <img src={appIcon} alt="Jeeves" className="w-6 h-6 rounded cursor-pointer" />
       </aside>
     )
   }
@@ -149,7 +149,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 py-3">
         <div className="flex items-center gap-2">
-          <img src={appIcon} alt="NovaClaw" className="w-6 h-6 rounded cursor-pointer hover:opacity-80 transition-opacity" />
+          <img src={appIcon} alt="Jeeves" className="w-6 h-6 rounded cursor-pointer hover:opacity-80 transition-opacity" />
         </div>
         <button
           onClick={onToggle}

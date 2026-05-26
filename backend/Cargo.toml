@@ -1,5 +1,5 @@
 [package]
-name = "novaclaw-backend"
+name = "jeeves-backend"
 version = "0.1.0"
 edition = "2021"
 description = "NovaClaw AI Agent Backend - ReAct Agent Engine with Axum/WebSocket"

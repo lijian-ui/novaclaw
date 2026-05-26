@@ -1106,7 +1106,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
       ) : (
         <div className="flex-1 flex items-center justify-center">
           <p className="text-base font-medium text-foreground/40 select-none">
-            NovaClaw AI Agent
+            Jeeves
           </p>
         </div>
       )}
