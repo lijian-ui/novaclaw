@@ -167,7 +167,11 @@ impl IMSessionManager {
         }
 
         // 没有已有会话，创建新的
-        let bot_label = format!("({})", msg.account_id);
+        let bot_label = if let Some(ref name) = msg.account_name {
+            format!("({})", name)
+        } else {
+            format!("({})", msg.account_id)
+        };
         let conv_type_label = match msg.conversation_type {
             ConversationType::Private => format!("私聊{}", bot_label),
             ConversationType::Group => {
@@ -238,6 +242,7 @@ mod tests {
         IncomingMessage {
             id: "1".into(),
             account_id: "default".into(),
+            account_name: None,
             platform: PlatformType::DingTalk,
             conversation_id: "cid".into(),
             sender_id: sender.map(|s| s.into()),

@@ -115,7 +115,7 @@
     "thinking": "Thinking...",
     "callingTool": "Calling tool",
     "toolResult": "Tool execution completed",
-    "chatWith": "You are chatting with NovaClaw",
+    "chatWith": "You are chatting with Jeeves",
     "openFolder": "Open folder",
     "newConversation": "New conversation",
     "connectionFailed": "Chat connection failed, please check if the backend service is running",

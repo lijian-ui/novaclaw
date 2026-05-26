@@ -7,7 +7,7 @@ use tauri::Emitter;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 
-use novaclaw_backend::APP_STATE;
+use jeeves_backend::APP_STATE;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
@@ -118,7 +118,7 @@ pub async fn list_directory(path: String) -> Result<Vec<String>, String> {
 /// 获取应用配置（从文件重新加载后返回 JSON 字符串）
 #[tauri::command]
 pub async fn get_config_json() -> Result<String, String> {
-    let fresh_config = novaclaw_backend::config::AppConfig::reload();
+    let fresh_config = jeeves_backend::config::AppConfig::reload();
     {
         let mut state = APP_STATE.write().await;
         state.config = fresh_config.clone();
@@ -130,10 +130,10 @@ pub async fn get_config_json() -> Result<String, String> {
 #[tauri::command]
 pub async fn save_config_json(config_json: String) -> Result<(), String> {
     tracing::info!("开始保存项目配置...");
-    let config_path = novaclaw_backend::config::AppConfig::config_path();
+    let config_path = jeeves_backend::config::AppConfig::config_path();
     tracing::info!("配置文件路径: {:?}", config_path);
     
-    let config: novaclaw_backend::config::AppConfig =
+    let config: jeeves_backend::config::AppConfig =
         serde_json::from_str(&config_json).map_err(|e| {
             tracing::error!("反序列化配置失败: {}", e);
             format!("反序列化错误: {}", e)
@@ -145,7 +145,7 @@ pub async fn save_config_json(config_json: String) -> Result<(), String> {
     match state.config.save() {
         Ok(_) => {
             tracing::info!("项目配置已成功保存到 {:?}", config_path);
-            let reloaded = novaclaw_backend::config::AppConfig::reload();
+            let reloaded = jeeves_backend::config::AppConfig::reload();
             state.config = reloaded;
             tracing::info!("项目配置已重新加载");
             Ok(())
@@ -160,7 +160,7 @@ pub async fn save_config_json(config_json: String) -> Result<(), String> {
 /// 获取模型配置（从文件重新加载后返回 JSON 字符串）
 #[tauri::command]
 pub async fn get_models_json() -> Result<String, String> {
-    let fresh_config = novaclaw_backend::config::ModelsConfig::reload();
+    let fresh_config = jeeves_backend::config::ModelsConfig::reload();
     {
         let mut state = APP_STATE.write().await;
         state.models_config = fresh_config.clone();
@@ -172,10 +172,10 @@ pub async fn get_models_json() -> Result<String, String> {
 #[tauri::command]
 pub async fn save_models_json(models_json: String) -> Result<(), String> {
     tracing::info!("开始保存模型配置...");
-    let models_path = novaclaw_backend::config::ModelsConfig::models_path();
+    let models_path = jeeves_backend::config::ModelsConfig::models_path();
     tracing::info!("模型配置文件路径: {:?}", models_path);
     
-    let config: novaclaw_backend::config::ModelsConfig =
+    let config: jeeves_backend::config::ModelsConfig =
         serde_json::from_str(&models_json).map_err(|e| {
             tracing::error!("反序列化模型配置失败: {}", e);
             format!("反序列化错误: {}", e)
@@ -187,7 +187,7 @@ pub async fn save_models_json(models_json: String) -> Result<(), String> {
     match state.models_config.save() {
         Ok(_) => {
             tracing::info!("模型配置已成功保存到 {:?}", models_path);
-            let reloaded = novaclaw_backend::config::ModelsConfig::reload();
+            let reloaded = jeeves_backend::config::ModelsConfig::reload();
             state.models_config = reloaded;
             tracing::info!("Tauri 模型配置已保存并重新加载");
             Ok(())
@@ -202,13 +202,13 @@ pub async fn save_models_json(models_json: String) -> Result<(), String> {
 /// 获取数据目录（基础目录）
 #[tauri::command]
 pub async fn get_data_dir() -> Result<String, String> {
-    Ok(novaclaw_backend::config::get_base_dir().to_string_lossy().to_string())
+    Ok(jeeves_backend::config::get_base_dir().to_string_lossy().to_string())
 }
 
 /// 设置自定义数据目录（自动迁移旧文件）
 #[tauri::command]
 pub async fn set_data_dir(app: tauri::AppHandle, dir: String) -> Result<String, String> {
-    let old_base = novaclaw_backend::config::get_base_dir();
+    let old_base = jeeves_backend::config::get_base_dir();
     let new_base = std::path::PathBuf::from(&dir);
     
     // 如果新旧目录相同，直接返回
@@ -218,7 +218,7 @@ pub async fn set_data_dir(app: tauri::AppHandle, dir: String) -> Result<String, 
     
     // 如果旧目录不存在，直接设置新目录
     if !old_base.exists() {
-        let mut config = novaclaw_backend::config::AppConfig::reload();
+        let mut config = jeeves_backend::config::AppConfig::reload();
         config.data_dir = Some(dir.clone());
         config.save().map_err(|e| format!("保存配置失败: {}", e))?;
         return Ok(format!("已设置新目录: {}", dir));
@@ -256,7 +256,7 @@ pub async fn set_data_dir(app: tauri::AppHandle, dir: String) -> Result<String, 
     }
     
     // 保存配置
-    let mut config = novaclaw_backend::config::AppConfig::reload();
+    let mut config = jeeves_backend::config::AppConfig::reload();
     config.data_dir = Some(dir.clone());
     config.save().map_err(|e| format!("保存配置失败: {}", e))?;
     
@@ -314,31 +314,31 @@ fn copy_missing_files(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 /// 获取配置目录
 #[tauri::command]
 pub async fn get_config_dir() -> Result<String, String> {
-    Ok(novaclaw_backend::config::get_config_dir().to_string_lossy().to_string())
+    Ok(jeeves_backend::config::get_config_dir().to_string_lossy().to_string())
 }
 
 /// 获取工作目录
 #[tauri::command]
 pub async fn get_workspace_dir() -> Result<String, String> {
-    Ok(novaclaw_backend::config::get_workspace_dir().to_string_lossy().to_string())
+    Ok(jeeves_backend::config::get_workspace_dir().to_string_lossy().to_string())
 }
 
 /// 获取技能目录
 #[tauri::command]
 pub async fn get_skills_dir() -> Result<String, String> {
-    Ok(novaclaw_backend::config::get_skills_dir().to_string_lossy().to_string())
+    Ok(jeeves_backend::config::get_skills_dir().to_string_lossy().to_string())
 }
 
 /// 获取记忆目录
 #[tauri::command]
 pub async fn get_memories_dir() -> Result<String, String> {
-    Ok(novaclaw_backend::config::get_memories_dir().to_string_lossy().to_string())
+    Ok(jeeves_backend::config::get_memories_dir().to_string_lossy().to_string())
 }
 
 /// 获取会话目录
 #[tauri::command]
 pub async fn get_sessions_dir() -> Result<String, String> {
-    Ok(novaclaw_backend::config::get_sessions_dir().to_string_lossy().to_string())
+    Ok(jeeves_backend::config::get_sessions_dir().to_string_lossy().to_string())
 }
 
 /// 获取系统信息

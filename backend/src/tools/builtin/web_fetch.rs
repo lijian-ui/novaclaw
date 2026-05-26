@@ -89,7 +89,7 @@ pub async fn register(registry: &ToolRegistry) {
                     })
                 },
             ),
-        });
+        }).await;
 }
 
 /// 从 HTML 中提取纯文本（移除标签、保留段落结构）

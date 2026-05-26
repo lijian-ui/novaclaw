@@ -2138,6 +2138,70 @@ dependencies = [
 ]
 
 [[package]]
+name = "jeeves-backend"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "axum-extra",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
+ "encoding_rs",
+ "futures",
+ "futures-util",
+ "glob",
+ "mime_guess",
+ "nix 0.28.0",
+ "once_cell",
+ "pathdiff",
+ "portable-pty",
+ "regex",
+ "reqwest 0.12.28",
+ "rmcp",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-stream",
+ "tokio-tungstenite 0.21.0",
+ "tower 0.4.13",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "urlencoding",
+ "uuid",
+ "walkdir",
+ "windows-sys 0.52.0",
+ "zip",
+]
+
+[[package]]
+name = "jeeves-desktop"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "jeeves-backend",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-os",
+ "tauri-plugin-process",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "jni"
 version = "0.21.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2563,70 +2627,6 @@ dependencies = [
  "cfg-if",
  "cfg_aliases 0.2.1",
  "libc",
-]
-
-[[package]]
-name = "novaclaw-backend"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-stream",
- "async-trait",
- "axum",
- "axum-extra",
- "base64 0.22.1",
- "chrono",
- "dirs 5.0.1",
- "encoding_rs",
- "futures",
- "futures-util",
- "glob",
- "mime_guess",
- "nix 0.28.0",
- "once_cell",
- "pathdiff",
- "portable-pty",
- "regex",
- "reqwest 0.12.28",
- "rmcp",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-stream",
- "tokio-tungstenite 0.21.0",
- "tower 0.4.13",
- "tower-http 0.5.2",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "urlencoding",
- "uuid",
- "walkdir",
- "windows-sys 0.52.0",
- "zip",
-]
-
-[[package]]
-name = "novaclaw-desktop"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "novaclaw-backend",
- "once_cell",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-os",
- "tauri-plugin-process",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

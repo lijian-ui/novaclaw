@@ -37,27 +37,42 @@ struct StResp {
 }
 
 /// 获取微信扫码二维码
-async fn get_qrcode(Query(q): Query<QrQuery>) -> Json<QrResp> {
-    let client = reqwest::Client::new();
+async fn get_qrcode(Query(_q): Query<QrQuery>) -> Json<QrResp> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_default();
+
+    // 请求体携带 local_token_list 辅助服务器判断
+    let request_body = serde_json::json!({
+        "local_token_list": []
+    });
+
     match client
         .post("https://ilinkai.weixin.qq.com/ilink/bot/get_bot_qrcode?bot_type=3")
-        .json(&serde_json::json!({}))
-        .timeout(std::time::Duration::from_secs(10))
+        .header("Content-Type", "application/json")
+        .json(&request_body)
         .send().await
     {
         Ok(resp) => match resp.json::<serde_json::Value>().await {
             Ok(body) => {
                 let qrcode = body["qrcode"].as_str().unwrap_or("").to_string();
+                // 使用 API 返回的完整确认 URL（包含 pass_ticket 等参数）
+                let qr_content = body["qrcode_img_content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+
                 let session_id = uuid::Uuid::new_v4().to_string();
                 LOGIN_SESSIONS.lock().await.insert(session_id.clone(), LoginSession {
-                    qrcode, status: "wait".to_string(),
+                    qrcode: qrcode.clone(), status: "wait".to_string(),
                     bot_token: None, ilink_bot_id: None, base_url: None,
                 });
                 Json(QrResp {
                     success: true,
                     data: Some(QrData {
                         session: session_id,
-                        qrcode_url: format!("https://ilinkai.weixin.qq.com/ilink/bot/qrcode/{}", qrcode),
+                        qrcode_url: qr_content,
                     }),
                     message: None,
                 })
@@ -99,6 +114,9 @@ async fn get_status(Query(q): Query<StQuery>) -> Json<StResp> {
                     let mut sessions = LOGIN_SESSIONS.lock().await;
                     if let Some(s) = sessions.get_mut(&q.session) {
                         s.status = "confirmed".to_string();
+                        s.bot_token = Some(token.clone());
+                        s.ilink_bot_id = Some(bot_id.clone());
+                        s.base_url = Some(base_url.clone());
                     }
                     Json(StResp {
                         success: true, status: "confirmed".to_string(),
@@ -114,17 +132,23 @@ async fn get_status(Query(q): Query<StQuery>) -> Json<StResp> {
                     })
                 }
             }
-            Err(e) => Json(StResp {
-                success: false, status: "error".to_string(),
-                bot_token: None, ilink_bot_id: None, base_url: None,
-                message: Some(format!("解析状态失败: {}", e)),
-            }),
+            Err(e) => {
+                // 长轮询超时或解析失败是正常现象，返回 wait 让前端继续轮询
+                tracing::debug!("[微信] 解析状态响应失败: {}", e);
+                Json(StResp {
+                    success: true, status: "wait".to_string(),
+                    bot_token: None, ilink_bot_id: None, base_url: None, message: None,
+                })
+            }
         },
-        Err(e) => Json(StResp {
-            success: false, status: "error".to_string(),
-            bot_token: None, ilink_bot_id: None, base_url: None,
-            message: Some(format!("请求失败: {}", e)),
-        }),
+        Err(e) => {
+            // 网络超时是长轮询的正常行为，返回 wait 让前端继续轮询
+            tracing::debug!("[微信] 状态轮询请求失败: {}", e);
+            Json(StResp {
+                success: true, status: "wait".to_string(),
+                bot_token: None, ilink_bot_id: None, base_url: None, message: None,
+            })
+        },
     }
 }
 

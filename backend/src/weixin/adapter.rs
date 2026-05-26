@@ -1,6 +1,6 @@
 //! 微信 IM 适配器
 //!
-//! 实现 IMAdapter trait，将微信 iLink 协议接入 NovaClaw IM 系统。
+//! 实现 IMAdapter trait，将微信 iLink 协议接入 Jeeves IM 系统。
 
 use crate::error::AppError;
 use crate::im::adapter::IMAdapter;
@@ -17,17 +17,19 @@ use tokio::sync::mpsc;
 pub struct WeixinAdapter {
     pub client: Arc<WeixinClient>,
     pub account_id: String,
+    pub account_name: Option<String>,
 }
 
 impl WeixinAdapter {
-    pub fn new(client: Arc<WeixinClient>, account_id: String) -> Self {
-        Self { client, account_id }
+    pub fn new(client: Arc<WeixinClient>, account_id: String, account_name: Option<String>) -> Self {
+        Self { client, account_id, account_name }
     }
 
     /// 启动入站消息监听（长轮询），将消息投递到 IMGateway
     pub fn start_polling(&self, incoming_tx: mpsc::UnboundedSender<IncomingMessage>) {
         let client = self.client.clone();
         let account_id = self.account_id.clone();
+        let account_name = self.account_name.clone();
         tokio::spawn(async move {
             tracing::info!("[微信] 长轮询已启动: {}", account_id);
             let mut consecutive_failures = 0;
@@ -45,7 +47,7 @@ impl WeixinAdapter {
 
                         if let Some(msgs) = resp.msgs {
                             for msg in msgs {
-                                if let Some(incoming) = convert_to_incoming(&msg, &account_id) {
+                                if let Some(incoming) = convert_to_incoming(&msg, &account_id, &account_name) {
                                     let _ = incoming_tx.send(incoming);
                                 }
                             }
@@ -66,7 +68,7 @@ impl WeixinAdapter {
 }
 
 /// 将微信消息转为统一 IncomingMessage
-fn convert_to_incoming(msg: &crate::weixin::client::WeixinMessage, account_id: &str) -> Option<IncomingMessage> {
+fn convert_to_incoming(msg: &crate::weixin::client::WeixinMessage, account_id: &str, account_name: &Option<String>) -> Option<IncomingMessage> {
     // 只处理用户消息
     if msg.message_type != Some(1) {
         return None;
@@ -88,6 +90,7 @@ fn convert_to_incoming(msg: &crate::weixin::client::WeixinMessage, account_id: &
     Some(IncomingMessage {
         id: format!("wx_{}", msg.message_id.unwrap_or(0)),
         account_id: account_id.to_string(),
+        account_name: account_name.clone(),
         platform: PlatformType::Custom("weixin".to_string()),
         conversation_id: conv_id.to_string(),
         sender_id: Some(from.to_string()),

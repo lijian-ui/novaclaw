@@ -40,7 +40,7 @@ RUN apk add --no-cache tini
 COPY --from=frontend-builder /app/dist /usr/share/nginx/html
 
 # 后端二进制
-COPY --from=backend-builder /app/backend/target/release/novaclaw-server /usr/local/bin/
+COPY --from=backend-builder /app/backend/target/release/jeeves-server /usr/local/bin/
 
 # Nginx 配置
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf

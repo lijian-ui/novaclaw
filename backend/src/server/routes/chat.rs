@@ -237,7 +237,9 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                     tracing::info!("[Agent] 用户选择智能体: id={}", agent_id);
                 }
                 Err(_) => {
-                    tracing::warn!("[Agent] 用户选择的智能体 '{}' 未找到 SOUL.md，使用默认提示词", agent_id);
+                    if agent_id != "default" {
+                        tracing::warn!("[Agent] 用户选择的智能体 '{}' 未找到 SOUL.md，使用默认提示词", agent_id);
+                    }
                 }
             }
             // 加载 agent.json 并合并温度/压缩配置

@@ -31,13 +31,13 @@ function App() {
   const consoleCollapsedRef = useRef(consoleCollapsed)
   consoleCollapsedRef.current = consoleCollapsed
   const [terminalOpen, setTerminalOpen] = useState(false)
-  const [workspacePath, setWorkspacePathState] = useState(() => localStorage.getItem('novaclaw_workspace') || '')
+  const [workspacePath, setWorkspacePathState] = useState(() => localStorage.getItem('jeeves_workspace') || '')
   const setWorkspacePath = useCallback((path: string) => {
     setWorkspacePathState(path)
     if (path) {
-      localStorage.setItem('novaclaw_workspace', path)
+      localStorage.setItem('jeeves_workspace', path)
     } else {
-      localStorage.removeItem('novaclaw_workspace')
+      localStorage.removeItem('jeeves_workspace')
     }
   }, [])
   const containerRef = useRef<HTMLDivElement>(null)

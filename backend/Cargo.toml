@@ -2,14 +2,14 @@
 name = "jeeves-backend"
 version = "0.1.0"
 edition = "2021"
-description = "NovaClaw AI Agent Backend - ReAct Agent Engine with Axum/WebSocket"
+description = "jeeves AI Agent Backend - ReAct Agent Engine with Axum/WebSocket"
 
 [[bin]]
-name = "novaclaw-server"
+name = "jeeves-server"
 path = "src/main.rs"
 
 [lib]
-name = "novaclaw_backend"
+name = "jeeves_backend"
 path = "src/lib.rs"
 
 [dependencies]

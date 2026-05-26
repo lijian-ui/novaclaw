@@ -60,7 +60,7 @@ pub async fn start_with_opts(
                         actual_port
                     );
                 }
-                tracing::info!("NovaClaw server starting on http://{}", addr);
+                tracing::info!("Jeeves server starting on http://{}", addr);
                 break listener;
             }
             Err(e) => {
@@ -124,5 +124,5 @@ async fn index_handler(dir: &str) -> impl axum::response::IntoResponse {
         return Html(content);
     }
 
-    Html("<html><body><h1>NovaClaw</h1><p>Frontend not found</p></body></html>".to_string())
+    Html("<html><body><h1>Jeeves</h1><p>Frontend not found</p></body></html>".to_string())
 }

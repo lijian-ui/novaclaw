@@ -94,18 +94,26 @@ impl IMAdapter for DingTalkAdapter {
         original: &IncomingMessage,
         text: &str,
     ) -> Result<SendResult, AppError> {
-        // 优先使用 sessionWebhook 回复（钉钉独有优化）
+        // 优先使用 sessionWebhook 回复（钉钉独有优化，实时性最好）
         if let Some(webhook) = &original.session_webhook {
-            self.client.reply_markdown_via_webhook(webhook, "🤖 NovaClaw", text).await?;
+            self.client.reply_markdown_via_webhook(webhook, "🤖 Jeeves", text).await?;
         } else {
-            // 兜底：通过 send_markdown 回复
-            let target = MessageTarget {
-                account_id: self.account_id.clone(),
-                platform: PlatformType::DingTalk,
-                conversation_id: original.conversation_id.clone(),
-                conversation_type: original.conversation_type.clone(),
-            };
-            self.send_markdown(&target, "🤖 NovaClaw", text).await?;
+            // 兜底：通过 REST API 回复，按会话类型选择正确目标
+            match original.conversation_type {
+                ConversationType::Private => {
+                    // 私聊必须使用 sender_staff_id（用户真实ID），不能使用 conversation_id
+                    let user_id = original.sender_staff_id.as_deref()
+                        .or(original.sender_id.as_deref())
+                        .unwrap_or("");
+                    if user_id.is_empty() {
+                        return Err(AppError::External("钉钉私聊回复失败：缺少发送者ID".to_string()));
+                    }
+                    self.client.send_private_markdown(vec![user_id.to_string()], "🤖 Jeeves", text).await?;
+                }
+                ConversationType::Group => {
+                    self.client.send_group_markdown(&original.conversation_id, "🤖 Jeeves", text).await?;
+                }
+            }
         }
         Ok(SendResult::ok())
     }

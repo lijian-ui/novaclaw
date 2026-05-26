@@ -100,7 +100,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
 
   const handleLanguageChange = useCallback((newLang: string) => {
     i18n.changeLanguage(newLang)
-    localStorage.setItem('novaclaw-language', newLang)
+    localStorage.setItem('jeeves-language', newLang)
   }, [])
 
   const renderAppearance = () => (

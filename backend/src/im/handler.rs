@@ -9,11 +9,16 @@ use tokio::sync::mpsc;
 pub struct IMGatewayCallbackHandler {
     incoming_tx: mpsc::UnboundedSender<IncomingMessage>,
     account_id: String,
+    account_name: Option<String>,
 }
 
 impl IMGatewayCallbackHandler {
-    pub fn new(incoming_tx: mpsc::UnboundedSender<IncomingMessage>, account_id: String) -> Self {
-        Self { incoming_tx, account_id }
+    pub fn new(
+        incoming_tx: mpsc::UnboundedSender<IncomingMessage>,
+        account_id: String,
+        account_name: Option<String>,
+    ) -> Self {
+        Self { incoming_tx, account_id, account_name }
     }
 }
 
@@ -27,6 +32,7 @@ impl crate::dingtalk::handler::CallbackHandler for IMGatewayCallbackHandler {
         let incoming_msg = IncomingMessage {
             id: msg.msg_id.clone().unwrap_or_default(),
             account_id: self.account_id.clone(),
+            account_name: self.account_name.clone(),
             platform: PlatformType::DingTalk,
             conversation_id: msg
                 .conversation_id

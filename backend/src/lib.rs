@@ -118,6 +118,24 @@ pub async fn initialize() {
                 }
             }
         }
+
+        // 确保 default 智能体的 agent.json 存在
+        if !std::path::Path::new(&paths.agent_json_path("default")).exists() {
+            let config = crate::soul::AgentConfig {
+                id: "default".to_string(),
+                name: "默认智能体".to_string(),
+                description: "系统默认智能体，使用全局配置".to_string(),
+                model: None,
+                enabled_tools: Vec::new(),
+                max_iterations: 0,
+                temperature: None,
+                compact_threshold: None,
+                compact_keep: None,
+            };
+            if let Err(e) = config.save(&paths) {
+                tracing::warn!("创建默认智能体配置失败: {}", e);
+            }
+        }
     }
 
     // 先读取需要的配置值，然后释放写锁，再注册工具（避免 register_all 内部死锁）
@@ -151,7 +169,7 @@ pub async fn initialize() {
         let mut state = APP_STATE.write().await;
         state.tool_registry = tool_registry;
         tracing::info!(
-            "NovaClaw backend initialized\n  - 配置目录: {:?}\n  - 工作目录: {:?}\n  - 技能目录: {:?}\n  - 记忆目录: {:?}\n  - 会话目录: {:?}\n  - Soul 目录: {:?}\n  - 项目配置: {:?}\n  - 模型配置: {:?}",
+            "Jeeves backend initialized\n  - 配置目录: {:?}\n  - 工作目录: {:?}\n  - 技能目录: {:?}\n  - 记忆目录: {:?}\n  - 会话目录: {:?}\n  - Soul 目录: {:?}\n  - 项目配置: {:?}\n  - 模型配置: {:?}",
             config::get_config_dir(),
             state.config.workspace_dir(),
             state.config.skills_dir(),
@@ -230,11 +248,13 @@ pub async fn initialize() {
                     {
                         let incoming_tx = gateway.incoming_tx.clone();
                         let acc_id = account_id.clone();
+                        let acc_name = account_cfg.name.clone();
                         dt_client
                             .register_handler(
                                 crate::im::handler::IMGatewayCallbackHandler::new(
                                     incoming_tx,
                                     acc_id,
+                                    acc_name,
                                 ),
                             )
                             .await;
@@ -280,7 +300,7 @@ pub async fn initialize() {
                     );
 
                     let wx_adapter = std::sync::Arc::new(
-                        crate::weixin::WeixinAdapter::new(wx_client.clone(), account_id.clone())
+                        crate::weixin::WeixinAdapter::new(wx_client.clone(), account_id.clone(), account_cfg.name.clone())
                     );
 
                     // 启动长轮询

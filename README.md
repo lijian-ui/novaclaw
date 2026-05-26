@@ -1,4 +1,4 @@
-# NovaClaw
+# Jeeves
 
 <p align="center">
   <b>现代化 AI Agent 桌面应用</b>
@@ -66,7 +66,7 @@ npm run tauri:dev
 ## 📁 项目结构
 
 ```
-novaclaw/
+jeeves/
 ├── backend/
 │   ├── src/
 │   │   ├── agent/          # Agent 运行时、会话管理
@@ -111,5 +111,5 @@ MIT License - 详见 [LICENSE](LICENSE) 文件
 ---
 
 <p align="center">
-  <b>Made with ❤️ by the NovaClaw Team</b>
+  <b>Made with ❤️ by the jeeves Team</b>
 </p>

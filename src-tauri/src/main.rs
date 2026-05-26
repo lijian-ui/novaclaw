@@ -1,5 +1,5 @@
 #![windows_subsystem = "windows"]
 
 fn main() {
-    novaclaw_desktop_lib::run()
+    jeeves_desktop_lib::run()
 }

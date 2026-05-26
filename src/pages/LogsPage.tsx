@@ -47,7 +47,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
   const [filter, setFilter] = useState<LogLevel>('all')
   const [loading, setLoading] = useState(true)
   const [connected, setConnected] = useState(false)
-  const [debugMode, setDebugMode] = useState(() => localStorage.getItem('novaclaw_log_debug') === 'true')
+  const [debugMode, setDebugMode] = useState(() => localStorage.getItem('jeeves_log_debug') === 'true')
   const scrollRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WebSocket | null>(null)
   const idCounterRef = useRef(0)
@@ -137,7 +137,7 @@ export function LogsPage({ onBack }: LogsPageProps) {
   const toggleDebugMode = useCallback(async () => {
     const next = !debugMode
     setDebugMode(next)
-    localStorage.setItem('novaclaw_log_debug', String(next))
+    localStorage.setItem('jeeves_log_debug', String(next))
     try {
       await fetch(`${getApiBase()}/logs/level`, {
         method: 'POST',

@@ -1,4 +1,4 @@
-use novaclaw_backend::{initialize, logging, server};
+use jeeves_backend::{initialize, logging, server};
 
 #[tokio::main]
 async fn main() {
@@ -36,7 +36,7 @@ async fn main() {
         i += 1;
     }
 
-    tracing::info!("Starting NovaClaw backend server...");
+    tracing::info!("Starting Jeeves backend server...");
 
     // 初始化应用状态和工具注册
     initialize().await;

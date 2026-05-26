@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$iconsDir = "c:\project\NovaClaw\src-tauri\icons"
+$iconsDir = "c:\project\Jeeves\src-tauri\icons"
 
 Add-Type -AssemblyName System.Drawing
 

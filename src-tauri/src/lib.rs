@@ -46,7 +46,7 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&tray_menu)
-                .tooltip("NovaClaw")
+                .tooltip("Jeeves")
                 .on_menu_event(|app, event| {
                     match event.id().as_ref() {
                         "quit" => {
@@ -84,9 +84,9 @@ pub fn run() {
 
             // 先初始化后端（日志、Soul/智能体等目录），再启动 HTTP 服务
             tauri::async_runtime::spawn(async move {
-                novaclaw_backend::logging::init();
-                novaclaw_backend::initialize().await;
-                novaclaw_backend::start_server().await;
+                jeeves_backend::logging::init();
+                jeeves_backend::initialize().await;
+                jeeves_backend::start_server().await;
             });
 
             Ok(())

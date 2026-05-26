@@ -62,7 +62,7 @@ impl GatewayConnector {
             client_id: client_id.to_string(),
             client_secret: client_secret.to_string(),
             subscriptions,
-            ua: format!("novaclaw-backend/{}", env!("CARGO_PKG_VERSION")),
+            ua: format!("jeeves-backend/{}", env!("CARGO_PKG_VERSION")),
             local_ip: local_ip.to_string(),
         };
 

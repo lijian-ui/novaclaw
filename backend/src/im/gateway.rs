@@ -6,7 +6,6 @@
 //! 支持多账号：每个消息携带 account_id，按账号精确路由。
 
 use crate::error::AppError;
-use crate::im::adapter::IMAdapter;
 use crate::im::registry::{AccountInfo, AccountRegistry};
 use crate::im::session::{self as im_session, IMSessionManager};
 use crate::im::types::{IncomingMessage, MessageTarget, PlatformType, SendResult};
@@ -52,9 +51,10 @@ impl IMGateway {
         target: &MessageTarget,
         text: &str,
     ) -> Result<SendResult, AppError> {
+        let composite_key = format!("{}:{}", target.platform.as_str(), account_id);
         let adapter = self
             .registry
-            .get(account_id)
+            .get(&composite_key)
             .await
             .ok_or_else(|| AppError::NotFound(format!("账号未注册: {}", account_id)))?;
         adapter.send_text(target, text).await
@@ -68,9 +68,10 @@ impl IMGateway {
         title: &str,
         text: &str,
     ) -> Result<SendResult, AppError> {
+        let composite_key = format!("{}:{}", target.platform.as_str(), account_id);
         let adapter = self
             .registry
-            .get(account_id)
+            .get(&composite_key)
             .await
             .ok_or_else(|| AppError::NotFound(format!("账号未注册: {}", account_id)))?;
         adapter.send_markdown(target, title, text).await
@@ -84,16 +85,16 @@ impl IMGateway {
     ) -> Result<SendResult, AppError> {
         let adapter = self
             .registry
-            .get(&original.account_id)
+            .get_account(&original.account_id, &original.platform)
             .await
-            .ok_or_else(|| AppError::NotFound(format!("来源账号未注册: {}", original.account_id)))?;
+            .ok_or_else(|| AppError::NotFound(format!("来源账号未注册: {} (platform={})", original.account_id, original.platform)))?;
         adapter.reply(original, text).await
     }
 
     // ─── 查询 ───────────────────────────────────────
 
-    pub async fn is_account_connected(&self, account_id: &str) -> bool {
-        self.registry.is_connected(account_id).await
+    pub async fn is_account_connected(&self, account_id: &str, platform: &PlatformType) -> bool {
+        self.registry.is_connected(account_id, platform).await
     }
 
     pub async fn account_ids(&self) -> Vec<String> {
@@ -193,7 +194,7 @@ impl IMGateway {
 
         // 5. 尝试启动流式回复（仅 DingTalk 支持 AI Card 流式）
         let (stream_tx, is_streaming) = {
-            let adapter = self.registry.get(&msg.account_id).await;
+            let adapter = self.registry.get_account(&msg.account_id, &msg.platform).await;
             match adapter {
                 Some(adap) => {
                     match adap.start_stream_reply(&msg).await {
@@ -287,7 +288,7 @@ impl IMGateway {
         if is_streaming {
             // 流式模式下，等待卡片后台任务完成最终内容
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if let Some(adapter) = self.registry.get(&msg.account_id).await {
+            if let Some(adapter) = self.registry.get_account(&msg.account_id, &msg.platform).await {
                 let _ = adapter.finish_stream_reply(&msg).await;
             }
         } else if reply_content.is_empty() {

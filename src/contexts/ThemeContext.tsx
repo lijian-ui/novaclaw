@@ -20,7 +20,7 @@ const ThemeContext = createContext<ThemeContextValue>({
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setThemeState] = useState<Theme>(() => {
-    const saved = localStorage.getItem('novaclaw-theme')
+    const saved = localStorage.getItem('jeeves-theme')
     return (saved === 'light' || saved === 'dark' || saved === 'system') ? saved : 'dark'
   })
 
@@ -42,7 +42,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const effectiveTheme = t === 'system' ? getSystemTheme() : t
     document.documentElement.classList.remove('dark', 'light')
     document.documentElement.classList.add(effectiveTheme)
-    localStorage.setItem('novaclaw-theme', t)
+    localStorage.setItem('jeeves-theme', t)
   }, [])
 
   useEffect(() => {

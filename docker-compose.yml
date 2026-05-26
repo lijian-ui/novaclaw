@@ -1,21 +1,21 @@
 version: "3.8"
 
 services:
-  novaclaw:
+  jeeves:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: novaclaw
+    container_name: jeeves
     ports:
       # Nginx 监听 80 端口，对外暴露
       - "80:80"
     volumes:
       # 配置文件目录（持久化）
-      - ./data/config:/data/novaclaw/config
+      - ./data/config:/data/jeeves/config
       # 数据目录（会话、记忆等）
-      - ./data/data:/data/novaclaw/data
+      - ./data/data:/data/jeeves/data
     environment:
       - TZ=Asia/Shanghai
-      - NOVACLAW_CONFIG_DIR=/data/novaclaw/config
-      - NOVACLAW_DATA_DIR=/data/novaclaw/data
+      - JEEVES_CONFIG_DIR=/data/jeeves/config
+      - JEEVES_DATA_DIR=/data/jeeves/data
     restart: unless-stopped

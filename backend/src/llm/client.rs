@@ -156,14 +156,13 @@ impl LlmClient {
         }
 
         let cancel_check = cancel.clone();
+        let status_code = status.as_u16();
 
         // 在独立任务中解析 SSE 流
         let task = tokio::spawn(async move {
-                // 将 response 显式移到任务中，确保 abort 时 response 被及时 drop
                 let _response = response;
                 let mut stream = _response.bytes_stream();
                 let mut buffer = String::new();
-                // 使用 HashMap 支持多工具调用追踪（key: tool_call_index）
                 let mut tool_calls_acc: std::collections::HashMap<usize, (String, String, String)> = std::collections::HashMap::new();
                 let mut early_sent_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
 
@@ -295,7 +294,7 @@ impl LlmClient {
                         }
                     }
                     Err(e) => {
-                        let _ = tx.send(StreamEvent::Error(format!("流读取错误: {}", e))).await;
+                        let _ = tx.send(StreamEvent::Error(format!("流读取错误 (HTTP {status_code}): {}", e))).await;
                         return;
                     }
                 }

@@ -46,6 +46,10 @@ async fn log_default_agent() -> Json<serde_json::Value> {
 
 /// 前端选择智能体时调用，记录日志
 async fn log_agent_selection(Path(agent_id): Path<String>) -> Json<serde_json::Value> {
+    if agent_id == "default" {
+        tracing::info!("[Agent] 前端选择智能体: id=default (默认智能体)");
+        return Json(serde_json::json!({"success": true}));
+    }
     let paths = SoulPaths::default();
     if let Ok(config) = AgentConfig::load(&paths, &agent_id) {
         tracing::info!("[Agent] 前端选择智能体: id={}, name={}", config.id, config.name);
@@ -58,7 +62,13 @@ async fn log_agent_selection(Path(agent_id): Path<String>) -> Json<serde_json::V
 /// 列出所有智能体（包含 default）
 async fn list_agents() -> Json<serde_json::Value> {
     let paths = SoulPaths::default();
-    let agent_names = AgentConfig::list_all(&paths);
+    let mut agent_names = AgentConfig::list_all(&paths);
+
+    // 始终保证 default 智能体在列表中
+    if !agent_names.iter().any(|n| n == "default") {
+        agent_names.push("default".to_string());
+    }
+
     let mut agents = Vec::new();
 
     for name in agent_names {
@@ -82,8 +92,8 @@ async fn list_agents() -> Json<serde_json::Value> {
                 let has_soul = std::path::Path::new(&paths.soul_path(&name)).exists();
                 agents.push(serde_json::json!({
                     "id": name,
-                    "name": name,
-                    "description": "",
+                    "name": if name == "default" { "默认智能体" } else { &name },
+                    "description": if name == "default" { "系统默认智能体，使用全局配置" } else { "" },
                     "model": null,
                     "enabled_tools": [],
                     "max_iterations": 0,

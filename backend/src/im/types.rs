@@ -124,6 +124,8 @@ pub struct IncomingMessage {
     pub id: String,
     /// 来源账号 ID（多账号模式下唯一标识机器人）
     pub account_id: String,
+    /// 来源账号名称（如"测试"，用于显示）
+    pub account_name: Option<String>,
     /// 来源平台
     pub platform: PlatformType,
     /// 会话 ID

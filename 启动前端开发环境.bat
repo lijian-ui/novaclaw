@@ -1,10 +1,10 @@
 @echo off
 chcp 65001 >nul
 echo ==============================
-echo  Start NovaClaw Frontend + Backend
+echo  Start jeeves Frontend + Backend
 echo ==============================
 
-start "NovaClaw-Frontend" cmd /k "cd /d d:\Project\novaclaw && npm run dev"
+start "jeeves-Frontend" cmd /k "cd /d d:\Project\jeeves && npm run dev"
 
 
 echo.

@@ -432,7 +432,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const [showScrollBtn, setShowScrollBtn] = useState(false)
   const [selectedModel, setSelectedModel] = useState('')
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
-  const [selectedAgent, setSelectedAgent] = useState(() => localStorage.getItem('novaclaw-selected-agent') || '')
+  const [selectedAgent, setSelectedAgent] = useState(() => localStorage.getItem('jeeves-selected-agent') || '')
   const [agentProfiles, setAgentProfiles] = useState<{ id: string; name: string }[]>([])
   const [agentOpen, setAgentOpen] = useState(false)
   const [workspaceName, setWorkspaceName] = useState('')
@@ -1311,7 +1311,10 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                 >
                   <Brain className="w-3.5 h-3.5" />
                   <span className="max-w-[60px] truncate">
-                    {selectedAgent ? agentProfiles.find(a => a.id === selectedAgent)?.name || selectedAgent : t('chat.defaultAgent')}
+                    {selectedAgent
+                      ? (agentProfiles.find(a => a.id === selectedAgent)?.name
+                        || (selectedAgent === 'default' ? '默认智能体' : selectedAgent))
+                      : t('chat.defaultAgent')}
                   </span>
                   <ChevronDown className="w-3 h-3 shrink-0" />
                 </button>
@@ -1319,40 +1322,31 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                   <>
                     <div className="fixed inset-0 z-10" onClick={() => setAgentOpen(false)} />
                     <div className="absolute bottom-full right-0 mb-1 w-44 py-1 rounded-md bg-card border border-border shadow-lg z-20">
-                      {/* 默认智能体选项 */}
-                      <button
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-foreground/70 hover:bg-foreground/10 transition-colors"
-                        onClick={() => {
-                          setSelectedAgent('')
-                          localStorage.removeItem('novaclaw-selected-agent')
-                          fetch('http://127.0.0.1:3000/api/set-agent')
-                          setAgentOpen(false)
-                        }}
-                      >
-                        <Cpu className="w-3.5 h-3.5 text-orange-400 shrink-0" />
-                        <span className="flex-1">{t('chat.defaultAgent')}</span>
-                        {selectedAgent === '' && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
-                      </button>
-                      {agentProfiles.length > 0 && <div className="border-t border-border mx-2 my-1" />}
                       {agentProfiles.length === 0 ? (
                         <div className="px-3 py-2 text-xs text-foreground/40">{t('chat.noAgents')}</div>
                       ) : (
-                        agentProfiles.map((agent) => (
-                          <button
-                            key={agent.id}
-                            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-foreground/70 hover:bg-foreground/10 transition-colors"
-                            onClick={() => {
-                              setSelectedAgent(agent.id)
-                              localStorage.setItem('novaclaw-selected-agent', agent.id)
-                              fetch(`http://127.0.0.1:3000/api/set-agent/${encodeURIComponent(agent.id)}`)
-                              setAgentOpen(false)
-                            }}
-                          >
-                            <Brain className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                            <span className="flex-1">{agent.name}</span>
-                            {agent.id === selectedAgent && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
-                          </button>
-                        ))
+                        [...agentProfiles].sort((a, b) => a.id === 'default' ? -1 : b.id === 'default' ? 1 : 0).map((agent, _index, sorted) => {
+                          const isDefault = agent.id === 'default'
+                          const showDivider = isDefault && sorted.length > 1
+                          return (
+                            <div key={agent.id}>
+                              <button
+                                className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left text-foreground/70 hover:bg-foreground/10 transition-colors"
+                                onClick={() => {
+                                  setSelectedAgent(agent.id)
+                                  localStorage.setItem('jeeves-selected-agent', agent.id)
+                                  fetch(`http://127.0.0.1:3000/api/set-agent/${encodeURIComponent(agent.id)}`)
+                                  setAgentOpen(false)
+                                }}
+                              >
+                                <Brain className={`w-3.5 h-3.5 shrink-0 ${isDefault ? 'text-orange-400' : 'text-cyan-400'}`} />
+                                <span className="flex-1">{isDefault ? '默认智能体' : agent.name}</span>
+                                {agent.id === selectedAgent && <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />}
+                              </button>
+                              {showDivider && <div className="mx-2 my-1 border-t border-border" />}
+                            </div>
+                          )
+                        })
                       )}
                     </div>
                   </>

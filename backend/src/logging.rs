@@ -46,7 +46,7 @@ fn get_log_dir() -> PathBuf {
 
 /// 去掉冗长的 crate 前缀，保留可读模块路径
 fn short_module(target: &str) -> String {
-    if let Some(rest) = target.strip_prefix("novaclaw_backend::") {
+    if let Some(rest) = target.strip_prefix("jeeves_backend::") {
         rest.to_string()
     } else {
         target.to_string()
@@ -77,7 +77,7 @@ pub fn set_log_level(level: &str) -> Result<(), String> {
         .lock()
         .map_err(|e| format!("获取日志级别锁失败: {}", e))?;
     if let Some(ref handle) = *handle {
-        let new_filter = EnvFilter::new(format!("novaclaw_backend={}", level));
+        let new_filter = EnvFilter::new(format!("jeeves_backend={}", level));
         handle
             .reload(new_filter)
             .map_err(|e| format!("切换日志级别失败: {}", e))?;
@@ -220,7 +220,7 @@ pub fn read_system_logs(level_filter: Option<&str>) -> Result<Vec<LogEntry>, Str
 }
 
 /// 解析 JSON 格式日志行
-/// {"timestamp":"...","level":"INFO","target":"novaclaw_backend::xxx","message":"..."}
+/// {"timestamp":"...","level":"INFO","target":"jeeves_backend::xxx","message":"..."}
 fn parse_json_log_line(line: &str) -> Option<LogEntry> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
 
@@ -383,7 +383,7 @@ pub fn init() {
 
     // ── 可重载的级别过滤器 ──
     let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("novaclaw_backend=info"));
+        .unwrap_or_else(|_| EnvFilter::new("jeeves_backend=info"));
     let (filter_layer, reload_handle) = reload::Layer::new(env_filter);
 
     // 保存重载句柄

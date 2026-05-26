@@ -219,16 +219,26 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
   const [description, setDescription] = useState(initial?.description ?? '')
   const [systemPrompt, setSystemPrompt] = useState(initial?.system_prompt ?? '')
   const [model, setModel] = useState(initial?.model ?? '')
+  const [allTools, setAllTools] = useState<ToolInfo[]>([])
+  const [toolsLoaded, setToolsLoaded] = useState(false)
+
   // 空 enabled_tools 表示"全部工具可用"，前端默认全选
   const [enabledTools, setEnabledTools] = useState<string[]>(
     initial?.enabled_tools && initial.enabled_tools.length > 0
       ? initial.enabled_tools
       : []
   )
-  // 工具列表加载后，如果 enabledTools 为空且没有初始值，默认全选
+  // 工具列表加载后：新工具自动勾选，无初始值则全选
   useEffect(() => {
-    if (toolsLoaded && enabledTools.length === 0 && !initial?.enabled_tools?.length) {
+    if (!toolsLoaded) return
+    if (enabledTools.length === 0 && !initial?.enabled_tools?.length) {
       setEnabledTools(allTools.map(t => t.name))
+    } else if (initial?.enabled_tools?.length) {
+      // 补上后端新增的工具
+      const newTools = allTools.filter(t => !initial.enabled_tools!.includes(t.name)).map(t => t.name)
+      if (newTools.length > 0) {
+        setEnabledTools(prev => [...prev, ...newTools])
+      }
     }
   }, [toolsLoaded, allTools, initial])
   const [maxIterations, setMaxIterations] = useState(initial?.max_iterations ?? 0)
@@ -239,8 +249,6 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
 
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [modelOpen, setModelOpen] = useState(false)
-  const [allTools, setAllTools] = useState<ToolInfo[]>([])
-  const [toolsLoaded, setToolsLoaded] = useState(false)
 
   // 从后端动态获取工具列表
   useEffect(() => {
@@ -449,8 +457,8 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
                         <input type="checkbox" checked={sel} onChange={() => toggleTool(tool.name)}
                           className="w-3.5 h-3.5 rounded border-foreground/30 accent-amber-500" />
                       </td>
-                      <td className={`px-2 py-2 font-medium ${sel ? 'text-amber-600 dark:text-amber-300' : 'text-foreground/70'}`}>{tool.display_name || tool.name}</td>
-                      <td className="px-2 py-2 text-foreground/40 truncate max-w-[200px] hidden sm:table-cell">{tool.description}</td>
+                      <td className={`px-2 py-2 font-mono text-xs ${sel ? 'text-amber-600 dark:text-amber-300' : 'text-foreground/70'}`}>{tool.name}</td>
+                      <td className="px-2 py-2 text-foreground/40 truncate max-w-[200px] hidden sm:table-cell">{tool.display_name}</td>
                     </tr>
                   )
                 })}

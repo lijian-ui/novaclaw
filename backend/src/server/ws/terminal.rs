@@ -224,7 +224,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
     let session_id = match TERMINAL_MANAGER.create_session(cwd.clone()).await {
         Ok(id) => {
             tracing::debug!("[Terminal] Created session: {}", id);
-            let welcome = "\x1b[32m--- NovaClaw Terminal ---\x1b[0m\r\n";
+            let welcome = "\x1b[32m--- Jeeves Terminal ---\x1b[0m\r\n";
             let mut sender = ws_sender.lock().await;
             let _ = sender
                 .send(Message::Text(

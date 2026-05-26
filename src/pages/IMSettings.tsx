@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, ArrowLeft, Webhook, Scan } from 'lucide-react'
 import { getApiBase } from '@/hooks/useApi'
 import { useTranslation } from 'react-i18next'
 import dingtalkIcon from '@/assets/dingtalk.png'
-import feishuIcon from '@/assets/feishu.png'
+// import feishuIcon from '@/assets/feishu.png' // 待后端对接
+import QRCode from 'qrcode'
 
 interface IMChannel {
   id: string
@@ -28,7 +29,7 @@ interface IMSettingsProps {
 
 const channelTypes = [
   { id: 'dingtalk', name: '钉钉', icon: dingtalkIcon, color: 'text-blue-400' },
-  { id: 'feishu', name: '飞书', icon: feishuIcon, color: 'text-green-400' },
+  // { id: 'feishu', name: '飞书', icon: feishuIcon, color: 'text-green-400' }, // 待后端对接
   { id: 'weixin', name: '个人微信', icon: '', color: 'text-emerald-400' },
 ]
 
@@ -59,11 +60,20 @@ const emptyForm: FormState = {
 // 从通道配置推断所属平台类型
 // ─── 微信扫码绑定组件 ──────────────────────────────────────
 function WeChatBind({ onToken }: { onToken: (token: string, id: string) => void }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const [scanning, setScanning] = useState(false)
   const [qrUrl, setQrUrl] = useState('')
-  const [sessionId, setSessionId] = useState('')
+  const [_sessionId, setSessionId] = useState('')
   const [status, setStatus] = useState('')
-  const { t } = useTranslation()
+
+  // QR码渲染
+  useEffect(() => {
+    if (qrUrl && canvasRef.current) {
+      QRCode.toCanvas(canvasRef.current, qrUrl, { width: 192, margin: 2 }, (err: Error | null | undefined) => {
+        if (err) console.error('QR码渲染失败:', err)
+      })
+    }
+  }, [qrUrl])
 
   const startScan = useCallback(async () => {
     setScanning(true)
@@ -132,15 +142,7 @@ function WeChatBind({ onToken }: { onToken: (token: string, id: string) => void 
         <div className="rounded-lg bg-foreground/5 border border-border p-4">
           {qrUrl && (
             <div className="flex flex-col items-center gap-3">
-              <img
-                src={qrUrl}
-                alt="微信扫码"
-                className="w-48 h-48 rounded-lg border border-border"
-                onError={(e) => {
-                  // 如果图片加载失败，显示文字提示
-                  (e.target as HTMLImageElement).style.display = 'none'
-                }}
-              />
+              <canvas ref={canvasRef} className="w-48 h-48 rounded-lg border border-border" />
               <div className="text-center">
                 <p className="text-xs text-foreground/70">请用微信扫描二维码</p>
                 <p className={`text-xs mt-1 ${

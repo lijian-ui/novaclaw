@@ -81,8 +81,10 @@ Examples:
                         let gateway = IM_GATEWAY.read().await;
                         let gw = gateway.as_ref().ok_or("IM 网关未初始化")?;
 
-                        let adapter = gw.registry.get(&robot).await
-                            .ok_or_else(|| format!("机器人账号 '{}' 未注册或未连接", robot))?;
+                        // 使用 platform:account_id 复合 key 查找
+                        let composite_key = format!("{}:{}", target.platform.as_str(), robot);
+                        let adapter = gw.registry.get(&composite_key).await
+                            .ok_or_else(|| format!("机器人账号 '{}' 未注册或未连接 (key={})", robot, composite_key))?;
 
                         let result = if content_type == "markdown" && !title.is_empty() {
                             adapter.send_markdown(&target, title, content).await
@@ -97,5 +99,5 @@ Examples:
                     })
                 },
             ),
-        });
+        }).await;
 }

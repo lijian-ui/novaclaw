@@ -6,5 +6,5 @@ echo ==============================
 
 taskkill /f /im node.exe >nul 2>&1
 
-taskkill /f /fi "WINDOWTITLE:NovaClaw-Frontend*" >nul 2>&1
+taskkill /f /fi "WINDOWTITLE:jeeves-Frontend*" >nul 2>&1
 

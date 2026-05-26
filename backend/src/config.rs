@@ -222,7 +222,7 @@ impl AppConfig {
 
     /// 项目配置文件路径
     pub fn config_path() -> PathBuf {
-        if let Ok(path) = std::env::var("NOVACLAW_CONFIG") {
+        if let Ok(path) = std::env::var("JEEVES_CONFIG") {
             return PathBuf::from(path);
         }
         get_config_dir().join("config.json")
@@ -354,7 +354,7 @@ impl ModelsConfig {
 
     /// 模型配置文件路径
     pub fn models_path() -> PathBuf {
-        if let Ok(path) = std::env::var("NOVACLAW_MODELS_CONFIG") {
+        if let Ok(path) = std::env::var("JEEVES_MODELS_CONFIG") {
             return PathBuf::from(path);
         }
         get_config_dir().join("models.json")
@@ -381,20 +381,20 @@ impl ModelsConfig {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\novaclaw\          |
-/// | macOS  | ~/Library/Application Support/novaclaw/    |
-/// | Linux  | ~/.local/share/novaclaw/                   |
+/// | Win    | %USERPROFILE%\Documents\jeeves\          |
+/// | macOS  | ~/Library/Application Support/jeeves/    |
+/// | Linux  | ~/.local/share/jeeves/                   |
 pub fn get_base_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
         // 使用用户文档目录，更友好且非隐藏
         std::env::var("USERPROFILE")
-            .map(|p| PathBuf::from(p).join("Documents").join("novaclaw"))
+            .map(|p| PathBuf::from(p).join("Documents").join("jeeves"))
             .unwrap_or_else(|_| {
                 dirs::home_dir()
                     .unwrap_or_else(|| PathBuf::from("."))
                     .join("Documents")
-                    .join("novaclaw")
+                    .join("jeeves")
             })
     }
 
@@ -403,7 +403,7 @@ pub fn get_base_dir() -> PathBuf {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         home.join("Library")
             .join("Application Support")
-            .join("novaclaw")
+            .join("jeeves")
     }
 
     #[cfg(target_os = "linux")]
@@ -416,14 +416,14 @@ pub fn get_base_dir() -> PathBuf {
                 .display()
                 .to_string()
         });
-        PathBuf::from(data_home).join("novaclaw")
+        PathBuf::from(data_home).join("jeeves")
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("novaclaw")
+            .join("jeeves")
     }
 }
 
@@ -431,9 +431,9 @@ pub fn get_base_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\novaclaw\config\    |
-/// | macOS  | ~/Library/Application Support/novaclaw/config/ |
-/// | Linux  | ~/.config/novaclaw/                        |
+/// | Win    | %USERPROFILE%\Documents\jeeves\config\    |
+/// | macOS  | ~/Library/Application Support/jeeves/config/ |
+/// | Linux  | ~/.config/jeeves/                        |
 pub fn get_config_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
@@ -454,7 +454,7 @@ pub fn get_config_dir() -> PathBuf {
                 .display()
                 .to_string()
         });
-        PathBuf::from(config_home).join("novaclaw")
+        PathBuf::from(config_home).join("jeeves")
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
@@ -467,9 +467,9 @@ pub fn get_config_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\novaclaw\workspace\ |
-/// | macOS  | ~/Library/Application Support/novaclaw/workspace/ |
-/// | Linux  | ~/.local/share/novaclaw/workspace/         |
+/// | Win    | %USERPROFILE%\Documents\jeeves\workspace\ |
+/// | macOS  | ~/Library/Application Support/jeeves/workspace/ |
+/// | Linux  | ~/.local/share/jeeves/workspace/         |
 pub fn get_workspace_dir() -> PathBuf {
     get_base_dir().join("workspace")
 }
@@ -478,9 +478,9 @@ pub fn get_workspace_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\novaclaw\skills\    |
-/// | macOS  | ~/Library/Application Support/novaclaw/skills/ |
-/// | Linux  | ~/.local/share/novaclaw/skills/            |
+/// | Win    | %USERPROFILE%\Documents\jeeves\skills\    |
+/// | macOS  | ~/Library/Application Support/jeeves/skills/ |
+/// | Linux  | ~/.local/share/jeeves/skills/            |
 pub fn get_skills_dir() -> PathBuf {
     get_base_dir().join("skills")
 }
@@ -489,9 +489,9 @@ pub fn get_skills_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\novaclaw\memories\ |
-/// | macOS  | ~/Library/Application Support/novaclaw/memories/ |
-/// | Linux  | ~/.local/share/novaclaw/memories/          |
+/// | Win    | %USERPROFILE%\Documents\jeeves\memories\ |
+/// | macOS  | ~/Library/Application Support/jeeves/memories/ |
+/// | Linux  | ~/.local/share/jeeves/memories/          |
 pub fn get_memories_dir() -> PathBuf {
     get_base_dir().join("memories")
 }
@@ -500,9 +500,9 @@ pub fn get_memories_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\novaclaw\sessions\ |
-/// | macOS  | ~/Library/Application Support/novaclaw/sessions/ |
-/// | Linux  | ~/.local/share/novaclaw/sessions/          |
+/// | Win    | %USERPROFILE%\Documents\jeeves\sessions\ |
+/// | macOS  | ~/Library/Application Support/jeeves/sessions/ |
+/// | Linux  | ~/.local/share/jeeves/sessions/          |
 pub fn get_sessions_dir() -> PathBuf {
     get_base_dir().join("sessions")
 }
@@ -511,9 +511,9 @@ pub fn get_sessions_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\novaclaw\logs\     |
-/// | macOS  | ~/Library/Application Support/novaclaw/logs/ |
-/// | Linux  | ~/.local/share/novaclaw/logs/              |
+/// | Win    | %USERPROFILE%\Documents\jeeves\logs\     |
+/// | macOS  | ~/Library/Application Support/jeeves/logs/ |
+/// | Linux  | ~/.local/share/jeeves/logs/              |
 pub fn get_logs_dir() -> PathBuf {
     get_base_dir().join("logs")
 }
@@ -522,9 +522,9 @@ pub fn get_logs_dir() -> PathBuf {
 /// 
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\novaclaw\cron\     |
-/// | macOS  | ~/Library/Application Support/novaclaw/cron/ |
-/// | Linux  | ~/.local/share/novaclaw/cron/              |
+/// | Win    | %USERPROFILE%\Documents\jeeves\cron\     |
+/// | macOS  | ~/Library/Application Support/jeeves/cron/ |
+/// | Linux  | ~/.local/share/jeeves/cron/              |
 pub fn get_cron_dir() -> PathBuf {
     get_base_dir().join("cron")
 }

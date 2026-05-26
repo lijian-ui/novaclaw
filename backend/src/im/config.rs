@@ -8,9 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
-/// 默认账号 ID（兼容旧配置的单账号模式）
-pub const DEFAULT_ACCOUNT_ID: &str = "default";
-
 /// IM 渠道配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IMChannelConfig {
@@ -235,7 +232,8 @@ impl IMChannelConfig {
                 .map(|a| a.id.clone())
                 .collect()
         } else if self.use_stream_mode() {
-            vec![DEFAULT_ACCOUNT_ID.to_string()]
+            // 单账号模式：使用渠道自身唯一 ID 作为 account_id
+            vec![self.id.clone()]
         } else {
             vec![]
         }
@@ -245,9 +243,9 @@ impl IMChannelConfig {
     pub fn get_account(&self, account_id: &str) -> Option<AccountConfig> {
         if let Some(accounts) = &self.accounts {
             accounts.get(account_id).cloned()
-        } else if account_id == DEFAULT_ACCOUNT_ID && self.use_stream_mode() {
+        } else if account_id == self.id && self.use_stream_mode() {
             Some(AccountConfig {
-                id: DEFAULT_ACCOUNT_ID.to_string(),
+                id: self.id.clone(),
                 name: Some(self.name.clone()),
                 enabled: true,
                 credentials: AccountCredentials {

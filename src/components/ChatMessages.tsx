@@ -126,9 +126,9 @@ function extractToolParams(_toolName: string | undefined, argsJson: string): str
             // 查找 appdata/local 路径
             const appdataIndex = fullPath.toLowerCase().indexOf('appdata')
             if (appdataIndex !== -1) {
-              const novaclawIndex = fullPath.toLowerCase().indexOf('novaclaw', appdataIndex)
-              if (novaclawIndex !== -1) {
-                displayPath = fullPath.slice(novaclawIndex + 8)
+              const jeevesIndex = fullPath.toLowerCase().indexOf('jeeves', appdataIndex)
+              if (jeevesIndex !== -1) {
+                displayPath = fullPath.slice(jeevesIndex + 6)
               }
             }
           }

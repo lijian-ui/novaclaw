@@ -5,7 +5,7 @@ import translationZH from './locales/zh-CN.json'
 
 // 获取浏览器语言或默认中文
 const getDefaultLanguage = (): string => {
-  const saved = localStorage.getItem('novaclaw-language')
+  const saved = localStorage.getItem('jeeves-language')
   if (saved) return saved
   const browserLang = navigator.language.toLowerCase()
   if (browserLang.startsWith('zh')) return 'zh-CN'
@@ -30,7 +30,7 @@ i18n
     detection: {
       order: ['localStorage', 'navigator'],
       caches: ['localStorage'],
-      lookupLocalStorage: 'novaclaw-language'
+      lookupLocalStorage: 'jeeves-language'
     }
   })
 

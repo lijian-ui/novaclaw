@@ -1,40 +1,40 @@
-# 对接新 IM 渠道开发指南
+# 对接�?IM 渠道开发指�?
 
-> 撰写日期：2026-05-18
-> 适用版本：NovaClaw 多渠道 IM 架构 v1
+> 撰写日期�?026-05-18
+> 适用版本：jeeves 多渠�?IM 架构 v1
 > 参考实现：DingTalk（已有）、Feishu/飞书（本文作为教学案例）
 
 ---
 
-## 一、架构概述
+## 一、架构概�?
 
-NovaClaw 的 IM 系统采用 **Adapter + Registry + Gateway** 三层架构：
+jeeves �?IM 系统采用 **Adapter + Registry + Gateway** 三层架构�?
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        IMGateway                            │
-│  (im/gateway.rs)                                            │
-│  消息路由 / Agent 会话管理 / 入站消息循环                      │
-├─────────────────────────────────────────────────────────────┤
-│                    PlatformRegistry                          │
-│  (im/registry.rs)                                           │
-│  HashMap<PlatformType, Arc<dyn IMAdapter>>                  │
-├────────────┬────────────┬────────────┬──────────────────────┤
-│ DingTalk   │  飞书       │  企业微信    │  Slack / ...        │
-│ adapter.rs │ adapter.rs │ adapter.rs  │  (未来)              │
-├────────────┴────────────┴────────────┴──────────────────────┤
-│                     Agent (ReAct 循环)                       │
-│  工具: send_im_message / 入站消息触发 Agent.run_turn()       │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────�?
+�?                       IMGateway                            �?
+�? (im/gateway.rs)                                            �?
+�? 消息路由 / Agent 会话管理 / 入站消息循环                      �?
+├─────────────────────────────────────────────────────────────�?
+�?                   PlatformRegistry                          �?
+�? (im/registry.rs)                                           �?
+�? HashMap<PlatformType, Arc<dyn IMAdapter>>                  �?
+├────────────┬────────────┬────────────┬──────────────────────�?
+�?DingTalk   �? 飞书       �? 企业微信    �? Slack / ...        �?
+�?adapter.rs �?adapter.rs �?adapter.rs  �? (未来)              �?
+├────────────┴────────────┴────────────┴──────────────────────�?
+�?                    Agent (ReAct 循环)                       �?
+�? 工具: send_im_message / 入站消息触发 Agent.run_turn()       �?
+└─────────────────────────────────────────────────────────────�?
 ```
 
-**新增一个渠道只需要做一件事**：实现 `IMAdapter` trait，注册到 `PlatformRegistry`。
+**新增一个渠道只需要做一件事**：实�?`IMAdapter` trait，注册到 `PlatformRegistry`�?
 
 ---
 
-## 二、核心契约（必须实现）
+## 二、核心契约（必须实现�?
 
-所有渠道必须实现 `im/adapter.rs` 中的 `IMAdapter` trait：
+所有渠道必须实�?`im/adapter.rs` 中的 `IMAdapter` trait�?
 
 ```rust
 #[async_trait]
@@ -51,45 +51,45 @@ pub trait IMAdapter: Send + Sync {
 
 ---
 
-## 三、新增渠道的标准步骤（以飞书为例）
+## 三、新增渠道的标准步骤（以飞书为例�?
 
-### 步骤 1：创建渠道模块目录
+### 步骤 1：创建渠道模块目�?
 
 ```
 backend/src/
-├── feishu/                    # ← 新建
-│   ├── mod.rs                 #   公共导出
-│   ├── config.rs              #   凭据 + 配置管理
-│   ├── client.rs              #   HTTP API 客户端封装
-│   ├── adapter.rs             #   IMAdapter 实现
-│   ├── connection.rs          #   连接生命周期（WebSocket / Webhook）
-│   ├── frames.rs              #   消息类型定义
-│   └── event_handler.rs       #   事件处理器（消息接收）
+├── feishu/                    # �?新建
+�?  ├── mod.rs                 #   公共导出
+�?  ├── config.rs              #   凭据 + 配置管理
+�?  ├── client.rs              #   HTTP API 客户端封�?
+�?  ├── adapter.rs             #   IMAdapter 实现
+�?  ├── connection.rs          #   连接生命周期（WebSocket / Webhook�?
+�?  ├── frames.rs              #   消息类型定义
+�?  └── event_handler.rs       #   事件处理器（消息接收�?
 ├── im/                        # 已有，无需修改
 └── dingtalk/                  # 已有，参考用
 ```
 
-### 步骤 2：定义凭据和配置（`feishu/config.rs`）
+### 步骤 2：定义凭据和配置（`feishu/config.rs`�?
 
 飞书自建应用需要以下凭据：
 
 ```rust
-/// 飞书渠道配置（用户通过前端 IMSettings 页面配置）
+/// 飞书渠道配置（用户通过前端 IMSettings 页面配置�?
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeishuConfig {
     /// App ID（飞书开放平台获取）
     pub app_id: String,
     /// App Secret
     pub app_secret: String,
-    /// 事件加密密钥（Webhook 模式必填）
+    /// 事件加密密钥（Webhook 模式必填�?
     pub encrypt_key: Option<String>,
-    /// 事件验证令牌（Webhook 模式必填）
+    /// 事件验证令牌（Webhook 模式必填�?
     pub verification_token: Option<String>,
-    /// 连接模式：websocket（默认）或 webhook
-    /// webhook 需要公网可访问的 HTTP 端点
+    /// 连接模式：websocket（默认）�?webhook
+    /// webhook 需要公网可访问�?HTTP 端点
     #[serde(default = "default_connection_mode")]
     pub connection_mode: String,
-    /// 海外版域名（lark）或国内（feishu）
+    /// 海外版域名（lark）或国内（feishu�?
     #[serde(default = "default_domain")]
     pub domain: String,
 }
@@ -98,17 +98,17 @@ fn default_connection_mode() -> String { "websocket".into() }
 fn default_domain() -> String { "feishu".into() }
 ```
 
-**用户前端配置入口**：在 `IMSettings.tsx` 的 `channelTypes` 数组中添加飞书渠道：
+**用户前端配置入口**：在 `IMSettings.tsx` �?`channelTypes` 数组中添加飞书渠道：
 
 ```typescript
 const channelTypes = [
   { id: 'dingtalk', name: '钉钉', icon: '🔔', color: 'text-blue-400' },
-  { id: 'feishu', name: '飞书', icon: '📮', color: 'text-green-400' },   // ← 已有
+  { id: 'feishu', name: '飞书', icon: '📮', color: 'text-green-400' },   // �?已有
   // { id: 'feishu', name: '飞书', ... }  // 如已存在则无需重复添加
 ]
 ```
 
-**IM 配置持久化**：不需要额外代码，现有 `im/config.rs` 配置模型已包含飞书需要的字段（`app_id`, `app_secret`, `webhook`, `secret`）：
+**IM 配置持久�?*：不需要额外代码，现有 `im/config.rs` 配置模型已包含飞书需要的字段（`app_id`, `app_secret`, `webhook`, `secret`）：
 
 ```json
 {
@@ -130,19 +130,19 @@ const channelTypes = [
 }
 ```
 
-> **注意**：如果 `IMChannelDetail` 结构体缺少飞书所需的字段，需要在 `im/config.rs` 中补充。
+> **注意**：如�?`IMChannelDetail` 结构体缺少飞书所需的字段，需要在 `im/config.rs` 中补充�?
 
-### 步骤 3：封装飞书 REST API 客户端（`feishu/client.rs`）
+### 步骤 3：封装飞�?REST API 客户端（`feishu/client.rs`�?
 
-飞书使用 `@larksuiteoapi/node-sdk`，但在 Rust 中需要自行实现或使用社区 SDK。核心 API：
+飞书使用 `@larksuiteoapi/node-sdk`，但�?Rust 中需要自行实现或使用社区 SDK。核�?API�?
 
 ```rust
-/// 飞书 API 客户端
+/// 飞书 API 客户�?
 pub struct FeishuClient {
     http: reqwest::Client,
     app_id: String,
     app_secret: String,
-    /// 缓存的 tenant_access_token
+    /// 缓存�?tenant_access_token
     token_cache: RwLock<Option<TokenCache>>,
     domain: FeishuDomain,
 }
@@ -153,12 +153,12 @@ enum FeishuDomain {
 }
 
 impl FeishuClient {
-    /// 获取 tenant_access_token（自动续期，参考 dingtalk/credential.rs）
+    /// 获取 tenant_access_token（自动续期，参�?dingtalk/credential.rs�?
     pub async fn get_token(&self) -> Result<String, AppError> { ... }
 
-    // ─── 消息发送 API ───
+    // ─── 消息发�?API ───
 
-    /// 发送文本消息（POST /open-apis/im/v1/messages）
+    /// 发送文本消息（POST /open-apis/im/v1/messages�?
     pub async fn send_text(
         &self,
         receive_id: &str,
@@ -174,7 +174,7 @@ impl FeishuClient {
         content: &str,
     ) -> Result<(), AppError> { ... }
 
-    /// 回复消息（POST /open-apis/im/v1/messages/{message_id}/reply）
+    /// 回复消息（POST /open-apis/im/v1/messages/{message_id}/reply�?
     pub async fn reply_message(
         &self,
         message_id: &str,
@@ -184,33 +184,33 @@ impl FeishuClient {
 
     // ─── 媒体上传 API ───
 
-    /// 上传图片（POST /open-apis/im/v1/images）
+    /// 上传图片（POST /open-apis/im/v1/images�?
     pub async fn upload_image(&self, data: Vec<u8>, image_type: &str) -> Result<String, AppError> { ... }
 
-    /// 上传文件（POST /open-apis/im/v1/files）
+    /// 上传文件（POST /open-apis/im/v1/files�?
     pub async fn upload_file(&self, data: Vec<u8>, file_name: &str) -> Result<String, AppError> { ... }
 }
 ```
 
-**飞书 REST API 端点对照**：
+**飞书 REST API 端点对照**�?
 
-| 操作 | 方法 | URL | 参考 dingtalk |
+| 操作 | 方法 | URL | 参�?dingtalk |
 |------|------|-----|-------------|
 | 获取 token | POST | `/open-apis/auth/v3/tenant_access_token/internal` | `credential.rs` |
-| 发送消息 | POST | `/open-apis/im/v1/messages?receive_id_type=open_id` | `message.rs` |
-| 回复消息 | POST | `/open-apis/im/v1/messages/{message_id}/reply` | (新) |
-| 上传图片 | POST | `/open-apis/im/v1/images` | (新) |
-| 上传文件 | POST | `/open-apis/im/v1/files` | (新) |
-| 获取消息 | GET | `/open-apis/im/v1/messages/{message_id}` | (新) |
+| 发送消�?| POST | `/open-apis/im/v1/messages?receive_id_type=open_id` | `message.rs` |
+| 回复消息 | POST | `/open-apis/im/v1/messages/{message_id}/reply` | (�? |
+| 上传图片 | POST | `/open-apis/im/v1/images` | (�? |
+| 上传文件 | POST | `/open-apis/im/v1/files` | (�? |
+| 获取消息 | GET | `/open-apis/im/v1/messages/{message_id}` | (�? |
 
-**请求格式**：
+**请求格式**�?
 
-- 获取 token：
+- 获取 token�?
   ```json
   POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal
   { "app_id": "cli_xxx", "app_secret": "xxx" }
   ```
-  响应：
+  响应�?
   ```json
   { "code": 0, "msg": "success", "tenant_access_token": "xxx", "expire": 7200 }
   ```
@@ -225,7 +225,7 @@ impl FeishuClient {
     "content": "{\"text\":\"hello\"}"
   }
   ```
-  响应：
+  响应�?
   ```json
   { "code": 0, "msg": "success", "data": { "message_id": "om_xxx" } }
   ```
@@ -239,20 +239,20 @@ impl FeishuClient {
   }
   ```
 
-- 回复消息：
+- 回复消息�?
   ```json
   POST https://open.feishu.cn/open-apis/im/v1/messages/{message_id}/reply
   Authorization: Bearer {tenant_access_token}
   { "content": "{\"text\":\"回复内容\"}", "msg_type": "text" }
   ```
 
-### 步骤 4：WebSocket 连接管理（`feishu/connection.rs`）
+### 步骤 4：WebSocket 连接管理（`feishu/connection.rs`�?
 
-飞书支持 WebSocket 和 Webhook 两种事件接收模式。
+飞书支持 WebSocket �?Webhook 两种事件接收模式�?
 
 #### WebSocket 模式（推荐，与钉钉一致）
 
-参考 `dingtalk/connection.rs`，模式几乎相同：
+参�?`dingtalk/connection.rs`，模式几乎相同：
 
 ```rust
 /// 飞书 WebSocket 连接配置
@@ -267,11 +267,11 @@ pub struct FeishuConnectionConfig {
 
 /// 启动飞书 WebSocket 连接
 /// 
-/// 与 dingtalk 的流式模式非常相似：
+/// �?dingtalk 的流式模式非常相似：
 ///   1. 获取 tenant_access_token
 ///   2. POST /open-apis/ws/v1/app_start 获取 WebSocket URL
 ///   3. 连接 WebSocket
-///   4. 接收事件帧、发送心跳、自动重连
+///   4. 接收事件帧、发送心跳、自动重�?
 pub async fn start_connection(
     client: FeishuClient,
     config: FeishuConnectionConfig,
@@ -279,36 +279,36 @@ pub async fn start_connection(
 ) -> FeishuConnection { ... }
 ```
 
-**与 DingTalk 的关键差异**：
+**�?DingTalk 的关键差�?*�?
 
-| 差异点 | DingTalk | 飞书 WebSocket |
+| 差异�?| DingTalk | 飞书 WebSocket |
 |--------|----------|---------------|
 | 获取连接 URL | `POST /v1.0/gateway/connections/open` | `POST /open-apis/ws/v1/app_start` |
-| 认证方式 | clientId + clientSecret 直接传 | 需要先获取 `tenant_access_token` |
-| 心跳间隔 | 60 秒 | 30 秒 |
-| 帧格式 | JSON 帧 | JSON 帧 |
+| 认证方式 | clientId + clientSecret 直接�?| 需要先获取 `tenant_access_token` |
+| 心跳间隔 | 60 �?| 30 �?|
+| 帧格�?| JSON �?| JSON �?|
 | 事件类型 | SYSTEM / EVENT / CALLBACK | `im.message.receive_v1` 等事件名 |
-| ACK 机制 | 发送 ACK 帧确认 | 飞书客户端自动 ACK（框架处理） |
+| ACK 机制 | 发�?ACK 帧确�?| 飞书客户端自�?ACK（框架处理） |
 
 #### Webhook 模式（备选）
 
-当用户无法使用 WebSocket（如内部网络限制）时，飞书支持 Webhook 回调。需要：
+当用户无法使�?WebSocket（如内部网络限制）时，飞书支�?Webhook 回调。需要：
 
-1. 提供一个公网可访问的 HTTP 端点（如 `POST /api/im/feishu/webhook`）
-2. 在飞书开放平台配置事件订阅 URL
-3. 验证签名（`SHA256(timestamp + nonce + encryptKey + body)`）
+1. 提供一个公网可访问�?HTTP 端点（如 `POST /api/im/feishu/webhook`�?
+2. 在飞书开放平台配置事件订�?URL
+3. 验证签名（`SHA256(timestamp + nonce + encryptKey + body)`�?
 4. 响应 URL Challenge
 
 ```rust
-/// 飞书 Webhook 验证和事件处理
+/// 飞书 Webhook 验证和事件处�?
 pub async fn handle_webhook(
     headers: HeaderMap,
     body: Bytes,
     encrypt_key: &str,
     verification_token: &str,
 ) -> Result<Json<Value>, AppError> {
-    // 1. URL Challenge：首次配置时飞书会发送 challenge
-    //    需要原样返回 challenge 值
+    // 1. URL Challenge：首次配置时飞书会发�?challenge
+    //    需要原样返�?challenge �?
     if let Some(challenge) = body.get("challenge") {
         return Ok(json!({ "challenge": challenge }));
     }
@@ -319,7 +319,7 @@ pub async fn handle_webhook(
     let signature = headers.get("x-lark-signature");
     verify_signature(timestamp, nonce, body, encrypt_key, signature)?;
     
-    // 3. 解密事件数据（如果配置了 encrypt_key）
+    // 3. 解密事件数据（如果配置了 encrypt_key�?
     let event = decrypt_event(body, encrypt_key)?;
     
     // 4. 路由事件到处理器
@@ -329,11 +329,11 @@ pub async fn handle_webhook(
 }
 ```
 
-**模式选择**：建议优先使用 WebSocket 模式，因为它不需要公网 IP，连接更稳定。
+**模式选择**：建议优先使�?WebSocket 模式，因为它不需要公�?IP，连接更稳定�?
 
-### 步骤 5：事件处理器（`feishu/event_handler.rs`）
+### 步骤 5：事件处理器（`feishu/event_handler.rs`�?
 
-消息接收后，转换为统一的 `IncomingMessage` 并送入 IMGateway：
+消息接收后，转换为统一�?`IncomingMessage` 并送入 IMGateway�?
 
 ```rust
 use crate::im::types::{IncomingMessage, ConversationType, PlatformType};
@@ -354,12 +354,12 @@ pub async fn handle_message_event(
     let sender_id = event.sender.sender_id.open_id.clone();
     let message_id = event.message.message_id.clone();
     let msg_type = event.message.message_type.as_str();
-    let content = event.message.content; // JSON 字符串，需按 msg_type 解析
+    let content = event.message.content; // JSON 字符串，需�?msg_type 解析
 
     // 解析消息内容
     let text = match msg_type {
         "text" => parse_text_content(&content),       // {"text":"hello"}
-        "post" => parse_post_content(&content),        // 富文本转纯文本
+        "post" => parse_post_content(&content),        // 富文本转纯文�?
         "image" => "[图片]".to_string(),                // 图片消息
         "file" => "[文件]".to_string(),                 // 文件消息
         _ => "[不支持的消息类型]".to_string(),
@@ -393,17 +393,17 @@ fn parse_text_content(content: &str) -> String {
         .unwrap_or_else(|| content.to_string())
 }
 
-/// 解析飞书 post（富文本）消息内容为纯文本
+/// 解析飞书 post（富文本）消息内容为纯文�?
 fn parse_post_content(content: &str) -> String {
-    // 飞书 post 格式复杂，需递归提取所有 text 标签
-    // 简化实现：尝试解析并提取文本
-    content.to_string() // 实际需要 JSON 解析后遍历 rich text 结构
+    // 飞书 post 格式复杂，需递归提取所�?text 标签
+    // 简化实现：尝试解析并提取文�?
+    content.to_string() // 实际需�?JSON 解析后遍�?rich text 结构
 }
 ```
 
-### 步骤 6：实现 IMAdapter（`feishu/adapter.rs`）
+### 步骤 6：实�?IMAdapter（`feishu/adapter.rs`�?
 
-这是将飞书 API 接入 NovaClaw IM 抽象层的核心适配器：
+这是将飞�?API 接入 jeeves IM 抽象层的核心适配器：
 
 ```rust
 use crate::feishu::client::FeishuClient;
@@ -411,7 +411,7 @@ use crate::feishu::config::FeishuConfig;
 use crate::im::adapter::IMAdapter;
 use crate::im::types::*;
 
-/// 飞书 IM 适配器
+/// 飞书 IM 适配�?
 pub struct FeishuAdapter {
     client: FeishuClient,
     config: FeishuConfig,
@@ -473,7 +473,7 @@ impl IMAdapter for FeishuAdapter {
         title: &str,
         text: &str,
     ) -> Result<SendResult, AppError> {
-        // 飞书用 post 消息类型发 Markdown
+        // 飞书�?post 消息类型�?Markdown
         let post_content = markdown_to_feishu_post(title, text);
         let receive_id_type = match target.conversation_type {
             ConversationType::Private => "open_id",
@@ -490,19 +490,19 @@ impl IMAdapter for FeishuAdapter {
         original: &IncomingMessage,
         text: &str,
     ) -> Result<SendResult, AppError> {
-        // 飞书支持直接回复消息（im.message.reply API）
+        // 飞书支持直接回复消息（im.message.reply API�?
         self.client.reply_message(&original.id, text, "text").await?;
         Ok(SendResult::ok())
     }
 }
 
-/// Markdown → 飞书 Post 格式转换（简化版）
+/// Markdown �?飞书 Post 格式转换（简化版�?
 fn markdown_to_feishu_post(title: &str, md_text: &str) -> String {
-    // 将 Markdown 转换为飞书 Post JSON 格式
+    // �?Markdown 转换为飞�?Post JSON 格式
     // 飞书 Post 结构：{ "zh_cn": { "title": "...", "content": [[...]] } }
     // 每个段落是一个数组，段落中的块是 { "tag": "text", "text": "..." }
-    // 或 { "tag": "a", "text": "...", "href": "..." }
-    // TODO: 实现完整的 Markdown → Post 转换
+    // �?{ "tag": "a", "text": "...", "href": "..." }
+    // TODO: 实现完整�?Markdown �?Post 转换
     serde_json::json!({
         "zh_cn": {
             "title": title,
@@ -514,7 +514,7 @@ fn markdown_to_feishu_post(title: &str, md_text: &str) -> String {
 }
 ```
 
-### 步骤 7：模块导出（`feishu/mod.rs`）
+### 步骤 7：模块导出（`feishu/mod.rs`�?
 
 ```rust
 pub mod adapter;
@@ -529,12 +529,12 @@ pub use client::FeishuClient;
 pub use config::FeishuConfig;
 ```
 
-### 步骤 8：注册到 lib.rs 初始化流程
+### 步骤 8：注册到 lib.rs 初始化流�?
 
-在 `lib.rs` 的 `initialize()` 函数中添加飞书支持：
+�?`lib.rs` �?`initialize()` 函数中添加飞书支持：
 
 ```rust
-// 在 IM Gateway 初始化部分，遍历 im.json 的 channels
+// �?IM Gateway 初始化部分，遍历 im.json �?channels
 match channel.id.as_str() {
     "dingtalk" => {
         // ... 已有的钉钉逻辑 ...
@@ -554,11 +554,11 @@ match channel.id.as_str() {
                 domain: "feishu".to_string(),
             };
             
-            // 创建适配器
+            // 创建适配�?
             let adapter = Arc::new(feishu::FeishuAdapter::new(feishu_config));
             
             // 如果使用 WebSocket 流式模式，启动连接并注册事件管道
-            // (类似于 dingtalk 的 DingTalkClient 模式，需要额外实现)
+            // (类似�?dingtalk �?DingTalkClient 模式，需要额外实�?
             
             gateway.register(adapter).await;
             tracing::info!("飞书集成已注册到 IMGateway");
@@ -570,74 +570,74 @@ match channel.id.as_str() {
 }
 ```
 
-### 步骤 9：注册 API 路由（可选）
+### 步骤 9：注�?API 路由（可选）
 
 如果需要通过 HTTP 接收飞书 Webhook 事件，添加路由：
 
 ```rust
-// src/server/routes/im.rs 中新增端点
+// src/server/routes/im.rs 中新增端�?
 .route("/im/feishu/webhook", post(handle_feishu_webhook))
 ```
 
-同时需要更新 `src/server/routes/mod.rs` 中的路由合并。
+同时需要更�?`src/server/routes/mod.rs` 中的路由合并�?
 
-### 步骤 10：前端配置字段同步
+### 步骤 10：前端配置字段同�?
 
-在 `src/pages/IMSettings.tsx` 中，飞书渠道的表单字段已存在（`appId`, `appSecret`, `agentId`, `corpId`），无需修改。但需确保 `IMChannelDetail` 类型包含 `encrypt_key`, `verification_token`, `connection_mode`, `domain` 等字段。
+�?`src/pages/IMSettings.tsx` 中，飞书渠道的表单字段已存在（`appId`, `appSecret`, `agentId`, `corpId`），无需修改。但需确保 `IMChannelDetail` 类型包含 `encrypt_key`, `verification_token`, `connection_mode`, `domain` 等字段�?
 
 ---
 
-## 四、文件清单（完整的新渠道项目结构）
+## 四、文件清单（完整的新渠道项目结构�?
 
 ```
 backend/src/feishu/
 ├── mod.rs                          # 模块导出
-├── config.rs                       # FeishuConfig 结构体
+├── config.rs                       # FeishuConfig 结构�?
 ├── client.rs                       # FeishuClient REST API 封装
-│                                   #   get_token() / send_text() / send_post()
-│                                   #   reply_message() / upload_image() / upload_file()
+�?                                  #   get_token() / send_text() / send_post()
+�?                                  #   reply_message() / upload_image() / upload_file()
 ├── frames.rs                       # 飞书消息/事件类型（可选）
-│                                   #   FeishuMessageEvent / FeishuTokenResponse
+�?                                  #   FeishuMessageEvent / FeishuTokenResponse
 ├── connection.rs                   # WebSocket 连接生命周期
-│                                   #   start_connection() / ws_read_loop()
-│                                   #   keepalive() / auto_reconnect()
-├── event_handler.rs                # 事件处理器
-│                                   #   handle_message_event() → IncomingMessage
-│                                   #   parse_text_content() / parse_post_content()
-│                                   #   群聊 @ 检查
+�?                                  #   start_connection() / ws_read_loop()
+�?                                  #   keepalive() / auto_reconnect()
+├── event_handler.rs                # 事件处理�?
+�?                                  #   handle_message_event() �?IncomingMessage
+�?                                  #   parse_text_content() / parse_post_content()
+�?                                  #   群聊 @ 检�?
 └── adapter.rs                      # FeishuAdapter implements IMAdapter
                                     #   send_text / send_markdown / reply
 
 backend/src/im/config.rs            # (修改) IMChannelDetail 补充飞书字段
 ```
 
-**与 DingTalk 的差异总结**：
+**�?DingTalk 的差异总结**�?
 
 | 维度 | DingTalk | 飞书 |
 |------|----------|------|
-| 认证 | clientId + clientSecret | appId + appSecret → tenant_access_token |
-| 消息接收 | 流式 WebSocket（Stream 模式） | WebSocket（官方 SDK）或 Webhook |
-| 消息发送 | 私聊/群聊分开 API | 统一 `POST /messages?receive_id_type=...` |
+| 认证 | clientId + clientSecret | appId + appSecret �?tenant_access_token |
+| 消息接收 | 流式 WebSocket（Stream 模式�?| WebSocket（官�?SDK）或 Webhook |
+| 消息发�?| 私聊/群聊分开 API | 统一 `POST /messages?receive_id_type=...` |
 | 回复方式 | sessionWebhook 优先 | `POST /messages/{id}/reply` |
-| Markdown | 直接传 content 字段 | 需转换为 Post 富文本格式 |
-| 心跳 | 60s 发 `{"code":200,"message":"ping"}` | 30s，SDK 自动处理 |
-| 媒体发送 | 先上传到 `oapi.dingtalk.com` | 先上传到 `open.feishu.cn/open-apis/im/v1/images` |
+| Markdown | 直接�?content 字段 | 需转换�?Post 富文本格�?|
+| 心跳 | 60s �?`{"code":200,"message":"ping"}` | 30s，SDK 自动处理 |
+| 媒体发�?| 先上传到 `oapi.dingtalk.com` | 先上传到 `open.feishu.cn/open-apis/im/v1/images` |
 
 ---
 
 ## 五、IMChannelDetail 扩展
 
-当前 `im/config.rs` 中的 `IMChannelDetail` 结构需要补充飞书特有的字段：
+当前 `im/config.rs` 中的 `IMChannelDetail` 结构需要补充飞书特有的字段�?
 
 ```rust
-/// 渠道具体配置项
+/// 渠道具体配置�?
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IMChannelDetail {
-    // ─── Webhook 模式（通用） ───
+    // ─── Webhook 模式（通用�?───
     pub webhook: Option<String>,
     pub secret: Option<String>,
 
-    // ─── Stream 模式（钉钉/飞书通用） ───
+    // ─── Stream 模式（钉�?飞书通用�?───
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
 
@@ -646,48 +646,48 @@ pub struct IMChannelDetail {
     pub app_secret: Option<String>,
     pub agent_id: Option<String>,
     pub corp_id: Option<String>,
-    pub encrypt_key: Option<String>,         // ← 新增
-    pub verification_token: Option<String>,   // ← 新增
-    pub connection_mode: Option<String>,      // ← 新增: "websocket" / "webhook"
-    pub domain: Option<String>,               // ← 新增: "feishu" / "lark"
+    pub encrypt_key: Option<String>,         // �?新增
+    pub verification_token: Option<String>,   // �?新增
+    pub connection_mode: Option<String>,      // �?新增: "websocket" / "webhook"
+    pub domain: Option<String>,               // �?新增: "feishu" / "lark"
 }
 ```
 
 ---
 
-## 六、常见问题
+## 六、常见问�?
 
-### Q1：新增渠道是否需要修改 `im/` 模块的代码？
+### Q1：新增渠道是否需要修�?`im/` 模块的代码？
 
-否。`im/` 模块完全解耦，新增渠道只需：
-1. 创建渠道目录（如 `feishu/`）
+否。`im/` 模块完全解耦，新增渠道只需�?
+1. 创建渠道目录（如 `feishu/`�?
 2. 实现 `IMAdapter` trait
-3. 在 `lib.rs` 的初始化循环中注册
+3. �?`lib.rs` 的初始化循环中注�?
 
 ### Q2：IM 配置如何与前端同步？
 
-前端通过 `GET/POST /api/config/im_channels` 读写 `config/im.json`。新渠道的配置字段只需在 `IMChannelDetail` 结构体中定义即可自动序列化。
+前端通过 `GET/POST /api/config/im_channels` 读写 `config/im.json`。新渠道的配置字段只需�?`IMChannelDetail` 结构体中定义即可自动序列化�?
 
-### Q3：WebSocket 和 Webhook 如何选择？
+### Q3：WebSocket �?Webhook 如何选择�?
 
 | 条件 | 推荐模式 |
 |------|---------|
-| 有公网 IP 或内网穿透 | WebSocket（简单、稳定） |
-| IM 平台仅支持 Webhook | Webhook（如企业微信回调） |
-| 用户网络限制 WebSocket | Webhook（需公网可达） |
+| 有公�?IP 或内网穿�?| WebSocket（简单、稳定） |
+| IM 平台仅支�?Webhook | Webhook（如企业微信回调�?|
+| 用户网络限制 WebSocket | Webhook（需公网可达�?|
 | 需要低延迟 | WebSocket |
 
-### Q4：渠道实现的质量检查清单
+### Q4：渠道实现的质量检查清�?
 
 - [ ] `IMAdapter` 所有方法已实现，未使用 `todo!()`
 - [ ] `send_text` 能发送纯文本消息
-- [ ] `send_markdown` 能发送 Markdown 渲染消息
-- [ ] `reply` 能正确回复原始消息（使用平台的 reply API）
-- [ ] `is_connected` 返回正确的连接状态
-- [ ] `capabilities` 如实声明了平台能力
-- [ ] WebSocket 连接有自动重连机制
-- [ ] 心跳/保活机制已实现
-- [ ] 群聊消息会检查 @ 提及
-- [ ] 错误不会导致整个 gateway 崩溃（每个消息独立 try 块）
+- [ ] `send_markdown` 能发�?Markdown 渲染消息
+- [ ] `reply` 能正确回复原始消息（使用平台�?reply API�?
+- [ ] `is_connected` 返回正确的连接状�?
+- [ ] `capabilities` 如实声明了平台能�?
+- [ ] WebSocket 连接有自动重连机�?
+- [ ] 心跳/保活机制已实�?
+- [ ] 群聊消息会检�?@ 提及
+- [ ] 错误不会导致整个 gateway 崩溃（每个消息独�?try 块）
 - [ ] 配置通过 `config/im.json` 读写
 - [ ] 前端 IMSettings 页面能显示和编辑该渠道的配置

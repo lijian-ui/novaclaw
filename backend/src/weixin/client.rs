@@ -10,10 +10,28 @@ use tokio::sync::Mutex;
 
 // ─── 请求/响应类型 ───────────────────────────────────────────
 
+/// 公共请求元数据（附加到每个 CGI 请求）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bot_agent: Option<String>,
+}
+
+impl BaseInfo {
+    pub fn new() -> Self {
+        Self {
+            channel_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            bot_agent: Some("Jeeves".to_string()),
+        }
+    }
+}
+
+impl Default for BaseInfo {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +77,8 @@ pub struct TextItem {
 pub struct GetUpdatesReq {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub get_updates_buf: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_info: Option<BaseInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +93,8 @@ pub struct GetUpdatesResp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SendMessageReq {
     pub msg: WeixinMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_info: Option<BaseInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +109,21 @@ pub struct SendTypingReq {
     pub ilink_user_id: String,
     pub typing_ticket: String,
     pub status: i32,
+}
+
+/// iLink App ID（从 package.json ilink_appid 获取，无则填空字符串）
+const ILINK_APP_ID: &str = "";
+
+/// iLink App 客户端版本号（编码为 0x00MMNNPP）
+fn build_app_client_version() -> u32 {
+    let parts: Vec<u32> = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .map(|p| p.parse::<u32>().unwrap_or(0))
+        .collect();
+    let major = parts.first().copied().unwrap_or(0) & 0xff;
+    let minor = parts.get(1).copied().unwrap_or(0) & 0xff;
+    let patch = parts.get(2).copied().unwrap_or(0) & 0xff;
+    (major << 16) | (minor << 8) | patch
 }
 
 // ─── iLink 客户端 ────────────────────────────────────────────
@@ -130,6 +167,8 @@ impl WeixinClient {
         headers.insert("AuthorizationType", "ilink_bot_token".parse().unwrap());
         headers.insert("Authorization", format!("Bearer {}", token).parse().unwrap());
         headers.insert("X-WECHAT-UIN", Self::uin().parse().unwrap());
+        headers.insert("iLink-App-Id", ILINK_APP_ID.parse().unwrap());
+        headers.insert("iLink-App-ClientVersion", build_app_client_version().to_string().parse().unwrap());
         Ok(headers)
     }
 
@@ -168,6 +207,7 @@ impl WeixinClient {
         let buf = self.updates_buf.lock().await.clone();
         let req = GetUpdatesReq {
             get_updates_buf: if buf.is_empty() { None } else { Some(buf) },
+            base_info: Some(BaseInfo::new()),
         };
         let resp: GetUpdatesResp = self.post("ilink/bot/getupdates", &req, 40).await?;
 
@@ -182,18 +222,19 @@ impl WeixinClient {
 
     /// 发送消息
     pub async fn send_message(&self, msg: &WeixinMessage) -> Result<(), AppError> {
-        let _: serde_json::Value = self.post("ilink/bot/sendmessage", &SendMessageReq { msg: msg.clone() }, 15).await?;
+        let _: serde_json::Value = self.post("ilink/bot/sendmessage", &SendMessageReq { msg: msg.clone(), base_info: Some(BaseInfo::new()) }, 15).await?;
         Ok(())
     }
 
-    /// 发送文本消息
+    /// 发送文本消息（自动生成 client_id）
     pub async fn send_text(&self, to_user_id: &str, text: &str, context_token: Option<&str>) -> Result<(), AppError> {
+        let client_id = format!("jeeves-weixin:{}", uuid::Uuid::new_v4().to_string());
         let msg = WeixinMessage {
             seq: None,
             message_id: None,
             from_user_id: Some(String::new()),
             to_user_id: Some(to_user_id.to_string()),
-            client_id: None,
+            client_id: Some(client_id),
             message_type: Some(2), // BOT
             message_state: Some(2), // FINISH
             item_list: Some(vec![MessageItem {
