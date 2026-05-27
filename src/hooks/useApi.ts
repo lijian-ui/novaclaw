@@ -46,7 +46,7 @@ api.interceptors.response.use(
 /** SSE 事件回调类型 */
 export type SseCallbacks = {
   onChunk: (text: string) => void
-  onDone: (result: { content?: string; sessionId?: string; inputTokens?: number; outputTokens?: number; cachedTokens?: number; lastInputTokens?: number; lastOutputTokens?: number }) => void
+  onDone: (result: { content?: string; sessionId?: string; inputTokens?: number; outputTokens?: number; cachedTokens?: number; lastInputTokens?: number; lastOutputTokens?: number; cache_hit_rate?: number; cache_hit_tokens?: number }) => void
   onError: (err: string) => void
   onAgentStep?: (step: {
     stepType: string
@@ -135,6 +135,8 @@ export function startChatStream(
                 cachedTokens: payload?.cached_tokens,
                 lastInputTokens: payload?.last_input_tokens,
                 lastOutputTokens: payload?.last_output_tokens,
+                cache_hit_rate: payload?.cache_hit_rate,
+                cache_hit_tokens: payload?.cache_hit_tokens,
               })
             } else if (parsed.type === 'stopped') {
               onDone({

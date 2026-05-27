@@ -55,13 +55,21 @@ function localToApiProviders(providers: Provider[]): ProviderConfig[] {
 
 const supplierOptions = [
   { id: 'deepseek', name: 'DeepSeek' },
-  { id: 'qwen', name: 'Qwen' },
+  // { id: 'qwen', name: 'Qwen' },
   { id: 'openai', name: 'OpenAI' },
-  { id: 'anthropic', name: 'Anthropic' },
-  { id: 'zhipu', name: '智谱AI' },
+  // { id: 'anthropic', name: 'Anthropic' },
+  // { id: 'zhipu', name: '智谱AI' },
   { id: 'ollama', name: 'Ollama' },
   { id: 'lmstudio', name: 'LM Studio' },
 ]
+
+/** 各供应商官方 API 地址 */
+const officialBaseUrls: Record<string, string> = {
+  deepseek: 'https://api.deepseek.com',
+  openai:   'https://api.openai.com/v1',
+  ollama:   'http://localhost:11434',
+  lmstudio: 'http://localhost:1234',
+}
 
 const emptyForm = {
   name: '',
@@ -80,13 +88,14 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
   const { listProviders, saveProvider, testConnection, setDefaultModel, getDefaultModel } = useApi()
 
   const [providers, setProviders] = useState<Provider[]>([])
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set(['deepseek', 'qwen', 'openai', 'anthropic', 'zhipu']))
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set(['deepseek', 'openai']))
   const [showModal, setShowModal] = useState(false)
   const [editingModel, setEditingModel] = useState<string | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'fail'>('idle')
   const [testMessage, setTestMessage] = useState<string>('')
+  const [baseUrlWarning, setBaseUrlWarning] = useState<string>('')
 
   const [saveError, setSaveError] = useState<string | null>(null)
 
@@ -142,6 +151,25 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       throw err
     }
   }, [saveProvider, t])
+
+  // ── 校验 baseURL 是否匹配所选供应商的官方地址 ──
+  useEffect(() => {
+    const official = officialBaseUrls[form.provider]
+    if (!official) {
+      setBaseUrlWarning('')
+      return
+    }
+    if (!form.baseUrl.trim() || form.baseUrl === 'https://') {
+      setBaseUrlWarning('')
+      return
+    }
+    const userUrl = form.baseUrl.replace(/\/+$/, '')
+    if (!userUrl.startsWith(official)) {
+      setBaseUrlWarning(`所选供应商 "${supplierOptions.find(s => s.id === form.provider)?.name}" 的官方 API 地址为 ${official}，非官方地址可能导致上下文用量显示不准确`)
+    } else {
+      setBaseUrlWarning('')
+    }
+  }, [form.provider, form.baseUrl])
 
   const toggleExpanded = (id: string) => {
     setExpandedIds(prev => {
@@ -489,6 +517,11 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                     placeholder="https://api.example.com"
                     className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
                   />
+                  {baseUrlWarning && (
+                    <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400 leading-relaxed">
+                      {baseUrlWarning}
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -393,10 +393,10 @@ impl ToolRegistry {
         result
     }
 
-    /// 获取所有工具的 LLM Schema
+    /// 获取所有工具的 LLM Schema（按 name 排序，保证每轮请求的 tools 参数字节序列一致）
     pub async fn get_schemas(&self) -> Vec<super::types::ToolDefinition> {
         let tools = self.tools.read().await;
-        tools
+        let mut schemas: Vec<super::types::ToolDefinition> = tools
             .values()
             .map(|t| super::types::ToolDefinition {
                 def_type: "function".to_string(),
@@ -406,7 +406,9 @@ impl ToolRegistry {
                     parameters: t.parameters.clone(),
                 },
             })
-            .collect()
+            .collect();
+        schemas.sort_by(|a, b| a.function.name.cmp(&b.function.name));
+        schemas
     }
 
     /// 获取工具数量

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::log::{AppendOnlyLog, LogEntry};
+
 /// Agent 会话 - 管理单次对话的完整状态
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSession {
@@ -15,8 +17,15 @@ pub struct AgentSession {
     pub system_prompt_override: Option<String>,
     /// 冻结的系统提示词前缀（会话生命周期内只构建一次，用于 DeepSeek 前缀缓存）
     pub frozen_system_prompt: Option<String>,
+    /// frozen_system_prompt 的 SHA256 指纹（前 16 字符 hex），用于检测缓存漂移
+    pub frozen_prefix_fingerprint: Option<String>,
+    /// 前缀是否已失效（指纹变化时设为 true），需要外部消费方据此刷新
+    pub prefix_invalidated: bool,
     /// 对话消息历史（仅追加，除 compact_in_place 外不得原地修改）
     pub messages: Vec<AgentMessage>,
+    /// 追加确定性日志（与 messages 同步，用于 LLM 请求序列化）
+    #[serde(skip)]
+    pub log: AppendOnlyLog,
     /// 压缩次数
     pub compaction_count: u32,
     /// 创建时间
@@ -82,7 +91,10 @@ impl AgentSession {
             model: model.to_string(),
             system_prompt_override: None,
             frozen_system_prompt: None,
+            frozen_prefix_fingerprint: None,
+            prefix_invalidated: false,
             messages: Vec::new(),
+            log: AppendOnlyLog::new(),
             compaction_count: 0,
             created_at: now.clone(),
             updated_at: now,
@@ -95,20 +107,66 @@ impl AgentSession {
 
     /// 添加消息到会话历史（仅追加！不允许原地修改已有消息）
     pub fn push_message(&mut self, msg: AgentMessage) {
+        // 同步追加到确定性日志
+        let entry: LogEntry = (&msg).into();
+        self.log.push(entry);
         self.messages.push(msg);
         self.updated_at = chrono::Utc::now().to_rfc3339();
     }
 
-    /// 设置冻结的系统提示词前缀（会话期间仅调用一次）
-    /// 返回 true 表示首次设置，false 表示已存在（重复调用被忽略）
-    pub fn set_frozen_system_prompt(&mut self, prompt: String) -> bool {
-        if self.frozen_system_prompt.is_some() {
-            tracing::debug!("[Cache] frozen_system_prompt 已存在，忽略重复设置");
-            return false;
+    /// 计算字符串的指纹（基于 std hash，确定性输出 16 字符 hex），用于检测缓存前缀变化
+    fn compute_fingerprint(content: &str) -> String {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        content.hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
+    /// 设置冻结的系统提示词前缀，附带 SHA256 指纹检测
+    ///
+    /// # 返回
+    /// - `Ok(true)` — 首次设置成功
+    /// - `Ok(false)` — 前缀与上次一致，无变化（跳过）
+    /// - `Err(fingerprint)` — 前缀已存在但指纹不匹配！说明缓存已漂移，需外部消费方处理
+    pub fn set_frozen_system_prompt(&mut self, prompt: String) -> Result<bool, String> {
+        let new_fingerprint = Self::compute_fingerprint(&prompt);
+
+        let existing_fingerprint = self.frozen_prefix_fingerprint.take();
+
+        if let Some(old_fp) = existing_fingerprint {
+            if old_fp == new_fingerprint {
+                // 前缀完全一致，缓存可复用
+                self.frozen_prefix_fingerprint = Some(new_fingerprint.clone());
+                tracing::debug!(
+                    "[Cache] frozen_system_prompt 指纹匹配 ({}), 缓存前缀稳定",
+                    new_fingerprint
+                );
+                return Ok(false);
+            }
+            // 指纹不匹配！说明 system_prompt_override/SOUL.md 等发生了变化
+            // 缓存前缀已漂移，本次请求必定 cache miss
+            tracing::warn!(
+                "[Cache] ⚠️ frozen_system_prompt 指纹变化! 旧={}, 新={}, 缓存前缀已漂移，下次请求将 cache miss",
+                old_fp, new_fingerprint
+            );
+            self.frozen_system_prompt = Some(prompt);
+            self.frozen_prefix_fingerprint = Some(new_fingerprint.clone());
+            self.prefix_invalidated = true;
+            return Err(format!(
+                "缓存前缀指纹变化: {} → {}, 前缀已更新",
+                old_fp, new_fingerprint
+            ));
         }
-        tracing::info!("[Cache] frozen_system_prompt 已设置 ({} 字符)", prompt.len());
+
+        // 首次设置
+        tracing::info!(
+            "[Cache] frozen_system_prompt 首次设置 ({} 字符, 指纹: {})",
+            prompt.len(),
+            new_fingerprint
+        );
         self.frozen_system_prompt = Some(prompt);
-        true
+        self.frozen_prefix_fingerprint = Some(new_fingerprint);
+        Ok(true)
     }
 
     /// 获取缓存命中率（0.0 ~ 1.0）
@@ -225,6 +283,14 @@ impl AgentSession {
         self.messages = front;
         self.messages.push(summary);
         self.messages.extend(back);
+
+        // 同步重建确定性日志
+        self.log.clear();
+        for msg in &self.messages {
+            let entry: LogEntry = msg.into();
+            self.log.push(entry);
+        }
+
         self.compaction_count += 1;
         if ai_summary.is_some() {
             tracing::info!(

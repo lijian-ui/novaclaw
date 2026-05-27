@@ -58,6 +58,9 @@ pub struct ChatRequest {
     pub tools: Option<Vec<ToolDef>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<serde_json::Value>,
+    /// extra_body: 提供商特定参数（如 DeepSeek 的 thinking mode、Azure 的 deployment_id 等）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extra_body: Option<serde_json::Value>,
 }
 
 /// 聊天选择
@@ -137,8 +140,15 @@ pub struct Usage {
     pub completion_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
     /// 缓存 Token 数量（部分 LLM 支持，如 DeepSeek）
+    /// DeepSeek API 返回的字段名为 `prompt_cache_hit_tokens`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cached_tokens: Option<i64>,
+    /// DeepSeek 精确前缀缓存命中 Token 数（API 返回字段名）
+    #[serde(rename = "prompt_cache_hit_tokens", skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_hit_tokens: Option<i64>,
+    /// DeepSeek 精确前缀缓存未命中 Token 数（API 返回字段名）
+    #[serde(rename = "prompt_cache_miss_tokens", skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_miss_tokens: Option<i64>,
 }
 
 /// Token 用量信息（内部传递用）

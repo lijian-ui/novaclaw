@@ -256,6 +256,7 @@ impl IMGateway {
                     last_output_tokens: None,
                     image_paths: None,
                     message_type: None,
+                    cache_hit_rate: None,
                 });
             let _ = crate::APP_STATE
                 .read()
@@ -281,6 +282,7 @@ impl IMGateway {
                     last_output_tokens: Some(result.last_output_tokens),
                     image_paths: None,
                     message_type: None,
+                    cache_hit_rate: Some(result.cache_hit_rate),
                 });
         }
 

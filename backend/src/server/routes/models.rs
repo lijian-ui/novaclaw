@@ -6,6 +6,32 @@ use axum::{
 use crate::APP_STATE;
 use crate::config::{ModelsConfig, ProviderConfig};
 
+/// 根据模型名称和提供商返回正确的上下文窗口大小
+fn get_context_window(model_name: &str, provider: &str) -> u64 {
+    let p = provider.to_lowercase();
+    let m = model_name.to_lowercase();
+
+    // DeepSeek V4 全系列：1M 上下文
+    if p.contains("deepseek") || m.contains("deepseek") {
+        if m.contains("v4") || m.contains("reasoner") || m.contains("chat") || m.contains("coder") || m.contains("r1") {
+            return 1_000_000;
+        }
+    }
+
+    // OpenAI GPT-4 系列：128K
+    if p.contains("openai") || m.contains("gpt-4") || m.contains("gpt-3.5") {
+        return 128_000;
+    }
+
+    // Claude 系列：200K
+    if p.contains("anthropic") || m.contains("claude") {
+        return 200_000;
+    }
+
+    // 默认：128K
+    128_000
+}
+
 /// 列出所有模型
 async fn list_models() -> Json<serde_json::Value> {
     let state = APP_STATE.read().await;
@@ -17,7 +43,7 @@ async fn list_models() -> Json<serde_json::Value> {
                 "id": format!("{}/{}", provider.name, model_name),
                 "name": model_name,
                 "provider": provider.name,
-                "context_window": 128000,
+                "context_window": get_context_window(model_name, &provider.name),
                 "max_tokens": 4096,
             }));
         }
@@ -50,7 +76,7 @@ async fn get_model(Path(id): Path<String>) -> Json<serde_json::Value> {
                         "id": id,
                         "name": model_name,
                         "provider": provider_name,
-                        "context_window": 128000,
+                        "context_window": get_context_window(model_name, &provider_name),
                         "max_tokens": 4096,
                     }
                 }));

@@ -17,7 +17,7 @@ pub async fn register(registry: &ToolRegistry) {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path (relative paths resolve to workspace, absolute paths used directly)"
+                        "description": "File path (relative paths resolve to working directory, absolute paths used directly)"
                     },
                     "offset": {
                         "type": "integer",
@@ -63,7 +63,7 @@ pub async fn register(registry: &ToolRegistry) {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path (relative paths resolve to workspace, absolute paths used directly)"
+                        "description": "File path (relative paths resolve to working directory, absolute paths used directly)"
                     },
                     "content": {
                         "type": "string",
@@ -108,7 +108,7 @@ pub async fn register(registry: &ToolRegistry) {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "File path (relative paths resolve to workspace, absolute paths used directly)"
+                        "description": "File path (relative paths resolve to working directory, absolute paths used directly)"
                     },
                     "old_string": {
                         "type": "string",
@@ -169,7 +169,7 @@ pub async fn register(registry: &ToolRegistry) {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Root directory to search (relative paths resolve to workspace, absolute paths used directly); defaults to workspace"
+                        "description": "Root directory to search (relative paths resolve to working directory, absolute paths used directly); defaults to current directory"
                     }
                 },
                 "required": ["pattern"]
@@ -237,7 +237,7 @@ pub async fn register(registry: &ToolRegistry) {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Directory to search (relative paths resolve to workspace, absolute paths used directly); defaults to workspace"
+                        "description": "Directory to search (relative paths resolve to working directory, absolute paths used directly); defaults to current directory"
                     },
                     "include": {
                         "type": "string",
@@ -335,7 +335,7 @@ pub async fn register(registry: &ToolRegistry) {
                         name: "search_replace".to_string(),
             display_name: "批量替换".to_string(),
             description:
-                "Batch find and replace text across multiple files using regex. Params: pattern (required, regex), replacement (required), path (optional directory, default workspace), include (optional file filter like '*.rs' or '*.tsx')"
+                "Batch find and replace text across multiple files using regex. Params: pattern (required, regex), replacement (required), path (optional directory, defaults to working directory), include (optional file filter like '*.rs' or '*.tsx')"
                     .to_string(),
             parameters: json!({
                 "type": "object",
@@ -350,7 +350,7 @@ pub async fn register(registry: &ToolRegistry) {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Directory to search in (defaults to workspace root)"
+                        "description": "Directory to search in (omit to use current working directory)"
                     },
                     "include": {
                         "type": "string",
@@ -432,14 +432,14 @@ pub async fn register(registry: &ToolRegistry) {
                         name: "list_dir".to_string(),
             display_name: "列出目录".to_string(),
             description:
-                "List files and directories. Params: path (optional, default workspace). Returns directory entries with name, type, and size"
+                "List files and directories. Params: path (optional, defaults to '.' — the working directory). Returns directory entries with name, type, and size"
                     .to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Directory path (relative to workspace or absolute)"
+                        "description": "Directory path (relative to working directory or absolute; omit to list current directory)"
                     },
                     "depth": {
                         "type": "integer",
@@ -454,6 +454,10 @@ pub async fn register(registry: &ToolRegistry) {
                     tokio::sync::mpsc::UnboundedSender<String>,
                 >| -> Result<String, String> {
                     let base = args["path"].as_str().unwrap_or(".");
+                    let base = match base {
+                        "" | "." | "workspace" | "workspace/" | "workspace\\" => ".",
+                        other => other,
+                    };
                     let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
                     let resolved_base = resolve_path(base, &args);
 

@@ -3,6 +3,8 @@ use crate::agent::session::{AgentMessage, AgentSession, AgentToolCall};
 use crate::config::AppConfig;
 use crate::llm::client::LlmClient;
 use crate::llm::types::{ChatMessage, ChatRequest, StreamEvent};
+use crate::llm::deepseek_template;
+use crate::llm::tokenizer; // 新增
 use crate::skills::loader::SkillDef;
 use crate::tools::registry::ToolRegistry;
 use crate::tools::types::AgentStep;
@@ -134,6 +136,16 @@ pub struct AgentRuntime {
     last_output_tokens: u64,
     /// 易变后缀（memory + 日期 + 环境 + 技能），每次 run_turn 构建
     volatile_suffix: Option<String>,
+
+    // ── 成本控制（DeepSeek 特化） ──
+    /// 下一轮是否强制升级到 Pro 模型（由 /pro 命令触发）
+    next_turn_pro: bool,
+    /// 缓存的 Pro 模型名称（查找到后缓存，避免每次查找）
+    cached_pro_model: Option<String>,
+    /// 当前轮是否已升级到 Pro
+    current_turn_pro: bool,
+    /// 连续工具调用失败次数（用于失败触发升级）
+    consecutive_tool_failures: u32,
 }
 
 impl AgentRuntime {
@@ -165,6 +177,10 @@ impl AgentRuntime {
             last_input_tokens: 0,
             last_output_tokens: 0,
             volatile_suffix: None,
+            next_turn_pro: false,
+            cached_pro_model: Self::find_pro_model_static(),
+            current_turn_pro: false,
+            consecutive_tool_failures: 0,
         }
     }
 
@@ -173,6 +189,12 @@ impl AgentRuntime {
 
     // ── 预检：消息历史总字符数触发压缩的阈值 ──
     const PREFLIGHT_CHAR_LIMIT: usize = 500_000;
+    // ── 预检：序列化请求体字节硬限制（超过此值强制截断） ──
+    const PREFLIGHT_BODY_BYTE_HARD_LIMIT: usize = 3_000_000; // ~3MB，DeepSeek 1M context 的安全边界
+    // ── 预检层级阈值（相对于模型上下文窗口的比例） ──
+    const PREFLIGHT_LEVEL1_RATIO: f64 = 0.70; // 告警
+    const PREFLIGHT_LEVEL2_RATIO: f64 = 0.85; // 压缩
+    const PREFLIGHT_LEVEL3_RATIO: f64 = 0.95; // 强制截断
 
     pub async fn run_turn(
         &mut self,
@@ -185,7 +207,52 @@ impl AgentRuntime {
         let mut final_content = String::new();
         let mut max_iterations_reached = false;
 
-        self.session.push_user_with_images(user_input, images);
+        // ── P0: 成本控制 - 模型升级决议 ──
+        self.current_turn_pro = false;
+        if self.next_turn_pro {
+            // /pro 命令强制升级
+            self.current_turn_pro = true;
+            self.next_turn_pro = false;
+            tracing::info!("[Cost] ⬆️ 用户 `/pro` 触发，本轮升级到 Pro 模型");
+        }
+        if let Some(ref pro_model) = self.cached_pro_model.clone() {
+            if !self.current_turn_pro && self.consecutive_tool_failures >= 3 {
+                // 连续 3+ 次工具调用失败自动升级
+                self.current_turn_pro = true;
+                tracing::info!(
+                    "[Cost] ⬆️ 连续 {} 次工具调用失败，自动升级到 Pro 模型 ({})",
+                    self.consecutive_tool_failures,
+                    pro_model
+                );
+            }
+        }
+        // 解析本轮实际使用的模型
+        let resolved_model = if self.current_turn_pro {
+            self.cached_pro_model.clone().unwrap_or_else(|| self.session.model.clone())
+        } else {
+            self.session.model.clone()
+        };
+        // 临时替换 session.model 用于本轮
+        let original_model = self.session.model.clone();
+        if resolved_model != original_model {
+            self.session.model = resolved_model.clone();
+        }
+
+        // ── 处理特殊命令 ──
+        let processed_input = if user_input.trim().starts_with("/pro") {
+            self.next_turn_pro = true;
+            tracing::info!("[Cost] 🚀 检测到 /pro 命令，下一轮将升级到 Pro 模型");
+            let trimmed = user_input.trim_start_matches("/pro").trim();
+            if trimmed.is_empty() {
+                "请继续，使用更强大的模型来处理此请求".to_string()
+            } else {
+                trimmed.to_string()
+            }
+        } else {
+            user_input.to_string()
+        };
+
+        self.session.push_user_with_images(&processed_input, images);
 
         // ── P0: 上下文压缩检查 ──
         let compact_keep = if self.config.compact_keep > 0 {
@@ -213,10 +280,21 @@ impl AgentRuntime {
             );
         }
 
-        // ── P0: 首次运行时构建并冻结 system prompt ──
-        if self.session.frozen_system_prompt.is_none() {
-            let frozen = self.build_frozen_system_prompt().await;
-            self.session.set_frozen_system_prompt(frozen);
+        // ── P0: 构建并冻结 system prompt（带指纹检测） ──
+        let frozen = self.build_frozen_system_prompt().await;
+        match self.session.set_frozen_system_prompt(frozen) {
+            Ok(is_first) => {
+                if is_first {
+                    tracing::info!("[Cache] frozen_system_prompt 首次设置完成");
+                } else {
+                    tracing::debug!("[Cache] frozen_system_prompt 无变化，缓存前缀稳定");
+                }
+            }
+            Err(msg) => {
+                tracing::warn!("[Cache] {} 本次请求缓存前缀已更新，将触发 cache miss", msg);
+                // 指纹变化意味着前缀更新，reset 失效率
+                self.session.prefix_invalidated = true;
+            }
         }
         // volatile 后缀每次构建（含 memory、日期等变化信息）
         self.volatile_suffix = Some(self.build_volatile_suffix().await);
@@ -257,7 +335,7 @@ impl AgentRuntime {
                 self.session.push_user(&summary_prompt);
 
                 // ⚠️ 预检：优雅终止前检查上下文，避免超长请求浪费
-                self.maybe_compact_for_preflight();
+                self.maybe_compact_for_preflight().await;
 
                 // 用无工具的调用做最后一次 LLM 响应
                 let (summary_msg, _, cancelled, _) = self
@@ -277,7 +355,7 @@ impl AgentRuntime {
             tracing::info!("[Agent] ReAct 迭代 {}/{}", iterations, self.max_iterations);
 
             // ⚠️ 预检：每轮 LLM 调用前检查上下文大小
-            self.maybe_compact_for_preflight();
+            self.maybe_compact_for_preflight().await;
 
             let (assistant_message, reasoning_blocks, cancelled, _) = self
                 .call_llm_with_tools_and_retry(&step_tx, cancel.clone())
@@ -321,6 +399,18 @@ impl AgentRuntime {
 
             if tool_calls.is_empty() {
                 final_content = assistant_message.content.clone();
+
+                // ── 成本控制：检测自动升级标记 ──
+                if final_content.contains("<<<NEEDS_PRO>>>") {
+                    if let Some(ref pro_model) = self.cached_pro_model.clone() {
+                        self.current_turn_pro = true;
+                        self.session.model = pro_model.clone();
+                        tracing::info!("[Cost] ⬆️ 检测到 <<<NEEDS_PRO>>> 标记，升级到 Pro 模型 ({})", pro_model);
+                        // 清理标记并重试本轮
+                        final_content = final_content.replace("<<<NEEDS_PRO>>>", "").trim().to_string();
+                    }
+                }
+
                 break;
             }
 
@@ -407,6 +497,8 @@ impl AgentRuntime {
 
                 match result {
                     Ok(crate::tools::types::ToolResult::Success(output)) => {
+                        // 工具执行成功：重置失败计数
+                        self.consecutive_tool_failures = 0;
                         let truncated = if output.len() > 8000 {
                             // 安全截断，避免 UTF-8 字符边界溢出
                             let mut end = 8000;
@@ -507,7 +599,19 @@ impl AgentRuntime {
                     }
                     Err(e) => {
                         let err_msg = format!("工具执行错误: {}", e);
-                        tracing::warn!("[Agent] 工具 {} 执行失败: {}", tc_name, e);
+                        self.consecutive_tool_failures += 1;
+                        tracing::warn!("[Agent] 工具 {} 执行失败: {} (连续失败: {})", tc_name, e, self.consecutive_tool_failures);
+
+                        // 检查是否需要升级
+                        if self.consecutive_tool_failures >= 3 {
+                            if let Some(ref pro_model) = self.cached_pro_model.clone() {
+                                if !self.current_turn_pro {
+                                    self.current_turn_pro = true;
+                                    self.session.model = pro_model.clone();
+                                    tracing::info!("[Cost] ⬆️ 连续 {} 次工具失败，本轮升级到 Pro 模型 ({})", self.consecutive_tool_failures, pro_model);
+                                }
+                            }
+                        }
 
                         if let Some(ref tx) = step_tx {
                             let _ = tx
@@ -599,6 +703,18 @@ impl AgentRuntime {
             self.session.total_output_tokens,
             self.session.cache_hit_rate() * 100.0
         );
+
+        // ── 成本控制：模型恢复 ──
+        if original_model != self.session.model {
+            let used_model = self.session.model.clone();
+            self.session.model = original_model;
+            tracing::info!("[Cost] 本轮使用 {}, 已恢复默认模型 {}", used_model, self.session.model);
+        }
+        if self.current_turn_pro {
+            tracing::info!("[Cost] 本轮成本: Pro 模型 (较高)");
+        } else {
+            tracing::debug!("[Cost] 本轮成本: 默认模型 (标准)");
+        }
 
         let first_reasoning = self.session.messages.iter()
             .find(|m| m.role == "assistant" && m.first_reasoning.is_some())
@@ -753,15 +869,16 @@ impl AgentRuntime {
             tool_calls: None,
             tool_call_id: None,
             name: None,
-            reasoning_content: None, // ⚠️ 不发送 reasoning_content 到 API，避免污染缓存前缀
+            reasoning_content: None,
         }];
 
         let mut first_user_msg_idx = None;
-        for (i, msg) in self.session.messages.iter().enumerate() {
-            let content = if msg.role == "user" && msg.images.is_some() && first_user_msg_idx.is_none() {
+        for (i, msg) in self.session.log.entries().iter().enumerate() {
+            let agent_msg = self.session.messages.get(i);
+            let content = if msg.role == "user" && agent_msg.and_then(|m| m.images.as_ref()).is_some() && first_user_msg_idx.is_none() {
                 // 只有第一条带图的 user 消息才嵌入 base64，后续迭代不再重传
                 first_user_msg_idx = Some(i);
-                let imgs = msg.images.as_ref().unwrap();
+                let imgs = agent_msg.and_then(|m| m.images.as_ref()).unwrap();
                 if imgs.is_empty() {
                     serde_json::Value::String(msg.content.clone())
                 } else {
@@ -789,16 +906,16 @@ impl AgentRuntime {
                             id: tc.id.clone(),
                             call_type: "function".to_string(),
                             function: crate::llm::types::FunctionCall {
-                                name: tc.name.clone(),
-                                arguments: tc.arguments.clone(),
+                                name: tc.function.name.clone(),
+                                arguments: tc.function.arguments.clone(),
                             },
                         })
                         .collect()
                 }),
                 tool_call_id: msg.tool_call_id.clone(),
-                name: msg.tool_name.clone(),
-                // ⚠️ 不发送 reasoning_content 到 API：避免污染缓存前缀字节序列
-                reasoning_content: None,
+                name: msg.name.clone(),
+                // DeepSeek thinking mode 必须回传 reasoning_content，否则 API 返回 400
+                reasoning_content: msg.reasoning_content.clone(),
             });
         }
 
@@ -838,6 +955,7 @@ impl AgentRuntime {
                 Some(llm_tools)
             },
             stream_options: Some(serde_json::json!({"include_usage": true})),
+            extra_body: Self::build_extra_body(&self.session.model),
         };
 
         tracing::info!(
@@ -845,6 +963,31 @@ impl AgentRuntime {
             tool_count,
             self.session.messages.len()
         );
+
+        // ── 预检：序列化请求体字节大小检查 ──
+        if let Ok(body_bytes) = serde_json::to_vec(&request) {
+            let body_len = body_bytes.len();
+            if body_len > Self::PREFLIGHT_BODY_BYTE_HARD_LIMIT {
+                tracing::warn!(
+                    "[Preflight] 🔴 请求体大小 {} bytes 超过硬限制 {}，强制压缩后由重试层重试",
+                    body_len,
+                    Self::PREFLIGHT_BODY_BYTE_HARD_LIMIT
+                );
+                let hard_keep = (COMPACT_KEEP_LAST_FALLBACK / 3).max(3);
+                self.session.compact_in_place(hard_keep, None);
+                return Err(AppError::LlmError(format!(
+                    "请求体大小 {} bytes 超过硬限制 {}，已压缩，请重试",
+                    body_len, Self::PREFLIGHT_BODY_BYTE_HARD_LIMIT
+                )));
+            }
+            if body_len > Self::PREFLIGHT_BODY_BYTE_HARD_LIMIT / 2 {
+                tracing::debug!(
+                    "[Preflight] 请求体大小: {} bytes (限制: {})",
+                    body_len,
+                    Self::PREFLIGHT_BODY_BYTE_HARD_LIMIT
+                );
+            }
+        }
 
         let cancel_flag = cancel.clone();
         let mut stream_handle = self.llm_client.chat_stream(&request, cancel.clone()).await?;
@@ -947,6 +1090,33 @@ impl AgentRuntime {
                 output_tokens,
                 cached_tokens
             );
+        }
+
+        // DeepSeek thinking mode 下模型可能只输出 reasoning_content 而没有 text delta，
+        // 导致 full_content 为空但 accumulated_reasoning 有实际回复内容。
+        // 此时将 reasoning 内容提升为实际回复，确保前端显示正确的响应文本。
+        if full_content.is_empty() && !accumulated_reasoning.is_empty() {
+            tracing::debug!(
+                "[Agent] full_content 为空，使用 reasoning_content 作为回复 ({} 字符)",
+                accumulated_reasoning.len()
+            );
+            full_content = accumulated_reasoning.clone();
+        }
+
+        // ── Scavenge：从推理内容中提取被 DeepSeek 模型嵌入的工具调用 ──
+        if !accumulated_reasoning.is_empty() {
+            let scavenged = super::repair::scavenge(&accumulated_reasoning);
+            if !scavenged.is_empty() {
+                tracing::info!(
+                    "[Agent] Scavenge 从推理内容中提取了 {} 个工具调用",
+                    scavenged.len()
+                );
+                for tc in &scavenged {
+                    if !accumulated_tool_calls.iter().any(|e| e.name == tc.name && e.arguments == tc.arguments) {
+                        accumulated_tool_calls.push(tc.clone());
+                    }
+                }
+            }
         }
 
         let reasoning_blocks = CotExtractor::extract_multiple(
@@ -1106,6 +1276,20 @@ impl AgentRuntime {
         None
     }
 
+    /// 查找可用的 Pro 模型（静态版本，用于构造函数）
+    fn find_pro_model_static() -> Option<String> {
+        let state = crate::APP_STATE.try_read().ok()?;
+        for provider in &state.models_config.providers {
+            for model in &provider.models {
+                let m = model.to_lowercase();
+                if m.contains("pro") && !m.contains("flash") {
+                    return Some(model.clone());
+                }
+            }
+        }
+        None
+    }
+
     /// 生成 AI 摘要（用于上下文压缩时的语义摘要）
     /// 优先使用 flash 模型，降级到当前会话模型
     /// 失败时返回 None（调用方会使用简单的占位符）
@@ -1224,6 +1408,7 @@ impl AgentRuntime {
             stream: false,
             tools: None,
             stream_options: None,
+            extra_body: Self::build_extra_body(use_model),
         };
 
         tracing::info!(
@@ -1322,22 +1507,89 @@ impl AgentRuntime {
         );
     }
 
-    /// 预检：检查消息历史大小，必要时触发压缩
-    /// 在每次 LLM 调用前调用，防止超长请求浪费
-    fn maybe_compact_for_preflight(&mut self) {
-        // 估算消息总字符数（粗略）
-        let total_chars: usize = self.session.messages.iter()
-            .map(|m| m.content.len() + 100) // +100 为 JSON 开销
-            .sum();
+    /// 估算当前模型上下文窗口大小（基于模型名称匹配）
+    /// 构建 LLM 请求的 extra_body（供应商特定参数）
+    ///
+    /// - DeepSeek: 设置 thinking mode 以启用/禁用思考模式
+    fn build_extra_body(model_name: &str) -> Option<serde_json::Value> {
+        if let Some(thinking) = deepseek_template::thinking_mode_for_model(model_name) {
+            return Some(serde_json::json!({
+                "thinking": {
+                    "type": thinking
+                }
+            }));
+        }
+        None
+    }
 
-        // 如果估算超过阈值，强制压缩
-        if total_chars > Self::PREFLIGHT_CHAR_LIMIT {
+    fn estimate_context_window(model_name: &str) -> u64 {
+        let m = model_name.to_lowercase();
+        if m.contains("deepseek") {
+            if m.contains("v4") || m.contains("reasoner") || m.contains("chat") || m.contains("coder") || m.contains("r1") {
+                return 1_000_000;
+            }
+        }
+        if m.contains("gpt-4") || m.contains("gpt-3.5") {
+            return 128_000;
+        }
+        if m.contains("claude") {
+            return 200_000;
+        }
+        128_000
+    }
+
+    /// 预检：多级上下文检查，在每次 LLM 调用前执行
+    ///
+    /// - Level 1 (≥70%): 日志告警
+    /// - Level 2 (≥85%): 触发上下文压缩（含 AI 语义摘要）
+    /// - Level 3 (≥95%): 强制压缩 + 截断（保留更少消息，含 AI 语义摘要）
+    async fn maybe_compact_for_preflight(&mut self) {
+        // 使用 tokenizer 精确估算 Token 数
+        let total_chars: usize = self.session.messages.iter()
+            .map(|m| m.content.len() + 100)
+            .sum();
+        let estimated_tokens: u64 = self.session.messages.iter()
+            .map(|m| tokenizer::quick_estimate_message_tokens(&m.content, &m.role))
+            .sum();
+        let context_window = Self::estimate_context_window(&self.session.model);
+
+        let ratio = if context_window > 0 {
+            estimated_tokens as f64 / context_window as f64
+        } else {
+            0.0
+        };
+
+        // Level 1: 告警
+        if ratio >= Self::PREFLIGHT_LEVEL1_RATIO {
+            tracing::warn!(
+                "[Preflight] ⚠️ 上下文使用率 {:.1}% (估算 {} tokens / {} 窗口), 模型: {}",
+                ratio * 100.0,
+                estimated_tokens,
+                context_window,
+                self.session.model
+            );
+        }
+
+        // Level 2: 触发压缩（含 AI 语义摘要，保留对话上下文）
+        if ratio >= Self::PREFLIGHT_LEVEL2_RATIO || total_chars > Self::PREFLIGHT_CHAR_LIMIT {
             let keep = if self.config.compact_keep > 0 { self.config.compact_keep } else { COMPACT_KEEP_LAST_FALLBACK };
             tracing::warn!(
-                "[Preflight] 消息总字符估算 {} 超过 500KB，触发前置压缩",
-                total_chars
+                "[Preflight] 🔄 触发上下文压缩 (ratio={:.1}%, chars={}), 保留最近 {} 条",
+                ratio * 100.0, total_chars, keep
             );
-            self.session.compact_in_place(keep, None);
+            let ai_summary = self.generate_ai_summary(keep).await;
+            self.session.compact_in_place(keep, ai_summary);
+        }
+
+        // Level 3: 强制截断（保留更少消息，含 AI 语义摘要）
+        if ratio >= Self::PREFLIGHT_LEVEL3_RATIO {
+            let hard_keep = (COMPACT_KEEP_LAST_FALLBACK / 2).max(5);
+            tracing::warn!(
+                "[Preflight] 🔴 上下文严重超限 (ratio={:.1}%), 强制截断到 {} 条",
+                ratio * 100.0, hard_keep
+            );
+            let ai_summary = self.generate_ai_summary(hard_keep).await;
+            self.session.compact_in_place(hard_keep, ai_summary);
         }
     }
 

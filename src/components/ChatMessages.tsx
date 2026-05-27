@@ -564,6 +564,8 @@ export interface MessageData {
   cachedTokens?: number
   lastInputTokens?: number
   lastOutputTokens?: number
+  /** 缓存命中率（0.0 ~ 1.0） */
+  cacheHitRate?: number
   /** 流式消息中的临时 base64 图片 */
   images?: string[]
   /** 历史消息中的图片文件路径引用 */
@@ -922,7 +924,7 @@ export function ChatMessages({
                     <MessageCopyButton text={cleaned} />
                     {msg.inputTokens !== undefined && (
                       <span className="ml-auto text-[10px] text-foreground/60 font-mono whitespace-nowrap">
-                        {msg.lastInputTokens !== undefined && msg.lastInputTokens > 0 ? `本次输入 ${msg.lastInputTokens} / 输出 ${msg.lastOutputTokens ?? 0} / ` : ''}累计输入 {msg.inputTokens} / 输出 {msg.outputTokens ?? 0}{msg.cachedTokens !== undefined && msg.cachedTokens > 0 && ` / 缓存 ${msg.cachedTokens}`}
+                        {msg.lastInputTokens !== undefined && msg.lastInputTokens > 0 ? `本次输入 ${msg.lastInputTokens} / 输出 ${msg.lastOutputTokens ?? 0} / ` : ''}累计输入 {msg.inputTokens} / 输出 {msg.outputTokens ?? 0}{msg.cachedTokens !== undefined && msg.cachedTokens > 0 && ` / 缓存 ${msg.cachedTokens}`}{msg.cacheHitRate !== undefined && msg.cacheHitRate > 0 && ` / 缓存命中率 ${(msg.cacheHitRate * 100).toFixed(1)}%`}
                       </span>
                     )}
                   </div>

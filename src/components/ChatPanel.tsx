@@ -37,6 +37,8 @@ import {
   PanelRightClose,
 } from 'lucide-react'
 import { ChatMessages, type MessageData } from './ChatMessages'
+import { ContextRing } from '@/components/ui/ContextRing'
+import { CacheStatsBadge } from '@/components/ui/CacheStatsBadge'
 import { TreeBrowser } from './TreeBrowser'
 import { compressImage } from '@/lib/imageCompress'
 import { startChatStream, cancelChatStream, useApi, queryMentions, expandMentions, getApiBase } from '@/hooks/useApi'
@@ -66,6 +68,7 @@ const tools = [
 interface ModelOption {
   name: string        // 模型名称，如 "zai-org/glm-4.6v-flash"
   providerId: string  // 提供商 ID，用于匹配图标
+  contextWindow: number // 模型上下文窗口大小（如 DeepSeek V4 为 1_000_000）
 }
 
 // 根据提供商名称匹配图标
@@ -100,7 +103,7 @@ function genId() {
 export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorkspacePathChange, onToggleConsole, consoleCollapsed, onToggleFilePanel, onToggleTerminal, terminalOpen }: ChatPanelProps) {
   const { t } = useTranslation()
   const { theme, toggle: toggleTheme } = useTheme()
-  const { currentSession, setCurrentSession, messages: contextMessages, refreshSessionList, defaultModelName, refreshModelKey, setDefaultModelName } = useChat()
+  const { currentSession, setCurrentSession, messages: contextMessages, refreshSessionList, defaultModelName, setDefaultModelName } = useChat()
   const sessionIdRef = useRef<string | undefined>(undefined)
   const userContentRef = useRef('') // 保存用户消息用于标题生成
 
@@ -109,10 +112,25 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     sessionIdRef.current = currentSession?.id
   }, [currentSession])
 
+  // 切换会话时恢复 selectedModel 和 contextWindow
+  useEffect(() => {
+    if (currentSession?.model) {
+      setSelectedModel(currentSession.model)
+    }
+  }, [currentSession])
+
   const [modelOpen, setModelOpen] = useState(false)
   const [toolsOpen, setToolsOpen] = useState(false)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<MessageData[]>([])
+  // 会话累计输入 Token（用于上下文用量环形进度条）
+  const [sessionInputTokens, setSessionInputTokens] = useState(0)
+  // 当前模型的上下文窗口大小（如 DeepSeek V4 为 1_000_000）
+  const [modelContextWindow, setModelContextWindow] = useState(0)
+  // 缓存命中率（0~1，仅 DeepSeek 等支持缓存统计的模型）
+  const [cacheHitRate, setCacheHitRate] = useState(0)
+  // 本次缓存命中 Token 数
+  const [lastCacheHitTokens, setLastCacheHitTokens] = useState(0)
   // @-mention 相关状态
   const [mentionOpen, setMentionOpen] = useState(false)
   const [mentionItems, setMentionItems] = useState<{ name: string; path: string; is_dir: boolean }[]>([])
@@ -242,6 +260,12 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
               id: m.id,
               role,
               content: m.content,
+              inputTokens: (m as any).inputTokens ?? (m as any).input_tokens,
+              outputTokens: (m as any).outputTokens ?? (m as any).output_tokens,
+              cachedTokens: (m as any).cachedTokens ?? (m as any).cached_tokens,
+              lastInputTokens: (m as any).lastInputTokens ?? (m as any).last_input_tokens,
+              lastOutputTokens: (m as any).lastOutputTokens ?? (m as any).last_output_tokens,
+              cacheHitRate: (m as any).cacheHitRate ?? (m as any).cache_hit_rate,
             })
           }
         }
@@ -349,6 +373,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                 cachedTokens: (m as any).cachedTokens ?? (m as any).cached_tokens,
                 lastInputTokens: (m as any).lastInputTokens ?? (m as any).last_input_tokens,
                 lastOutputTokens: (m as any).lastOutputTokens ?? (m as any).last_output_tokens,
+                cacheHitRate: (m as any).cacheHitRate ?? (m as any).cache_hit_rate,
               })
             }
           }
@@ -380,6 +405,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             cachedTokens: (m as any).cachedTokens ?? (m as any).cached_tokens,
             lastInputTokens: (m as any).lastInputTokens ?? (m as any).last_input_tokens,
             lastOutputTokens: (m as any).lastOutputTokens ?? (m as any).last_output_tokens,
+            cacheHitRate: (m as any).cacheHitRate ?? (m as any).cache_hit_rate,
             imagePaths: (m as any).image_paths?.length > 0 ? (m as any).image_paths : undefined,
             sessionId: (m as any).image_paths?.length > 0 ? m.session_id : undefined,
           } as any)
@@ -508,10 +534,26 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         const options: ModelOption[] = []
         for (const p of providers) {
           for (const m of p.models) {
-            options.push({ name: m, providerId: p.name })
+            options.push({ name: m, providerId: p.name, contextWindow: 0 })
           }
         }
         setModelOptions(options)
+
+        // 异步加载模型上下文窗口大小
+        fetch(`${getApiBase()}/models`).then(r => r.json()).then(body => {
+          if (body.success && Array.isArray(body.data)) {
+            const windowMap: Record<string, number> = {}
+            for (const mdl of body.data) {
+              if (mdl.context_window) {
+                windowMap[mdl.name] = mdl.context_window
+              }
+            }
+            setModelOptions(prev => prev.map(opt => ({
+              ...opt,
+              contextWindow: windowMap[opt.name] || 0
+            })))
+          }
+        }).catch(() => {})
       }
     }).catch(() => {})
     // 页面加载时同时获取后端保存的默认模型
@@ -539,17 +581,32 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
 
   // Sync selectedModel with ChatContext default
   useEffect(() => {
-    if (defaultModelName) {
+    if (defaultModelName && !selectedModel && !currentSession?.model) {
       setSelectedModel(defaultModelName)
     }
-  }, [refreshModelKey, defaultModelName])
+  }, [defaultModelName, selectedModel, currentSession?.model])
+
+  // 当 selectedModel 或 modelOptions 变化时更新上下文窗口大小
+  useEffect(() => {
+    if (selectedModel && modelOptions.length > 0) {
+      const opt = modelOptions.find(o => o.name === selectedModel)
+      setModelContextWindow(opt?.contextWindow || 0)
+    }
+  }, [selectedModel, modelOptions])
 
   // Save default model when user changes selection
   const handleModelChange = useCallback((modelName: string) => {
     setSelectedModel(modelName)
     setDefaultModelName(modelName)
     setDefaultModel(modelName).catch(() => {})
-  }, [setDefaultModelName, setDefaultModel])
+    // 更新上下文窗口
+    const opt = modelOptions.find(o => o.name === modelName)
+    setModelContextWindow(opt?.contextWindow || 0)
+    // 切换模型时重置累计 Token 和缓存统计
+    setSessionInputTokens(0)
+    setCacheHitRate(0)
+    setLastCacheHitTokens(0)
+  }, [setDefaultModelName, setDefaultModel, modelOptions])
 
   // 获取当前选中模型对应的图标
   const selectedModelIcon = useCallback(() => {
@@ -637,10 +694,26 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           // 固化最终文本为 assistant 消息（携带 Token 用量）
           const content = streamingContentRef.current || result.content || ''
           if (content) {
-            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content, inputTokens: (result as any).inputTokens, outputTokens: (result as any).outputTokens, cachedTokens: (result as any).cachedTokens, lastInputTokens: (result as any).lastInputTokens, lastOutputTokens: (result as any).lastOutputTokens }])
+            setMessages(prev => [...prev, { id: genId(), role: 'assistant', content, inputTokens: (result as any).inputTokens, outputTokens: (result as any).outputTokens, cachedTokens: (result as any).cachedTokens, lastInputTokens: (result as any).lastInputTokens, lastOutputTokens: (result as any).lastOutputTokens, cacheHitRate: (result as any).cache_hit_rate ?? (result as any).cacheHitRate }])
           }
           setStreamingContent('')
           streamingContentRef.current = ''
+
+          // 更新会话累计 Token（用于上下文用量环形进度条）
+          const totalInput = (result as any).inputTokens
+          if (typeof totalInput === 'number' && totalInput > 0) {
+            setSessionInputTokens(totalInput)
+          }
+
+          // 更新缓存命中率统计
+          const hitRate = (result as any).cache_hit_rate ?? (result as any).cacheHitRate
+          if (typeof hitRate === 'number' && hitRate >= 0) {
+            setCacheHitRate(hitRate)
+          }
+          const hitTokens = (result as any).cache_hit_tokens ?? (result as any).cacheHitTokens
+          if (typeof hitTokens === 'number' && hitTokens > 0) {
+            setLastCacheHitTokens(hitTokens)
+          }
 
           // 首次对话：更新 session_id
           if (result.sessionId && result.sessionId !== sessionIdRef.current) {
@@ -1264,6 +1337,16 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             </button>
 
             <div className="flex items-center gap-1">
+              {/* 上下文用量环形进度条（仅 DeepSeek 等支持缓存统计的模型） */}
+              {modelContextWindow > 0 && (
+                <ContextRing used={sessionInputTokens} total={modelContextWindow} />
+              )}
+              {/* 缓存命中率统计徽章 */}
+              <CacheStatsBadge
+                hitRate={cacheHitRate}
+                hitTokens={lastCacheHitTokens}
+                inputTokens={sessionInputTokens}
+              />
               <div className="relative">
                 <button
                   onClick={() => { setModelOpen(!modelOpen); loadModels() }}

@@ -203,6 +203,9 @@ impl<'a> SystemPromptBuilder<'a> {
 ## Language Requirement (SYSTEM)
 You MUST ALWAYS respond to the user in Chinese (中文). All your answers, explanations, and outputs must be in Chinese unless the user explicitly asks otherwise.
 
+## Social Greeting Rule
+When the user is simply greeting you (e.g. "你好", "hi", "hello", "早上好", etc.), respond with a friendly greeting directly. Do NOT call any tools — the user hasn't asked you to do anything yet. Wait for an actual request before taking action.
+
 ## Command Execution Strategy
 
 You have two ways to execute shell commands:

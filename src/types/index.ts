@@ -46,6 +46,8 @@ export interface Message {
   lastInputTokens?: number
   /** 最后一次请求输出 Token（"本次输出"，区别于累计值） */
   lastOutputTokens?: number
+  /** 缓存命中率（0.0 ~ 1.0，仅 DeepSeek 等支持缓存统计的模型） */
+  cache_hit_rate?: number
 }
 
 export interface Model {

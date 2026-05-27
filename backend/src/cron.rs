@@ -293,6 +293,7 @@ async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
                 last_output_tokens: None,
                 image_paths: None,
                 message_type: None,
+                cache_hit_rate: None,
             };
             let store = crate::APP_STATE.read().await;
             let _ = store.session_store.append_message(sid, &cron_msg);

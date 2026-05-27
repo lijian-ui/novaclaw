@@ -75,6 +75,9 @@ pub struct Message {
     /// 最后一次请求的输出 Token（"本次输出"，仅 assistant 消息）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_output_tokens: Option<u64>,
+    /// 缓存命中率（0.0 ~ 1.0，仅 assistant 消息，来自 session.cache_hit_rate()）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_hit_rate: Option<f64>,
     /// 图片引用路径列表（仅 user 消息）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_paths: Option<Vec<String>>,

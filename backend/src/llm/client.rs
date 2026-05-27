@@ -276,7 +276,11 @@ impl LlmClient {
                                         if let Some(ref usage) = resp.usage {
                                             let pt = usage.prompt_tokens.unwrap_or(0) as u64;
                                             let ct = usage.completion_tokens.unwrap_or(0) as u64;
-                                            let cached = usage.cached_tokens.unwrap_or(0) as u64;
+                                            // 优先使用 prompt_cache_hit_tokens（DeepSeek 精确字段），
+                                            // 降级到 cached_tokens（通用兼容字段）
+                                            let cached = usage.prompt_cache_hit_tokens
+                                                .or(usage.cached_tokens)
+                                                .unwrap_or(0) as u64;
                                             if pt > 0 || ct > 0 || cached > 0 {
                                                 if !send_event(&tx, StreamEvent::Usage {
                                                     prompt_tokens: pt,

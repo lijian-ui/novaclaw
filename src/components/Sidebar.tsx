@@ -51,7 +51,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           try {
             const rawMessages = await getMessages(latest.id)
             if (Array.isArray(rawMessages)) {
-              setMessages(rawMessages.map(m => ({ ...m, inputTokens: (m as any).input_tokens, outputTokens: (m as any).output_tokens })))
+              setMessages(rawMessages.map(m => ({ ...m, inputTokens: (m as any).input_tokens, outputTokens: (m as any).output_tokens, cacheHitRate: (m as any).cache_hit_rate })))
             }
           } catch {
             // 忽略消息加载错误
@@ -93,7 +93,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     try {
       const rawMessages = await getMessages(session.id)
       if (Array.isArray(rawMessages)) {
-        setMessages(rawMessages.map(m => ({ ...m, inputTokens: (m as any).input_tokens, outputTokens: (m as any).output_tokens })))
+        setMessages(rawMessages.map(m => ({ ...m, inputTokens: (m as any).input_tokens, outputTokens: (m as any).output_tokens, cacheHitRate: (m as any).cache_hit_rate })))
       } else {
         setMessages([])
       }

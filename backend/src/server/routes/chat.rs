@@ -125,6 +125,7 @@ fn make_storage_msg(session_id: &str, role: &str, content: &str, tool_calls: Opt
         input_tokens: None, output_tokens: None, cached_tokens: None,
         last_input_tokens: None, last_output_tokens: None,
         image_paths: None, message_type: None,
+        cache_hit_rate: None,
     }
 }
 
@@ -140,10 +141,11 @@ fn make_storage_msg_with_reasoning(session_id: &str, role: &str, content: &str, 
         input_tokens: None, output_tokens: None, cached_tokens: None,
         last_input_tokens: None, last_output_tokens: None,
         image_paths: None, message_type: None,
+        cache_hit_rate: None,
     }
 }
 
-fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, first_reasoning: Option<String>, again_reasonings: Option<Vec<String>>, reasoning: Option<String>, input_tokens: u64, output_tokens: u64, cached_tokens: u64, last_input_tokens: u64, last_output_tokens: u64) -> storage::Message {
+fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, first_reasoning: Option<String>, again_reasonings: Option<Vec<String>>, reasoning: Option<String>, input_tokens: u64, output_tokens: u64, cached_tokens: u64, last_input_tokens: u64, last_output_tokens: u64, cache_hit_rate: f64) -> storage::Message {
     storage::Message {
         id: uuid::Uuid::new_v4().to_string(),
         session_id: session_id.to_string(),
@@ -154,6 +156,7 @@ fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, too
         first_reasoning, again_reasonings, reasoning,
         input_tokens: Some(input_tokens), output_tokens: Some(output_tokens), cached_tokens: Some(cached_tokens),
         last_input_tokens: Some(last_input_tokens), last_output_tokens: Some(last_output_tokens),
+        cache_hit_rate: Some(cache_hit_rate),
         image_paths: None, message_type: None,
     }
 }
@@ -330,7 +333,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                         let tcs = m.tool_calls.as_ref().map(|tcs| tcs.iter().map(|tc| storage::ToolCall { id: tc.id.clone(), name: tc.name.clone(), arguments: Some(tc.arguments.clone()) }).collect());
                         // 仅最后一条 assistant 消息携带 Token 用量
                         if i == msg_count - 1 && m.role == "assistant" && (agent_result.total_input_tokens > 0 || agent_result.total_output_tokens > 0) {
-                            let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_tokens(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), m.first_reasoning.clone(), m.again_reasonings.clone(), m.reasoning.clone(), agent_result.total_input_tokens, agent_result.total_output_tokens, agent_result.total_cached_tokens, agent_result.last_input_tokens, agent_result.last_output_tokens));
+                            let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_tokens(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), m.first_reasoning.clone(), m.again_reasonings.clone(), m.reasoning.clone(), agent_result.total_input_tokens, agent_result.total_output_tokens, agent_result.total_cached_tokens, agent_result.last_input_tokens, agent_result.last_output_tokens, agent_result.cache_hit_rate));
                         } else {
                             let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_reasoning(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), m.first_reasoning.clone(), m.again_reasonings.clone(), m.reasoning.clone()));
                         }
@@ -394,7 +397,7 @@ async fn test_connection(Json(req): Json<TestConnectionReq>) -> Json<serde_json:
     let chat_req = ChatRequest {
         model: req.model,
         messages: vec![crate::llm::types::ChatMessage { role: "user".to_string(), content: serde_json::Value::String("Hi".to_string()), tool_calls: None, tool_call_id: None, name: None, reasoning_content: None }],
-        temperature: None, stream: false, tools: None, stream_options: None,
+        temperature: None, stream: false, tools: None, stream_options: None, extra_body: None,
     };
     match client.chat(&chat_req).await {
         Ok(_resp) => {

@@ -27,7 +27,7 @@ pub async fn register(registry: &ToolRegistry) {
                     },
                     "workdir": {
                         "type": "string",
-                        "description": "Working directory (relative to workspace or absolute, defaults to workspace)"
+                        "description": "Working directory (relative to working directory or absolute, defaults to current directory)"
                     }
                 },
                 "required": ["command"]
@@ -122,7 +122,7 @@ pub async fn register(registry: &ToolRegistry) {
                     },
                     "workdir": {
                         "type": "string",
-                        "description": "Working directory (relative to workspace or absolute, defaults to workspace)"
+                        "description": "Working directory (relative to working directory or absolute, defaults to current directory)"
                     }
                 },
                 "required": ["command"]
