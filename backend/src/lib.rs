@@ -16,6 +16,7 @@ pub mod soul;
 pub mod dingtalk;
 pub mod im;
 pub mod weixin;
+pub mod utils;
 
 use once_cell::sync::Lazy;
 use std::collections::HashMap;

@@ -59,7 +59,7 @@ pub fn scavenge(reasoning_content: &str) -> Vec<AgentToolCall> {
                 "[Scavenge]   → {}({})",
                 tc.name,
                 if tc.arguments.len() > 80 {
-                    format!("{}...", &tc.arguments[..80])
+                    format!("{}...", crate::utils::safe_truncate(&tc.arguments, 80))
                 } else {
                     tc.arguments.clone()
                 }

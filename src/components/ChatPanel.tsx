@@ -427,6 +427,12 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         })
         return merged
       })
+
+      // 从历史消息中累计 inputTokens，用于上下文用量环形进度条
+      const totalInput = converted.reduce((sum, msg) => sum + (msg.inputTokens || 0), 0)
+      if (totalInput > 0) {
+        setSessionInputTokens(totalInput)
+      }
     }
   }, [contextMessages, currentSession])
 

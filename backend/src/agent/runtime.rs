@@ -79,7 +79,7 @@ fn format_tool_call_display(tool_name: &str, arguments: &str) -> String {
     
     // 如果无法解析或没有关键参数，返回原始参数（截断）
     if arguments.len() > 200 {
-        format!("{}: {}...", tool_name, &arguments[..200])
+        format!("{}: {}...", tool_name, crate::utils::safe_truncate(&arguments, 200))
     } else if arguments.is_empty() || arguments == "{}" {
         tool_name.to_string()
     } else {
@@ -1330,7 +1330,7 @@ impl AgentRuntime {
                 "tool" => "  [Tool Result]",
                 _ => &msg.role,
             };
-            let content_preview: &str = if msg.content.len() > 500 {
+            let content_preview: String = if msg.content.len() > 500 {
                 // 工具结果截断
                 if msg.role == "tool" {
                     let preview: String = msg.content.chars().take(500).collect();
@@ -1342,9 +1342,10 @@ impl AgentRuntime {
                     }
                     continue;
                 }
-                &msg.content[..500]
+                // 安全截断：按字符边界取前 500 个字符，避免 UTF-8 切片恐慌
+                crate::utils::safe_truncate(&msg.content, 500)
             } else {
-                &msg.content
+                msg.content.clone()
             };
 
             if msg.role == "tool" {
