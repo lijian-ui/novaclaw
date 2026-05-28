@@ -23,8 +23,14 @@ function App() {
   }, [])
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [chatWidth, setChatWidth] = useState(() => Math.round(window.innerWidth * INITIAL_CHAT_PERCENT))
-  const [fileWidth, setFileWidth] = useState(0)
+  const [chatWidth, setChatWidth] = useState(() => {
+    const saved = localStorage.getItem('jeeves_chat_width')
+    return saved ? Math.max(260, parseInt(saved)) : Math.round(window.innerWidth * INITIAL_CHAT_PERCENT)
+  })
+  const [fileWidth, setFileWidth] = useState(() => {
+    const saved = localStorage.getItem('jeeves_file_width')
+    return saved ? parseInt(saved) : 0
+  })
   const [draggingTarget, setDraggingTarget] = useState<'chat' | 'file' | null>(null)
   const [activeTool, setActiveTool] = useState<string | null>(null)
   const [consoleCollapsed, setConsoleCollapsed] = useState(() => window.innerWidth < CONSOLE_AUTO_HIDE_WIDTH)
@@ -107,6 +113,10 @@ function App() {
   const handleMouseUp = useCallback(() => {
     setDraggingTarget(null)
   }, [])
+
+  // 持久化拖拽宽度
+  useEffect(() => { localStorage.setItem('jeeves_chat_width', String(chatWidth)) }, [chatWidth])
+  useEffect(() => { localStorage.setItem('jeeves_file_width', String(fileWidth)) }, [fileWidth])
 
   // 监听窗口变化，自动折叠/展开主控台
   useEffect(() => {

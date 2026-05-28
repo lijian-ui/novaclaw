@@ -433,6 +433,17 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
       if (totalInput > 0) {
         setSessionInputTokens(totalInput)
       }
+
+      // 从最后一条 assistant 消息中恢复缓存命中率统计
+      const lastAssistant = [...converted].reverse().find(
+        m => m.role === 'assistant' && (m as any).cacheHitRate !== undefined && (m as any).cacheHitRate !== null && (m as any).cacheHitRate >= 0
+      )
+      if (lastAssistant) {
+        const rate = Number((lastAssistant as any).cacheHitRate)
+        if (rate >= 0) setCacheHitRate(rate)
+        const tokens = (lastAssistant as any).cachedTokens
+        if (typeof tokens === 'number' && tokens > 0) setLastCacheHitTokens(tokens)
+      }
     }
   }, [contextMessages, currentSession])
 

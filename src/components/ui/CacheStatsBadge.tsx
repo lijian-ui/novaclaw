@@ -26,14 +26,19 @@ export function CacheStatsBadge({ hitRate, hitTokens, inputTokens }: CacheStatsB
   const percentage = hitRate * 100
   const missedTokens = inputTokens > hitTokens ? inputTokens - hitTokens : 0
 
+  // 无数据时显示占位样式
+  const noData = inputTokens <= 0 && hitTokens <= 0
+
   return (
     <div
-      className="relative flex items-center cursor-help"
+      className="relative flex items-center"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
       <div className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border transition-colors ${
-        percentage >= 80
+        noData
+          ? 'text-foreground/30 border-border/30 bg-transparent'
+          : percentage >= 80
           ? 'text-green-500 border-green-500/30 bg-green-500/10'
           : percentage >= 50
           ? 'text-yellow-500 border-yellow-500/30 bg-yellow-500/10'
@@ -43,7 +48,7 @@ export function CacheStatsBadge({ hitRate, hitTokens, inputTokens }: CacheStatsB
           <path d="M12 2a10 10 0 1 0 10 10 10 10 0 0 0-10-10z" />
           <path d="m9 12 2 2 4-4" />
         </svg>
-        <span>{percentage.toFixed(0)}%</span>
+        <span>{noData ? '--' : `${percentage.toFixed(0)}%`}</span>
       </div>
 
       {hovered && (
