@@ -23,24 +23,29 @@ interface Provider {
 }
 
 function apiProvidersToLocal(apiProviders: ProviderConfig[]): Provider[] {
-  return apiProviders.map((p) => ({
-    id: p.name.toLowerCase().replace(/[\s_-]/g, ''),
-    name: p.name,
-    models: p.models.map((m, i) => {
-      const modelName = typeof m === 'string' ? m : m.name
-      const contextWindow = typeof m === 'object' ? (m.context_window || 0) : 0
-      return {
-        id: `${p.name.toLowerCase().replace(/[\s_-]/g, '')}_${i}`,
-        name: modelName,
-        provider: p.name.toLowerCase().replace(/[\s_-]/g, ''),
-        apiKey: p.api_key,
-        baseUrl: p.base_url,
-        enabled: true,
-        isDefault: i === 0,
-        contextWindow,
-      }
-    }),
-  }))
+  return apiProviders.map((p) => {
+    // 通过名称反向匹配预设供应商 ID，确保分组统一（如 "Xiaomi MiMo" → "xiaomi"）
+    const matched = supplierOptions.find(s => s.name === p.name)
+    const providerId = matched?.id || p.name.toLowerCase().replace(/[\s_-]/g, '')
+    return {
+      id: providerId,
+      name: p.name,
+      models: p.models.map((m, i) => {
+        const modelName = typeof m === 'string' ? m : m.name
+        const contextWindow = typeof m === 'object' ? (m.context_window || 0) : 0
+        return {
+          id: `${providerId}_${i}`,
+          name: modelName,
+          provider: providerId,
+          apiKey: p.api_key,
+          baseUrl: p.base_url,
+          enabled: true,
+          isDefault: i === 0,
+          contextWindow,
+        }
+      }),
+    }
+  })
 }
 
 function localToApiProviders(providers: Provider[]): ProviderConfig[] {
