@@ -23,6 +23,12 @@ function App() {
   }, [])
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem('jeeves_sidebar_width')
+    return saved ? Math.max(220, parseInt(saved)) : 220
+  })
+  const sidebarWidthRef = useRef(220)
+  const sidebarDragStartRef = useRef({ x: 0, width: 220 })
   const [chatWidth, setChatWidth] = useState(() => {
     const saved = localStorage.getItem('jeeves_chat_width')
     return saved ? Math.max(260, parseInt(saved)) : Math.round(window.innerWidth * INITIAL_CHAT_PERCENT)
@@ -31,7 +37,7 @@ function App() {
     const saved = localStorage.getItem('jeeves_file_width')
     return saved ? parseInt(saved) : 0
   })
-  const [draggingTarget, setDraggingTarget] = useState<'chat' | 'file' | null>(null)
+  const [draggingTarget, setDraggingTarget] = useState<'sidebar' | 'chat' | 'file' | null>(null)
   const [activeTool, setActiveTool] = useState<string | null>(null)
   const [consoleCollapsed, setConsoleCollapsed] = useState(() => window.innerWidth < CONSOLE_AUTO_HIDE_WIDTH)
   const consoleCollapsedRef = useRef(consoleCollapsed)
@@ -76,15 +82,27 @@ function App() {
     setDraggingTarget('file')
   }, [])
 
+  const handleSidebarMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    sidebarDragStartRef.current = { x: e.clientX, width: sidebarWidthRef.current }
+    setDraggingTarget('sidebar')
+  }, [])
+
   const handleMouseMove = useCallback(
     (e: MouseEvent) => {
       if (!draggingTarget || !containerRef.current) return
       const rect = containerRef.current.getBoundingClientRect()
       const x = e.clientX - rect.left
 
-      if (draggingTarget === 'chat') {
-        // 侧边栏固定宽度
-        const sbWidth = sidebarCollapsed ? 50 : 220
+      if (draggingTarget === 'sidebar') {
+        const { x: startX, width: startWidth } = sidebarDragStartRef.current
+        const diff = e.clientX - startX
+        const newWidth = Math.max(220, Math.min(500, startWidth + diff))
+        sidebarWidthRef.current = newWidth
+        setSidebarWidth(newWidth)
+      } else if (draggingTarget === 'chat') {
+        // 侧边栏固定宽度（可能已被拖拽扩展）
+        const sbWidth = sidebarCollapsed ? 50 : sidebarWidthRef.current
         // 最大宽度 1300px
         const maxChatWidth = Math.min(rect.width - sbWidth - 50, 1300)
         const newChatWidth = Math.max(260, Math.min(maxChatWidth, x))
@@ -115,8 +133,11 @@ function App() {
   }, [])
 
   // 持久化拖拽宽度
+  useEffect(() => { localStorage.setItem('jeeves_sidebar_width', String(sidebarWidth)) }, [sidebarWidth])
   useEffect(() => { localStorage.setItem('jeeves_chat_width', String(chatWidth)) }, [chatWidth])
   useEffect(() => { localStorage.setItem('jeeves_file_width', String(fileWidth)) }, [fileWidth])
+  // sidebarWidth 变化时同步到 ref
+  useEffect(() => { sidebarWidthRef.current = sidebarWidth }, [sidebarWidth])
 
   // 监听窗口变化，自动折叠/展开主控台
   useEffect(() => {
@@ -169,13 +190,23 @@ function App() {
 
   return (
     <div ref={containerRef} className="h-screen w-screen flex overflow-hidden bg-mainbg">
-      {/* 左侧任务列表（固定宽度，不受窗口拖动影响） */}
+      {/* 左侧任务列表（固定宽度，可向右拖拽扩展） */}
       <div
-        className={`shrink-0 transition-all duration-200 ${
-          sidebarCollapsed ? 'w-[50px] min-w-[50px] max-w-[50px]' : 'w-[220px] min-w-[220px] max-w-[220px]'
+        className={`relative shrink-0 transition-all duration-200 ${
+          sidebarCollapsed ? 'w-[50px] min-w-[50px] max-w-[50px]' : ''
         }`}
+        style={sidebarCollapsed ? undefined : { width: sidebarWidth, minWidth: sidebarWidth, maxWidth: sidebarWidth }}
       >
         <Sidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
+        {/* 侧边栏右侧拖拽手柄（展开时显示） */}
+        {!sidebarCollapsed && (
+          <div
+            className="absolute right-0 top-0 h-full w-1.5 cursor-col-resize hover:bg-foreground/5 active:bg-foreground/10 transition-colors z-10"
+            onMouseDown={handleSidebarMouseDown}
+          >
+            <div className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-px bg-border" />
+          </div>
+        )}
       </div>
 
       {/* Chat Area with draggable resize */}
