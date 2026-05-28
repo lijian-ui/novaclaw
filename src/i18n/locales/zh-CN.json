@@ -206,6 +206,8 @@
     "connectionFailed": "连接失败",
     "testing": "测试中...",
     "testConnection": "测试连接",
+    "contextWindow": "上下文窗口 (tokens)",
+    "requireContextWindow": "请设置上下文窗口大小",
     "confirmDelete": "确认删除",
     "deleteModelWarning": "确定要删除此模型吗？此操作不可撤销。",
     "cancel": "取消",

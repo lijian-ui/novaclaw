@@ -246,6 +246,7 @@ async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
         .map_err(|e| format!("创建 LLM 客户端失败: {}", e))?;
     let tool_registry = Arc::new(state.tool_registry.clone());
     let config = state.config.clone();
+    let models_config = state.models_config.clone();
     drop(state);
 
     let skills = Vec::new();
@@ -260,6 +261,7 @@ async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
         llm_client,
         tool_registry,
         &config,
+        models_config,
         skills,
     );
 

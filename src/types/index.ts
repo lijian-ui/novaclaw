@@ -125,7 +125,7 @@ export interface ProviderConfig {
   name: string
   api_key: string
   base_url: string
-  models: string[]
+  models: Array<{ name: string; context_window?: number } | string>
 }
 
 export interface SecurityConfig {

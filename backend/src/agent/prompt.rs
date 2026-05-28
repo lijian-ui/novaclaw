@@ -235,11 +235,15 @@ Strategy: If you know a command will take a long time, use execute_command_bg so
         let ws = self.workspace.clone().unwrap_or_else(|| {
             crate::config::get_workspace_dir().to_string_lossy().to_string()
         });
+        let config_path = crate::config::AppConfig::config_path().to_string_lossy().to_string();
+        let models_path = crate::config::ModelsConfig::models_path().to_string_lossy().to_string();
         format!(
-            "# Environment\n\n- OS: {}\n- Current date: {}\n- Working directory: {}",
+            "# Environment\n\n- Current OS: {}\n- Current date: {}\n- Working directory: {}\n- Config file: {}\n- Models config file: {}",
             self.os_name,
             chrono::Local::now().format("%Y-%m-%d"),
             ws,
+            config_path,
+            models_path,
         )
     }
 

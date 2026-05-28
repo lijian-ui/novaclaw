@@ -164,7 +164,7 @@ impl IMGateway {
         let user_text = im_session::format_im_message(&msg);
 
         // 3. 获取 LLM 客户端的配置
-        let (provider, config, tool_registry, skills) = {
+        let (provider, config, tool_registry, models_config, skills) = {
             let state = crate::APP_STATE.read().await;
             // 始终使用当前默认模型，而非会话创建时的旧模型
             let model = state.models_config.default_model.clone();
@@ -178,7 +178,8 @@ impl IMGateway {
             let app_config = state.config.clone();
             let registry = Arc::new(state.tool_registry.clone());
             let skill_list = state.skills_loader.list_skills();
-            (provider, app_config, registry, skill_list)
+            let mm_config = state.models_config.clone();
+            (provider, app_config, registry, mm_config, skill_list)
         };
 
         // 4. 创建 LLM 客户端和 Agent Runtime
@@ -189,6 +190,7 @@ impl IMGateway {
             llm_client,
             tool_registry,
             &config,
+            models_config,
             skills,
         );
 

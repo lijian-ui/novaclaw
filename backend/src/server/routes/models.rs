@@ -4,10 +4,20 @@ use axum::{
     Json, Router,
 };
 use crate::APP_STATE;
-use crate::config::{ModelsConfig, ProviderConfig};
+use crate::config::{ModelEntry, ModelsConfig, ProviderConfig};
 
-/// 根据模型名称和提供商返回正确的上下文窗口大小
-fn get_context_window(model_name: &str, provider: &str) -> u64 {
+/// 根据模型名称、提供商名称和模型条目列表返回正确的上下文窗口大小
+fn get_context_window(model_name: &str, provider: &str, model_entries: &[ModelEntry]) -> u64 {
+    // 优先使用 per-model 配置的上下文窗口
+    for entry in model_entries {
+        if entry.name() == model_name {
+            if let Some(cw) = entry.context_window() {
+                return cw;
+            }
+            break;
+        }
+    }
+
     let p = provider.to_lowercase();
     let m = model_name.to_lowercase();
 
@@ -38,12 +48,13 @@ async fn list_models() -> Json<serde_json::Value> {
     let mut models = Vec::new();
 
     for provider in &state.models_config.providers {
-        for model_name in &provider.models {
+        for entry in &provider.models {
+            let model_name = entry.name();
             models.push(serde_json::json!({
                 "id": format!("{}/{}", provider.name, model_name),
                 "name": model_name,
                 "provider": provider.name,
-                "context_window": get_context_window(model_name, &provider.name),
+                "context_window": get_context_window(model_name, &provider.name, &provider.models),
                 "max_tokens": 4096,
             }));
         }
@@ -69,14 +80,14 @@ async fn get_model(Path(id): Path<String>) -> Json<serde_json::Value> {
 
     for provider in &state.models_config.providers {
         if provider.name == provider_name {
-            if provider.models.contains(&model_name.to_string()) {
+            if provider.models.iter().any(|m| m.name() == model_name) {
                 return Json(serde_json::json!({
                     "success": true,
                     "data": {
                         "id": id,
                         "name": model_name,
                         "provider": provider_name,
-                        "context_window": get_context_window(model_name, &provider_name),
+                        "context_window": get_context_window(model_name, &provider_name, &provider.models),
                         "max_tokens": 4096,
                     }
                 }));
@@ -114,23 +125,29 @@ async fn get_models_config() -> Json<serde_json::Value> {
 async fn save_models_config(Json(input): Json<serde_json::Value>) -> Json<serde_json::Value> {
     tracing::info!("[HTTP API] 收到保存模型配置请求: {:?}", input);
     
-    let providers = input["providers"].as_array()
+    let providers: Vec<ProviderConfig> = input["providers"].as_array()
         .map(|arr| arr.clone())
-        .unwrap_or_default();
-    let default_model = input["default_model"].as_str().unwrap_or("").to_string();
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|p| serde_json::from_value::<ProviderConfig>(p.clone()).ok())
+        .collect();
+    
+    let mut state = APP_STATE.write().await;
+    
+    // 只有当请求中明确提供了非空的 default_model 时才更新，否则保留现有值
+    let default_model = input.get("default_model")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| state.models_config.default_model.clone());
     
     let config = ModelsConfig {
         default_model,
-        providers: providers.iter()
-            .filter_map(|p| {
-                serde_json::from_value::<ProviderConfig>(p.clone()).ok()
-            })
-            .collect(),
+        providers,
     };
     
     tracing::info!("[HTTP API] 解析后的配置: {:?}", config);
     
-    let mut state = APP_STATE.write().await;
     state.models_config = config;
     
     match state.models_config.save() {

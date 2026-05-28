@@ -924,7 +924,7 @@ export function ChatMessages({
                     <MessageCopyButton text={cleaned} />
                     {msg.inputTokens !== undefined && (
                       <span className="ml-auto text-[10px] text-foreground/60 font-mono whitespace-nowrap">
-                        {msg.lastInputTokens !== undefined && msg.lastInputTokens > 0 ? `本次输入 ${msg.lastInputTokens} / 输出 ${msg.lastOutputTokens ?? 0} / ` : ''}累计输入 {msg.inputTokens} / 输出 {msg.outputTokens ?? 0}{msg.cachedTokens !== undefined && msg.cachedTokens > 0 && ` / 缓存 ${msg.cachedTokens}`}{msg.cacheHitRate !== undefined && msg.cacheHitRate > 0 && ` / 缓存命中率 ${(msg.cacheHitRate * 100).toFixed(1)}%`}
+                        {msg.lastInputTokens !== undefined && msg.lastInputTokens > 0 ? `本次：输入 ${msg.lastInputTokens} / 输出 ${msg.lastOutputTokens ?? 0} / ` : ''}累计：输入 {msg.inputTokens} / 输出 {msg.outputTokens ?? 0}{msg.cachedTokens !== undefined && msg.cachedTokens > 0 && ` / 缓存 ${msg.cachedTokens}`}{msg.cacheHitRate !== undefined && msg.cacheHitRate > 0 && ` / 缓存命中率 ${(msg.cacheHitRate * 100).toFixed(1)}%`}
                       </span>
                     )}
                   </div>

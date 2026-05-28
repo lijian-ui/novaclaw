@@ -117,11 +117,13 @@ pub async fn register(registry: &ToolRegistry) {
                             sub_config.compact_keep = c;
                         }
 
+                        let models_config = state.models_config.clone();
                         let mut agent = crate::agent::runtime::AgentRuntime::new(
                             sub_session,
                             llm_client,
                             std::sync::Arc::new(sub_tools),
                             &sub_config,
+                            models_config,
                             vec![],
                         );
 

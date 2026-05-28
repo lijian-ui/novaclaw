@@ -206,6 +206,8 @@
     "connectionFailed": "Connection failed",
     "testing": "Testing...",
     "testConnection": "Test Connection",
+    "contextWindow": "Context Window (tokens)",
+    "requireContextWindow": "Please set the context window size",
     "confirmDelete": "Confirm Delete",
     "deleteModelWarning": "Are you sure you want to delete this model? This action cannot be undone.",
     "cancel": "Cancel",

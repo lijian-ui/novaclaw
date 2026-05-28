@@ -4,6 +4,13 @@ import { Button } from '@/components/ui/Button'
 import { useChat } from '@/contexts/ChatContext'
 import { useApi } from '@/hooks/useApi'
 import type { Model } from '@/types'
+import xiaomiIcon from '@/assets/Xiaomi.png'
+
+function getProviderIcon(providerName: string): string | undefined {
+  const name = providerName.toLowerCase().replace(/[\s_-]/g, '')
+  if (name.includes('xiaomi') || name.includes('mimo')) return xiaomiIcon
+  return undefined
+}
 
 export function ModelSelector() {
   const [models, setModels] = useState<Model[]>([])
@@ -42,7 +49,11 @@ export function ModelSelector() {
         onClick={() => setIsOpen(!isOpen)}
         className="flex items-center gap-2 min-w-[180px] justify-between"
       >
-        <Cpu className="w-4 h-4" />
+        {currentModel && getProviderIcon(currentModel.provider) ? (
+          <img src={getProviderIcon(currentModel.provider)} className="w-4 h-4 rounded shrink-0" alt="" />
+        ) : (
+          <Cpu className="w-4 h-4" />
+        )}
         <span>{currentModel?.name || '选择模型'}</span>
         <ChevronDown className={`w-4 h-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
       </Button>
@@ -53,14 +64,21 @@ export function ModelSelector() {
             <button
               key={model.id}
               onClick={() => handleSelect(model)}
-              className={`w-full px-4 py-3 text-left transition-colors ${
+              className={`w-full flex items-center gap-2 px-4 py-3 text-left transition-colors ${
                 currentModel?.id === model.id
                   ? 'bg-primary text-primary-foreground'
                   : 'hover:bg-accent text-muted-foreground'
               }`}
             >
-              <p className="font-medium">{model.name}</p>
-              <p className="text-xs opacity-70">{model.provider} - {model.context_window.toLocaleString()} tokens</p>
+              {getProviderIcon(model.provider) ? (
+                <img src={getProviderIcon(model.provider)} className="w-4 h-4 rounded shrink-0" alt="" />
+              ) : (
+                <Cpu className="w-4 h-4 shrink-0" />
+              )}
+              <div className="min-w-0">
+                <p className="font-medium truncate">{model.name}</p>
+                <p className="text-xs opacity-70 truncate">{model.provider} - {model.context_window.toLocaleString()} tokens</p>
+              </div>
             </button>
           ))}
         </div>

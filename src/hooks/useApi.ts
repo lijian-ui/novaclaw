@@ -46,7 +46,7 @@ api.interceptors.response.use(
 /** SSE 事件回调类型 */
 export type SseCallbacks = {
   onChunk: (text: string) => void
-  onDone: (result: { content?: string; sessionId?: string; inputTokens?: number; outputTokens?: number; cachedTokens?: number; lastInputTokens?: number; lastOutputTokens?: number; cache_hit_rate?: number; cache_hit_tokens?: number }) => void
+  onDone: (result: { content?: string; sessionId?: string; inputTokens?: number; outputTokens?: number; cachedTokens?: number; cumulativeInputTokens?: number; cumulativeOutputTokens?: number; lastInputTokens?: number; lastOutputTokens?: number; cache_hit_rate?: number; cache_hit_tokens?: number }) => void
   onError: (err: string) => void
   onAgentStep?: (step: {
     stepType: string
@@ -133,6 +133,8 @@ export function startChatStream(
                 inputTokens: payload?.input_tokens,
                 outputTokens: payload?.output_tokens,
                 cachedTokens: payload?.cached_tokens,
+                cumulativeInputTokens: payload?.cumulative_input_tokens,
+                cumulativeOutputTokens: payload?.cumulative_output_tokens,
                 lastInputTokens: payload?.last_input_tokens,
                 lastOutputTokens: payload?.last_output_tokens,
                 cache_hit_rate: payload?.cache_hit_rate,
@@ -566,13 +568,15 @@ export function useApi() {
     }
   }, [handleError])
 
-  const saveProvider = useCallback(async (providers: ProviderConfig[]): Promise<void> => {
+  const saveProvider = useCallback(async (providers: ProviderConfig[], defaultModel?: string): Promise<void> => {
     setLoading(true)
     setError(null)
     try {
-      const response = await api.get('/models-config')
-      const currentConfig = response.data.data || {}
-      await api.put('/models-config', { ...currentConfig, providers })
+      const body: Record<string, any> = { providers }
+      if (defaultModel !== undefined) {
+        body.default_model = defaultModel
+      }
+      await api.put('/models-config', body)
     } catch (err) {
       handleError(err)
       throw err

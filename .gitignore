@@ -52,6 +52,7 @@ tencent-weixin-openclaw-weixin-2.4.3/
 
 # 文档目录（个人文档和修复记录）
 docs/my/
+docs/缓存命中率优化/
 docs/fix/
 
 # 其他临时文件

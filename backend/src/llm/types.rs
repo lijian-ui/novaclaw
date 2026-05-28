@@ -149,6 +149,18 @@ pub struct Usage {
     /// DeepSeek 精确前缀缓存未命中 Token 数（API 返回字段名）
     #[serde(rename = "prompt_cache_miss_tokens", skip_serializing_if = "Option::is_none")]
     pub prompt_cache_miss_tokens: Option<i64>,
+    /// Prompt 详细信息（OpenAI 标准嵌套格式，部分提供商如 Xiaomi MiMo 使用）
+    /// 其中 cached_tokens 表示本次请求的缓存命中 Token 数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+}
+
+/// Prompt 令牌详细信息（OpenAI 标准格式）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    /// 缓存命中的 Token 数
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<i64>,
 }
 
 /// Token 用量信息（内部传递用）

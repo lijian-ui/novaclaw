@@ -187,7 +187,7 @@ async fn chat(Json(req): Json<ChatRequestHttp>) -> Json<serde_json::Value> {
     agent_session.id = session_id.clone();
     for m in &history { if m.role != "system" { agent_session.push_message(storage_msg_to_agent_msg(m)); } }
 
-    let mut runtime = AgentRuntime::new(agent_session, llm_client, Arc::new(state.tool_registry.clone()), &state.config, state.skills_loader.list_skills());
+    let mut runtime = AgentRuntime::new(agent_session, llm_client, Arc::new(state.tool_registry.clone()), &state.config, state.models_config.clone(), state.skills_loader.list_skills());
     let result = match runtime.run_turn(&req.message, None, None, &[]).await {
         Ok(r) => r, Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
     };
@@ -261,6 +261,22 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
             tracing::debug!("[Agent] 使用默认智能体（未指定 agent_id）");
         }
         for m in &history { if m.role != "system" { agent_session.push_message(storage_msg_to_agent_msg(m)); } }
+        // 从历史消息中获取累计 Token 计数（input_tokens 已存储为累计值，取最后一条即可）
+        // 注意：累计值存放在最后一条带 input_tokens 的 assistant 消息中
+        let cumulative_input_from_history: u64 = history.iter()
+            .filter(|m| m.role == "assistant" && m.input_tokens.is_some())
+            .last()
+            .and_then(|m| m.input_tokens)
+            .unwrap_or(0);
+        let cumulative_output_from_history: u64 = history.iter()
+            .filter(|m| m.role == "assistant" && m.output_tokens.is_some())
+            .last()
+            .and_then(|m| m.output_tokens)
+            .unwrap_or(0);
+        // 将历史累计值预填入 AgentSession，这样 runtime 内部的累加（self.session.total_input_tokens += ...）
+        // 自动成为会话级累计值，无需 chat.rs 再手动做加法
+        agent_session.total_input_tokens = cumulative_input_from_history;
+        agent_session.total_output_tokens = cumulative_output_from_history;
 
         let llm_client = match crate::llm::client::LlmClient::new(provider, state.config.llm_timeout) {
             Ok(c) => c,
@@ -269,6 +285,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
         let skills = state.skills_loader.list_skills();
         let tool_registry = Arc::new(state.tool_registry.clone());
         let history_msg_count = agent_session.messages.len();
+        let models_config = state.models_config.clone();
         drop(state);
 
         // 创建取消标志并注册到 cancel_map
@@ -312,7 +329,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                 }
             }
 
-            let mut runtime = AgentRuntime::new(agent_session, llm_client, tool_registry, &config, skills);
+            let mut runtime = AgentRuntime::new(agent_session, llm_client, tool_registry, &config, models_config, skills);
             let result = runtime.run_turn(&req.message, Some(step_tx), Some(cancel_flag), &image_data_urls).await;
             let _ = step_fwd_handle.await;
 
@@ -332,6 +349,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                         if m.role == "user" { continue; }
                         let tcs = m.tool_calls.as_ref().map(|tcs| tcs.iter().map(|tc| storage::ToolCall { id: tc.id.clone(), name: tc.name.clone(), arguments: Some(tc.arguments.clone()) }).collect());
                         // 仅最后一条 assistant 消息携带 Token 用量
+                        // input_tokens / output_tokens 已经是会话级累计值（runtime 内部已累加了历史值），直接存储
                         if i == msg_count - 1 && m.role == "assistant" && (agent_result.total_input_tokens > 0 || agent_result.total_output_tokens > 0) {
                             let _ = state.session_store.append_message(&session_id, &make_storage_msg_with_tokens(&session_id, &m.role, &m.content, tcs, m.tool_call_id.clone(), m.tool_name.clone(), m.first_reasoning.clone(), m.again_reasonings.clone(), m.reasoning.clone(), agent_result.total_input_tokens, agent_result.total_output_tokens, agent_result.total_cached_tokens, agent_result.last_input_tokens, agent_result.last_output_tokens, agent_result.cache_hit_rate));
                         } else {
@@ -344,12 +362,15 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                             "session_id": session_id,
                         }}).to_string()).await;
                     } else {
+                        // input_tokens / output_tokens 已经是会话级累计值（runtime 内部已累加了历史值），直接使用
                         let _ = agent_sse_tx.send(serde_json::json!({"type": "done", "data": {
                             "content": agent_result.content,
                             "session_id": session_id,
                             "input_tokens": agent_result.total_input_tokens,
                             "output_tokens": agent_result.total_output_tokens,
                             "cached_tokens": agent_result.total_cached_tokens,
+                            "cumulative_input_tokens": agent_result.total_input_tokens,
+                            "cumulative_output_tokens": agent_result.total_output_tokens,
                             "last_input_tokens": agent_result.last_input_tokens,
                             "last_output_tokens": agent_result.last_output_tokens,
                             "cache_hit_rate": agent_result.cache_hit_rate,
@@ -388,7 +409,7 @@ async fn cancel_stream(Json(body): Json<serde_json::Value>) -> Json<serde_json::
 
 async fn test_connection(Json(req): Json<TestConnectionReq>) -> Json<serde_json::Value> {
     let provider = crate::config::ProviderConfig {
-        name: "test".to_string(), api_key: req.api_key, base_url: req.base_url, models: vec![req.model.clone()],
+        name: "test".to_string(), api_key: req.api_key, base_url: req.base_url, models: vec![crate::config::ModelEntry::Name(req.model.clone())],
     };
     let client = match crate::llm::client::LlmClient::new(provider, 30) {
         Ok(c) => c,

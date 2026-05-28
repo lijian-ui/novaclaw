@@ -13,6 +13,7 @@ interface ModelConfig {
   baseUrl: string
   enabled: boolean
   isDefault: boolean
+  contextWindow: number
 }
 
 interface Provider {
@@ -25,15 +26,20 @@ function apiProvidersToLocal(apiProviders: ProviderConfig[]): Provider[] {
   return apiProviders.map((p) => ({
     id: p.name.toLowerCase().replace(/[\s_-]/g, ''),
     name: p.name,
-    models: p.models.map((m, i) => ({
-      id: `${p.name.toLowerCase().replace(/[\s_-]/g, '')}_${i}`,
-      name: m,
-      provider: p.name,
-      apiKey: p.api_key,
-      baseUrl: p.base_url,
-      enabled: true,
-      isDefault: i === 0,
-    })),
+    models: p.models.map((m, i) => {
+      const modelName = typeof m === 'string' ? m : m.name
+      const contextWindow = typeof m === 'object' ? (m.context_window || 0) : 0
+      return {
+        id: `${p.name.toLowerCase().replace(/[\s_-]/g, '')}_${i}`,
+        name: modelName,
+        provider: p.name.toLowerCase().replace(/[\s_-]/g, ''),
+        apiKey: p.api_key,
+        baseUrl: p.base_url,
+        enabled: true,
+        isDefault: i === 0,
+        contextWindow,
+      }
+    }),
   }))
 }
 
@@ -44,8 +50,16 @@ function localToApiProviders(providers: Provider[]): ProviderConfig[] {
     for (const m of p.models) {
       existing.api_key = m.apiKey || existing.api_key
       existing.base_url = m.baseUrl || existing.base_url
-      if (!existing.models.includes(m.name)) {
-        existing.models.push(m.name)
+      const entry: { name: string; context_window?: number } | string = m.contextWindow > 0
+        ? { name: m.name, context_window: m.contextWindow }
+        : m.name
+      const modelName = m.name
+      const exists = existing.models.some((em: any) => {
+        const en = typeof em === 'string' ? em : em.name
+        return en === modelName
+      })
+      if (!exists) {
+        existing.models.push(entry as never)
       }
     }
     seen.set(p.id, existing)
@@ -59,6 +73,7 @@ const supplierOptions = [
   { id: 'openai', name: 'OpenAI' },
   // { id: 'anthropic', name: 'Anthropic' },
   // { id: 'zhipu', name: '智谱AI' },
+  { id: 'xiaomi', name: 'Xiaomi MiMo' },
   { id: 'ollama', name: 'Ollama' },
   { id: 'lmstudio', name: 'LM Studio' },
 ]
@@ -67,6 +82,7 @@ const supplierOptions = [
 const officialBaseUrls: Record<string, string> = {
   deepseek: 'https://api.deepseek.com',
   openai:   'https://api.openai.com/v1',
+  xiaomi:   'https://api.xiaomimimo.com',
   ollama:   'http://localhost:11434',
   lmstudio: 'http://localhost:1234',
 }
@@ -76,6 +92,7 @@ const emptyForm = {
   provider: '',
   apiKey: '',
   baseUrl: '',
+  contextWindow: 0,
 }
 
 interface ModelSettingsProps {
@@ -142,7 +159,8 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
     
     console.log('[ModelSettings]', t('modelSettings.savingProviders'), JSON.stringify(apiData), t('settings.modelTitle') + ':', defaultModelName)
     try {
-      await saveProvider(apiData)
+      // 只有当存在默认模型时才传递 defaultModelName，避免后端覆盖已有默认模型
+      await saveProvider(apiData, defaultModelName || undefined)
       console.log('[ModelSettings]', t('modelSettings.saveSuccessLog'))
     } catch (err) {
       const msg = err instanceof Error ? err.message : t('modelSettings.saveFailed')
@@ -190,7 +208,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
 
   const openEditModal = (model: ModelConfig) => {
     setEditingModel(model.id)
-    setForm({ name: model.name, provider: model.provider, apiKey: model.apiKey, baseUrl: model.baseUrl })
+    setForm({ name: model.name, provider: model.provider, apiKey: model.apiKey, baseUrl: model.baseUrl, contextWindow: model.contextWindow })
     setTestStatus('idle')
     setTestMessage('')
     setShowModal(true)
@@ -229,6 +247,10 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
 
   const handleSave = async () => {
     if (!form.name.trim()) return
+    if (form.contextWindow <= 0) {
+      setSaveError(t('modelSettings.requireContextWindow'))
+      return
+    }
 
     const updated = [...providers]
     let providerIdx = updated.findIndex(p => p.id === form.provider)
@@ -253,6 +275,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
       baseUrl: form.baseUrl,
       enabled: true,
       isDefault: false,
+      contextWindow: form.contextWindow,
     }
 
     if (editingModel) {
@@ -314,6 +337,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
     openai: 'text-emerald-400',
     anthropic: 'text-orange-400',
     zhipu: 'text-red-400',
+    xiaomi: 'text-orange-500',
     ollama: 'text-amber-400',
     lmstudio: 'text-cyan-400',
   }
@@ -520,6 +544,27 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                   {baseUrlWarning && (
                     <div className="mt-1.5 px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/20 text-[11px] text-amber-400 leading-relaxed">
                       {baseUrlWarning}
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="text-xs text-foreground/50 mb-1 block">{t('modelSettings.contextWindow')} *</label>
+                  <input
+                    value={form.contextWindow || ''}
+                    onChange={e => {
+                      const val = parseInt(e.target.value, 10)
+                      setForm(f => ({ ...f, contextWindow: isNaN(val) ? 0 : val }))
+                    }}
+                    type="number"
+                    min={1}
+                    step={1000}
+                    placeholder="例如: 1000000（1M），必填"
+                    className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
+                  />
+                  {form.contextWindow > 0 && (
+                    <div className="mt-1.5 text-[11px] text-foreground/40">
+                      {(form.contextWindow / 1000).toFixed(0)}K 上下文窗口
                     </div>
                   )}
                 </div>

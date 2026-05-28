@@ -1,6 +1,7 @@
 use crate::agent::cot::CotExtractor;
 use crate::agent::session::{AgentMessage, AgentSession, AgentToolCall};
 use crate::config::AppConfig;
+use crate::config::ModelsConfig;
 use crate::llm::client::LlmClient;
 use crate::llm::types::{ChatMessage, ChatRequest, StreamEvent};
 use crate::llm::deepseek_template;
@@ -114,6 +115,7 @@ pub struct AgentRuntime {
     llm_client: LlmClient,
     tool_registry: Arc<ToolRegistry>,
     config: AppConfig,
+    models_config: ModelsConfig,
     max_iterations: usize,
     max_retries: u32,
     has_first_reasoning: bool,
@@ -154,6 +156,7 @@ impl AgentRuntime {
         llm_client: LlmClient,
         tool_registry: Arc<ToolRegistry>,
         config: &AppConfig,
+        models_config: ModelsConfig,
         skills: Vec<SkillDef>,
     ) -> Self {
         let max_iterations = config.max_iterations;
@@ -163,6 +166,7 @@ impl AgentRuntime {
             llm_client,
             tool_registry,
             config: config.clone(),
+            models_config,
             max_iterations,
             max_retries,
             has_first_reasoning: false,
@@ -1268,8 +1272,8 @@ impl AgentRuntime {
         let state = crate::APP_STATE.try_read().ok()?;
         for provider in &state.models_config.providers {
             for model in &provider.models {
-                if model.to_lowercase().contains("flash") {
-                    return Some(model.clone());
+                if model.name().to_lowercase().contains("flash") {
+                    return Some(model.name().to_string());
                 }
             }
         }
@@ -1281,9 +1285,9 @@ impl AgentRuntime {
         let state = crate::APP_STATE.try_read().ok()?;
         for provider in &state.models_config.providers {
             for model in &provider.models {
-                let m = model.to_lowercase();
+                let m = model.name().to_lowercase();
                 if m.contains("pro") && !m.contains("flash") {
-                    return Some(model.clone());
+                    return Some(model.name().to_string());
                 }
             }
         }
@@ -1523,8 +1527,22 @@ impl AgentRuntime {
         None
     }
 
-    fn estimate_context_window(model_name: &str) -> u64 {
+    fn estimate_context_window(&self) -> u64 {
+        let model_name = &self.session.model;
         let m = model_name.to_lowercase();
+
+        // 优先使用 per-model 配置的上下文窗口
+        if let Some(provider) = self.models_config.find_provider_by_model(model_name) {
+            for entry in &provider.models {
+                if entry.name() == model_name {
+                    if let Some(cw) = entry.context_window() {
+                        return cw;
+                    }
+                    break;
+                }
+            }
+        }
+
         if m.contains("deepseek") {
             if m.contains("v4") || m.contains("reasoner") || m.contains("chat") || m.contains("coder") || m.contains("r1") {
                 return 1_000_000;
@@ -1552,7 +1570,7 @@ impl AgentRuntime {
         let estimated_tokens: u64 = self.session.messages.iter()
             .map(|m| tokenizer::quick_estimate_message_tokens(&m.content, &m.role))
             .sum();
-        let context_window = Self::estimate_context_window(&self.session.model);
+        let context_window = self.estimate_context_window();
 
         let ratio = if context_window > 0 {
             estimated_tokens as f64 / context_window as f64

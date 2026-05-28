@@ -276,9 +276,12 @@ impl LlmClient {
                                         if let Some(ref usage) = resp.usage {
                                             let pt = usage.prompt_tokens.unwrap_or(0) as u64;
                                             let ct = usage.completion_tokens.unwrap_or(0) as u64;
-                                            // 优先使用 prompt_cache_hit_tokens（DeepSeek 精确字段），
-                                            // 降级到 cached_tokens（通用兼容字段）
+                                            // 缓存 Token 提取优先级：
+                                            // 1. prompt_cache_hit_tokens（DeepSeek 精确字段）
+                                            // 2. prompt_tokens_details.cached_tokens（OpenAI 标准嵌套格式，如 Xiaomi MiMo）
+                                            // 3. cached_tokens（通用兼容字段）
                                             let cached = usage.prompt_cache_hit_tokens
+                                                .or_else(|| usage.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens))
                                                 .or(usage.cached_tokens)
                                                 .unwrap_or(0) as u64;
                                             if pt > 0 || ct > 0 || cached > 0 {

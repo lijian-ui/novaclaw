@@ -52,6 +52,7 @@ import ollamaIcon from '@/assets/ollama.png'
 import deepseekIcon from '@/assets/DeepSeek.png'
 import anthropicIcon from '@/assets/Anthropic.png'
 import zhipuIcon from '@/assets/zhipu.png'
+import xiaomiIcon from '@/assets/Xiaomi.png'
 
 const tools = [
   { id: 'editor', nameKey: 'dashboard.editor', icon: Code2, iconColor: 'text-emerald-400' },
@@ -80,6 +81,7 @@ function getProviderIcon(providerId: string): string | undefined {
   if (id.includes('deepseek')) return deepseekIcon
   if (id.includes('anthropic') || id === 'anthropic') return anthropicIcon
   if (id.includes('zhipu') || id.includes('zhipuai') || id.includes('glm') || id.includes('智谱')) return zhipuIcon
+  if (id.includes('xiaomi') || id.includes('mimo')) return xiaomiIcon
   return undefined
 }
 
@@ -255,6 +257,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             }
           }
           // 4️⃣ 最后添加 assistant 消息本身（最终回复）
+          // ⚠️ 如果在此处新增字段，请同步更新下方分支 2、分支 4 以及流式 done 处的对应字段
           if (m.content && m.content.trim()) {
             converted.push({
               id: m.id,
@@ -364,6 +367,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
               .replace(/<\|channel\|?>thought[\s\S]*?<channel\|>/gi, '')
               .trim()
             if (strippedContent) {
+              // ⚠️ 如果在此处新增字段，请同步更新分支 1、分支 4 以及流式 done 处的对应字段
               converted.push({
                 id: m.id,
                 role: 'assistant',
@@ -396,6 +400,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         }
         // 普通消息
         else {
+          // ⚠️ 如果在此处新增字段，请同步更新分支 1、分支 2 以及流式 done 处的对应字段
           converted.push({
             id: m.id,
             role,
@@ -428,10 +433,12 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         return merged
       })
 
-      // 从历史消息中累计 inputTokens，用于上下文用量环形进度条
-      const totalInput = converted.reduce((sum, msg) => sum + (msg.inputTokens || 0), 0)
-      if (totalInput > 0) {
-        setSessionInputTokens(totalInput)
+      // 从历史消息中获取累计 inputTokens（后端已存储为累计值，取最后一条 assistant 消息即可）
+      const lastAssistantMsg = [...converted].reverse().find(
+        m => m.role === 'assistant' && m.inputTokens && m.inputTokens > 0
+      )
+      if (lastAssistantMsg) {
+        setSessionInputTokens(lastAssistantMsg.inputTokens ?? 0)
       }
 
       // 从最后一条 assistant 消息中恢复缓存命中率统计
@@ -551,7 +558,9 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         const options: ModelOption[] = []
         for (const p of providers) {
           for (const m of p.models) {
-            options.push({ name: m, providerId: p.name, contextWindow: 0 })
+            const modelName = typeof m === 'string' ? m : m.name
+            const modelCw = typeof m === 'object' ? (m.context_window ?? 0) : 0
+            options.push({ name: modelName, providerId: p.name, contextWindow: modelCw })
           }
         }
         setModelOptions(options)
@@ -709,6 +718,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           }
 
           // 固化最终文本为 assistant 消息（携带 Token 用量）
+          // ⚠️ 如果在此处新增字段，请同步更新上方 useEffect 中分支 1、2、4 的对应字段
           const content = streamingContentRef.current || result.content || ''
           if (content) {
             setMessages(prev => [...prev, { id: genId(), role: 'assistant', content, inputTokens: (result as any).inputTokens, outputTokens: (result as any).outputTokens, cachedTokens: (result as any).cachedTokens, lastInputTokens: (result as any).lastInputTokens, lastOutputTokens: (result as any).lastOutputTokens, cacheHitRate: (result as any).cache_hit_rate ?? (result as any).cacheHitRate }])
@@ -717,9 +727,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           streamingContentRef.current = ''
 
           // 更新会话累计 Token（用于上下文用量环形进度条）
-          const totalInput = (result as any).inputTokens
-          if (typeof totalInput === 'number' && totalInput > 0) {
-            setSessionInputTokens(totalInput)
+          // 使用后端计算的累计值 cumulative_input_tokens（后端已跨轮次累加好），
+          // 前端直接使用，无需自行累加
+          const cumulativeInput = (result as any).cumulativeInputTokens
+          if (typeof cumulativeInput === 'number' && cumulativeInput > 0) {
+            setSessionInputTokens(cumulativeInput)
           }
 
           // 更新缓存命中率统计

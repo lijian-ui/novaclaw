@@ -45,6 +45,78 @@ pub struct ModelsConfig {
     pub providers: Vec<ProviderConfig>,
 }
 
+/// 单个模型条目（支持旧格式字符串和新格式对象）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    pub name: String,
+    pub context_window: Option<u64>,
+}
+
+impl ModelConfig {
+    pub fn new(name: String) -> Self {
+        Self { name, context_window: None }
+    }
+}
+
+/// 模型条目枚举，用于兼容旧版字符串格式和新的对象格式
+#[derive(Debug, Clone)]
+pub enum ModelEntry {
+    Name(String),
+    Config(ModelConfig),
+}
+
+impl ModelEntry {
+    pub fn name(&self) -> &str {
+        match self {
+            ModelEntry::Name(n) => n,
+            ModelEntry::Config(c) => &c.name,
+        }
+    }
+
+    pub fn context_window(&self) -> Option<u64> {
+        match self {
+            ModelEntry::Name(_) => None,
+            ModelEntry::Config(c) => c.context_window,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ModelEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        use serde::de;
+        struct ModelEntryVisitor;
+        impl<'de> de::Visitor<'de> for ModelEntryVisitor {
+            type Value = ModelEntry;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a string or a model config object")
+            }
+            fn visit_str<E: de::Error>(self, value: &str) -> Result<ModelEntry, E> {
+                Ok(ModelEntry::Name(value.to_string()))
+            }
+            fn visit_string<E: de::Error>(self, value: String) -> Result<ModelEntry, E> {
+                Ok(ModelEntry::Name(value))
+            }
+            fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<ModelEntry, M::Error> {
+                let config = ModelConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                Ok(ModelEntry::Config(config))
+            }
+        }
+        deserializer.deserialize_any(ModelEntryVisitor)
+    }
+}
+
+impl Serialize for ModelEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        let config = match self {
+            ModelEntry::Name(name) => ModelConfig { name: name.clone(), context_window: None },
+            ModelEntry::Config(cfg) => cfg.clone(),
+        };
+        config.serialize(serializer)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     /// 提供商名称
@@ -53,8 +125,8 @@ pub struct ProviderConfig {
     pub api_key: String,
     /// API Base URL
     pub base_url: String,
-    /// 模型列表
-    pub models: Vec<String>,
+    /// 模型列表（支持字符串和对象格式）
+    pub models: Vec<ModelEntry>,
 }
 
 impl Default for AppConfig {
@@ -367,7 +439,7 @@ impl ModelsConfig {
 
     /// 根据模型名称匹配提供商
     pub fn find_provider_by_model(&self, model: &str) -> Option<&ProviderConfig> {
-        self.providers.iter().find(|p| p.models.contains(&model.to_string()))
+        self.providers.iter().find(|p| p.models.iter().any(|m| m.name() == model))
     }
 
     /// 获取默认提供商（需要传入默认模型名称）
@@ -592,7 +664,7 @@ mod tests {
                 name: "openai".to_string(),
                 api_key: "test-key".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
-                models: vec!["gpt-4".to_string(), "gpt-3.5-turbo".to_string()],
+                models: vec![ModelEntry::Name("gpt-4".to_string()), ModelEntry::Name("gpt-3.5-turbo".to_string())],
             }],
         };
         let provider = config.find_provider_by_model("gpt-4");
