@@ -40,6 +40,8 @@ pub fn normalize_base_url(base_url: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct LlmClient {
     http: Client,
+    /// 流式请求专用客户端（无 total timeout，只做逐 chunk 超时）
+    stream_http: Client,
     provider: Arc<ProviderConfig>,
     #[allow(dead_code)]
     timeout_secs: u32,
@@ -55,9 +57,16 @@ impl LlmClient {
             .timeout(std::time::Duration::from_secs(timeout_secs as u64))
             .build()
             .map_err(|e| AppError::Internal(format!("创建 HTTP 客户端失败: {}", e)))?;
+        // 流式客户端：无总超时，避免长时间生成（如 H5 代码）被超时切断
+        let stream_http = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            // 不设置 total timeout，由逐 chunk 超时控制
+            .build()
+            .map_err(|e| AppError::Internal(format!("创建流式 HTTP 客户端失败: {}", e)))?;
 
         Ok(Self {
             http,
+            stream_http,
             provider: Arc::new(provider),
             timeout_secs,
         })
@@ -137,7 +146,7 @@ impl LlmClient {
         let (header_name, header_value) = self.auth_header();
 
         let response = self
-            .http
+            .stream_http
             .post(&url)
             .header(header_name, header_value)
             .header("Accept", "text/event-stream")
@@ -170,7 +179,19 @@ impl LlmClient {
                     tx.send(event).await.is_ok()
                 }
 
-                'stream_loop: while let Some(chunk_result) = stream.next().await {
+                'stream_loop: loop {
+                    // 逐 chunk 超时：120 秒内无数据到达则断开（避免长时间卡死）
+                    let chunk_result = match tokio::time::timeout(
+                        std::time::Duration::from_secs(120),
+                        stream.next(),
+                    ).await {
+                        Ok(Some(result)) => result,
+                        Ok(None) => break 'stream_loop,
+                        Err(_) => {
+                            let _ = tx.send(StreamEvent::Error(format!("流读取超时 (HTTP {status_code})"))).await;
+                            return;
+                        }
+                    };
                     // 检查取消信号
                     if let Some(ref flag) = cancel_check {
                         if flag.load(std::sync::atomic::Ordering::Relaxed) {

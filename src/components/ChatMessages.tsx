@@ -292,16 +292,29 @@ function ThinkingBlock({
 
 // ─── ToolCallBlock ───────────────────────────────────────────────
 // 工具调用显示组件
-// 显示格式：调用工具: [工具名称]：[工具参数]（一行显示）
+// 从工具结果中提取行变化信息（"+N -M" 格式，位于结果字符串开头）
+function parseLineDiff(toolResult?: string): { added: number; removed: number } | null {
+  if (!toolResult) return null
+  const m = toolResult.match(/^\+(\d+)\s+-(\d+)/)
+  if (!m) return null
+  return { added: parseInt(m[1], 10), removed: parseInt(m[2], 10) }
+}
+
+// 显示格式：调用工具: [工具名称]：[工具参数] [+N -M]（一行显示）
 function ToolCallBlock({
   toolName,
   argsJson,
+  toolResult,
+  isDone,
 }: {
   toolName?: string
   argsJson: string
+  toolResult?: string
+  isDone?: boolean
 }) {
   const { icon: Icon, color } = getToolMeta(toolName)
   const paramStr = extractToolParams(toolName, argsJson)
+  const lineDiff = (toolName === 'write_file' || toolName === 'edit_file') && isDone ? parseLineDiff(toolResult) : null
 
   return (
     <div className="my-2 rounded-lg border border-blue-500/20 bg-blue-500/[0.03] transition-all duration-300">
@@ -314,6 +327,13 @@ function ToolCallBlock({
         <span className="text-foreground/40">：</span>
         {paramStr && (
           <span className="text-foreground/60 font-mono truncate">{paramStr}</span>
+        )}
+        {lineDiff && (
+          <span className="text-green-500/70 font-mono shrink-0 ml-1">
+            {lineDiff.added > 0 && <span className="text-green-500">+{lineDiff.added}</span>}
+            {lineDiff.added > 0 && lineDiff.removed > 0 && <span className="text-foreground/30"> </span>}
+            {lineDiff.removed > 0 && <span className="text-red-500">-{lineDiff.removed}</span>}
+          </span>
         )}
       </div>
     </div>
@@ -654,11 +674,14 @@ function renderAgentStep(msg: MessageData, _isStreaming: boolean): JSX.Element |
     }
 
     // 其他工具使用简单的一行显示
+    const isDone = st === 'tool_call_done' || st === 'tool_error'
     return (
       <div key={msg.id}>
         <ToolCallBlock
           toolName={toolName}
           argsJson={msg.agentStep.content}
+          toolResult={msg.agentStep.toolResult}
+          isDone={isDone}
         />
       </div>
     )
@@ -897,7 +920,7 @@ export function ChatMessages({
                     ))}
                   </div>
                 )}
-                <p className="text-sm text-foreground/80 whitespace-pre-wrap">{msg.content}</p>
+                <p className="text-sm text-foreground/80 whitespace-pre-wrap break-all">{msg.content}</p>
                 <div className="flex items-center justify-end gap-1 mt-2">
                   <MessageCopyButton text={msg.content} />
                 </div>

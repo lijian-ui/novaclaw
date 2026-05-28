@@ -82,6 +82,30 @@ pub async fn register(registry: &ToolRegistry) {
 
                     let resolved_path = resolve_path(path, &args);
 
+                    // 计算新旧文件行数变化
+                    let new_lines = content.lines().count();
+                    let old_lines = if resolved_path.exists() {
+                        std::fs::read_to_string(&resolved_path)
+                            .map(|s| s.lines().count())
+                            .unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    let added = if new_lines > old_lines { new_lines - old_lines } else { 0 };
+                    let removed = if old_lines > new_lines { old_lines - new_lines } else { 0 };
+                    // 写入新内容后，行数变化总是 ±new_lines（覆盖写入）
+                    // 但用户直观想看写入后的行数，以及相对于旧文件的增减
+                    // 格式: "+N -M"
+                    let diff_label = if old_lines == 0 {
+                        format!("+{} -0", new_lines)
+                    } else if new_lines > old_lines {
+                        format!("+{} -0", added)
+                    } else if new_lines < old_lines {
+                        format!("+0 -{}", removed)
+                    } else {
+                        format!("+{} -0", new_lines)
+                    };
+
                     if let Some(parent) = resolved_path.parent() {
                         std::fs::create_dir_all(parent)
                             .map_err(|e| format!("Failed to create directory: {}", e))?;
@@ -89,7 +113,7 @@ pub async fn register(registry: &ToolRegistry) {
                     std::fs::write(&resolved_path, content)
                         .map_err(|e| format!("Failed to write file: {}", e))?;
 
-                    Ok(format!("Successfully wrote file: {}", resolved_path.display()))
+                    Ok(format!("{} {}", diff_label, resolved_path.display()))
                 },
             ),
         })
@@ -141,12 +165,22 @@ pub async fn register(registry: &ToolRegistry) {
                         );
                     }
 
-                    // 只替换第一次出现
+                    // 计算行数变化
+                    let old_lines = content.lines().count();
                     let new_content = content.replacen(old_str, new_str, 1);
+                    let new_lines = new_content.lines().count();
+                    let diff_label = if new_lines > old_lines {
+                        format!("+{} -0", new_lines - old_lines)
+                    } else if new_lines < old_lines {
+                        format!("+0 -{}", old_lines - new_lines)
+                    } else {
+                        "+0 -0".to_string()
+                    };
+
                     std::fs::write(&resolved_path, &new_content)
                         .map_err(|e| format!("Failed to write file: {}", e))?;
 
-                    Ok(format!("Successfully edited file: {}", resolved_path.display()))
+                    Ok(format!("{} {}", diff_label, resolved_path.display()))
                 },
             ),
         })
