@@ -50,6 +50,10 @@ tencent-weixin-openclaw-weixin-2.4.3/
 
 
 
+# 文档目录（个人文档和修复记录）
+docs/my/
+docs/fix/
+
 # 其他临时文件
 对话.json
 会话.json
