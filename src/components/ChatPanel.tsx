@@ -53,6 +53,7 @@ import deepseekIcon from '@/assets/DeepSeek.png'
 import anthropicIcon from '@/assets/Anthropic.png'
 import zhipuIcon from '@/assets/zhipu.png'
 import xiaomiIcon from '@/assets/Xiaomi.png'
+import bailianIcon from '@/assets/bailian.png'
 
 const tools = [
   { id: 'editor', nameKey: 'dashboard.editor', icon: Code2, iconColor: 'text-emerald-400' },
@@ -82,6 +83,7 @@ function getProviderIcon(providerId: string): string | undefined {
   if (id.includes('anthropic') || id === 'anthropic') return anthropicIcon
   if (id.includes('zhipu') || id.includes('zhipuai') || id.includes('glm') || id.includes('智谱')) return zhipuIcon
   if (id.includes('xiaomi') || id.includes('mimo')) return xiaomiIcon
+  if (id.includes('aliyun') || id.includes('coding') || id.includes('bailian')) return bailianIcon
   return undefined
 }
 

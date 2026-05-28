@@ -80,17 +80,21 @@ pub fn format_im_message(msg: &IncomingMessage) -> String {
         ConversationType::Group => "group",
     };
     if !target_id.is_empty() {
-        result.push_str(&format!(
-            "\n\n[提示：你可以使用 im_push(robot=\"{}\", target_type=\"{}\", target_id=\"{}\") {}]",
-            msg.account_id,
-            target_type_str,
-            target_id,
-            if msg.conversation_type == ConversationType::Private {
-                "主动向该用户推送消息"
-            } else {
-                "向该群发送消息"
-            },
-        ));
+        let scene_desc = match msg.conversation_type {
+            ConversationType::Private => {
+                format!(
+                    "\n\n[当前对话场景：{} {}，robot=\"{}\", target_id=\"{}\"]",
+                    platform_name, conv_type, msg.account_id, target_id
+                )
+            }
+            ConversationType::Group => {
+                format!(
+                    "\n\n[当前对话场景：{} {}，robot=\"{}\", openConversationId=\"{}\"]",
+                    platform_name, conv_type, msg.account_id, target_id
+                )
+            }
+        };
+        result.push_str(&scene_desc);
     }
 
     result

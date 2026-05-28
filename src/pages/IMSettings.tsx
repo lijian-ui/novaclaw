@@ -3,6 +3,7 @@ import { Plus, Trash2, Pencil, ChevronRight, ChevronDown, X, ArrowLeft, Webhook,
 import { getApiBase } from '@/hooks/useApi'
 import { useTranslation } from 'react-i18next'
 import dingtalkIcon from '@/assets/dingtalk.png'
+import weixinIcon from '@/assets/weixin.png'
 // import feishuIcon from '@/assets/feishu.png' // 待后端对接
 import QRCode from 'qrcode'
 
@@ -30,13 +31,11 @@ interface IMSettingsProps {
 const channelTypes = [
   { id: 'dingtalk', name: '钉钉', icon: dingtalkIcon, color: 'text-blue-400' },
   // { id: 'feishu', name: '飞书', icon: feishuIcon, color: 'text-green-400' }, // 待后端对接
-  { id: 'weixin', name: '个人微信', icon: '', color: 'text-emerald-400' },
+  { id: 'weixin', name: '个人微信', icon: weixinIcon, color: 'text-emerald-400' },
 ]
 
 interface FormState {
   name: string
-  webhook: string
-  secret: string
   clientId: string
   clientSecret: string
   appId: string
@@ -47,8 +46,6 @@ interface FormState {
 
 const emptyForm: FormState = {
   name: '',
-  webhook: '',
-  secret: '',
   clientId: '',
   clientSecret: '',
   appId: '',
@@ -277,10 +274,6 @@ export function IMSettings({ onBack }: IMSettingsProps) {
   const getChannelDisplayName = (ch: IMChannel): string => {
     if (ch.name && !channelTypes.some(ct => ct.name === ch.name)) return ch.name
     if (ch.config.clientId) return ch.config.clientId.slice(0, 24)
-    if (ch.config.webhook) {
-      const match = ch.config.webhook.match(/access_token=([^&\s]+)/)
-      return match ? `token:${match[1].slice(0, 12)}...` : ch.config.webhook.slice(0, 30)
-    }
     return `bot_${ch.id.slice(-6)}`
   }
 
@@ -469,29 +462,6 @@ export function IMSettings({ onBack }: IMSettingsProps) {
                 {selectedChannelType === 'dingtalk' && (
                   <>
                     <div className="flex items-center gap-2 mb-2">
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-foreground/10 text-foreground/50 font-mono">Webhook</span>
-                      <span className="text-[10px] text-foreground/30">简单发送消息</span>
-                    </div>
-                    <div>
-                      <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.webhook')}</label>
-                      <input
-                        value={form.webhook || ''}
-                        onChange={e => setForm(f => ({ ...f, webhook: e.target.value }))}
-                        placeholder="https://oapi.dingtalk.com/robot/send?access_token=xxx"
-                        className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs text-foreground/50 mb-1 block">{t('imSettings.secret')}</label>
-                      <input
-                        value={form.secret || ''}
-                        onChange={e => setForm(f => ({ ...f, secret: e.target.value }))}
-                        placeholder={t('imSettings.secretPlaceholder')}
-                        className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors font-mono"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-2 mb-2 mt-4 pt-3 border-t border-border/50">
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 font-mono">Stream</span>
                       <span className="text-[10px] text-foreground/30">双向 WebSocket 长连接</span>
                     </div>

@@ -74,6 +74,7 @@ const supplierOptions = [
   // { id: 'anthropic', name: 'Anthropic' },
   // { id: 'zhipu', name: '智谱AI' },
   { id: 'xiaomi', name: 'Xiaomi MiMo' },
+  { id: 'aliyun', name: '阿里云 Coding Plan' },
   { id: 'ollama', name: 'Ollama' },
   { id: 'lmstudio', name: 'LM Studio' },
 ]
@@ -83,6 +84,7 @@ const officialBaseUrls: Record<string, string> = {
   deepseek: 'https://api.deepseek.com',
   openai:   'https://api.openai.com/v1',
   xiaomi:   'https://api.xiaomimimo.com',
+  aliyun:   'https://coding.dashscope.aliyuncs.com/v1',
   ollama:   'http://localhost:11434',
   lmstudio: 'http://localhost:1234',
 }
