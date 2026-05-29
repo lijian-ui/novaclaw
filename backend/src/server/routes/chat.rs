@@ -407,6 +407,31 @@ async fn cancel_stream(Json(body): Json<serde_json::Value>) -> Json<serde_json::
     }
 }
 
+#[derive(serde::Deserialize)]
+struct ApproveReq {
+    approval_id: String,
+    decision: String, // "allow_once" | "always_allow" | "deny"
+}
+
+/// 用户审批决策 API — 前端对话框点击后调用，释放阻塞的 runtime 循环
+async fn approve_command(Json(req): Json<ApproveReq>) -> Json<serde_json::Value> {
+    use crate::tools::approval::ApprovalDecision;
+    let decision = match req.decision.as_str() {
+        "allow_once" => ApprovalDecision::AllowOnce,
+        "always_allow" => ApprovalDecision::AlwaysAllow,
+        "deny" => ApprovalDecision::Deny,
+        _ => return Json(serde_json::json!({"success": false, "message": "无效的决策参数"})),
+    };
+    let state = APP_STATE.read().await;
+    let resolved = state.approval_manager.resolve_approval(&req.approval_id, decision).await;
+    if resolved {
+        tracing::info!("[Approve] 用户确认 approval_id={}, decision={}", req.approval_id, req.decision);
+        Json(serde_json::json!({"success": true}))
+    } else {
+        Json(serde_json::json!({"success": false, "message": "未找到该审批请求或已超时"}))
+    }
+}
+
 async fn test_connection(Json(req): Json<TestConnectionReq>) -> Json<serde_json::Value> {
     let provider = crate::config::ProviderConfig {
         name: "test".to_string(), api_key: req.api_key, base_url: req.base_url, models: vec![crate::config::ModelEntry::Name(req.model.clone())],
@@ -433,5 +458,6 @@ pub fn routes() -> Router {
         .route("/chat", post(chat))
         .route("/chat/stream", post(chat_stream))
         .route("/chat/cancel", post(cancel_stream))
+        .route("/chat/approve", post(approve_command))
         .route("/chat/test", post(test_connection))
 }

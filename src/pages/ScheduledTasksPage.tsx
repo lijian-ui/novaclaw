@@ -195,8 +195,10 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
                 </div>
                 <div>
                   <label className="text-xs text-foreground/50 mb-1 block">{t('scheduledTasksPage.payload')}</label>
-                  <input value={form.payload} onChange={e => setForm(f => ({ ...f, payload: e.target.value }))}
-                    placeholder={t('scheduledTasksPage.placeholderPayload')} className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors" />
+                  <textarea value={form.payload} onChange={e => setForm(f => ({ ...f, payload: e.target.value }))}
+                    placeholder={t('scheduledTasksPage.placeholderPayload')}
+                    rows={4}
+                    className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors resize-y font-mono" />
                 </div>
               </div>
               <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">

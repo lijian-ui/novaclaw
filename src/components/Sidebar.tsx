@@ -17,7 +17,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [loading, setLoading] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null)
-  const { currentSession, setCurrentSession, setMessages, sessionListVersion, refreshSessionList } = useChat()
+  const { currentSession, setCurrentSession, setMessages, sessionListVersion, refreshSessionList, defaultModelName } = useChat()
   const { listSessions, createSession, deleteSession, getMessages } = useApi()
   const autoOpenedRef = useRef(false)
   const hasSessionRef = useRef(false)
@@ -75,7 +75,8 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   const handleCreateSession = async () => {
     try {
-      const session = await createSession('新任务')
+      // 创建新任务，继承当前选中的默认模型
+      const session = await createSession('新任务', defaultModelName || undefined)
       if (session && session.id) {
         setSessions(prev => [session, ...prev])
         setCurrentSession(session)

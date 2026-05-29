@@ -34,6 +34,9 @@ pub struct AppConfig {
     /// 命令黑名单正则表达式列表（匹配到的命令被阻止执行）
     #[serde(default)]
     pub deny_patterns: Vec<String>,
+    /// 命令白名单前缀列表（匹配到的命令跳过审批直接执行）
+    #[serde(default)]
+    pub shell_allowlist: Vec<String>,
 }
 
 /// 模型配置（单独存放）
@@ -136,7 +139,7 @@ impl Default for AppConfig {
             host: "127.0.0.1".to_string(),
             llm_timeout: 60,
             max_retries: 1,
-            max_iterations: 0,
+            max_iterations: 0, // 0=无硬上限，由上下文使用率驱动循环
             temperature: 0.7,
             compact_threshold: 40,
             compact_keep: 20,
@@ -152,38 +155,17 @@ impl Default for AppConfig {
             tinyfish_api_key: None,
             tavily_api_key: None,
             deny_patterns: vec![
-                // ─── 文件系统破坏 ───
-                "rm -rf".into(), "rmdir /s".into(), "del /f".into(), "del ".into(), "rd /s".into(),
-                "Remove-Item".into(),
-                "format ".into(), "dd if=".into(),
-                // ─── 磁盘/分区 ───
-                "mkfs".into(), "diskpart".into(), "fdisk".into(), "mount".into(), "umount".into(),
-                "reg add".into(), "reg delete".into(),
-                // ─── 系统控制 ───
-                "shutdown".into(), "reboot".into(), "poweroff".into(), "halt".into(), "init".into(),
-                "sudo".into(), "chmod".into(), "chown".into(), "passwd".into(),
-                // ─── Shell 危险操作 ───
-                "eval".into(), "exec".into(), "kill -9".into(), "pkill -9".into(), "taskkill /f".into(),
-                // ─── 远程操作 ───
-                "ssh".into(), "scp".into(), "rsync".into(),
-                // ─── 容器 ───
-                "docker run".into(), "docker exec".into(), "kubectl delete".into(),
-                // ─── Git 破坏 ───
-                "git push".into(), "git force".into(), "git reset --hard".into(), "git clean -f".into(),
-                // ─── 包管理 ───
-                "npm install -g".into(), "pip install".into(), "apt install".into(),
-                "apt remove".into(), "yum install".into(), "brew install".into(),
-                // ─── 下载 ───
-                "wget".into(), "curl -o".into(), "curl -O".into(),
-                // ─── Windows 系统 ───
-                "net user".into(), "net localgroup".into(), "sc stop".into(), "sc delete".into(),
-                "regedit".into(), "cipher".into(),
-                // ─── macOS ───
-                "defaults write".into(), "spctl".into(), "csrutil".into(),
-                // ─── Linux ───
-                "systemctl stop".into(), "systemctl disable".into(), "journalctl --vacuum".into(),
-                "iptables".into(), "swapoff".into(), "grub2-mkconfig".into(),
+                // ─── 仅保留真正高危的命令 ───
+                "rm -rf /".into(), "rmdir /s /q".into(), "del /f /s /q".into(),
+                "format ".into(), "dd if=/dev/zero".into(), "dd if=/dev/random".into(),
+                "mkfs".into(), "diskpart".into(), "fdisk".into(),
+                "shutdown".into(), "reboot".into(), "poweroff".into(), "halt".into(),
+                "sudo rm".into(), "chmod 777".into(), "chmod -R 777".into(),
+                "eval".into(), "exec".into(),
+                // ─── 远程连接（需要用户确认而非直接禁止，但高危参数直接拒） ───
+                "ssh -o StrictHostKeyChecking=no".into(),
             ],
+            shell_allowlist: vec![],
         }
     }
 }

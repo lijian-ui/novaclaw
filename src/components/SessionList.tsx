@@ -8,7 +8,7 @@ export function SessionList() {
   const [sessions, setSessions] = useState<Session[]>([])
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const { currentSession, setCurrentSession, setMessages } = useChat()
+  const { currentSession, setCurrentSession, setMessages, defaultModelName } = useChat()
   const { listSessions, createSession, deleteSession, getMessages, loading } = useApi()
   const initialLoadDone = useRef(false)
 
@@ -53,7 +53,8 @@ export function SessionList() {
   const handleCreateSession = async () => {
     try {
       // 创建新任务，标题会在首次对话时根据用户消息自动生成
-      const session = await createSession('新任务')
+      // 继承当前选中的默认模型，避免新任务被后端分配默认值（如 gpt4）
+      const session = await createSession('新任务', defaultModelName || undefined)
       if (session && session.id) {
         setSessions(prev => [session, ...prev])
         setCurrentSession(session)

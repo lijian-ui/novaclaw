@@ -39,6 +39,7 @@ import {
 import { ChatMessages, type MessageData } from './ChatMessages'
 import { ContextRing } from '@/components/ui/ContextRing'
 import { CacheStatsBadge } from '@/components/ui/CacheStatsBadge'
+import { ApprovalDialog } from '@/components/ui/ApprovalDialog'
 import { TreeBrowser } from './TreeBrowser'
 import { compressImage } from '@/lib/imageCompress'
 import { startChatStream, cancelChatStream, useApi, queryMentions, expandMentions, getApiBase } from '@/hooks/useApi'
@@ -135,6 +136,10 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const [cacheHitRate, setCacheHitRate] = useState(0)
   // 本次缓存命中 Token 数
   const [lastCacheHitTokens, setLastCacheHitTokens] = useState(0)
+  // 待审批的命令执行请求
+  const [pendingApproval, setPendingApproval] = useState<{
+    id: string; command: string; description: string; toolName: string
+  } | null>(null)
   // @-mention 相关状态
   const [mentionOpen, setMentionOpen] = useState(false)
   const [mentionItems, setMentionItems] = useState<{ name: string; path: string; is_dir: boolean }[]>([])
@@ -143,7 +148,8 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const currentSessionIdRef = useRef(currentSession?.id)
   const lastSyncMsgCountRef = useRef(0)
 
-  // 当切换会话时：立即清空本地消息，防止显示旧会话数据
+
+  // 当切换会话时：立即清空本地消息和 Token 统计，防止显示旧会话数据
   useEffect(() => {
     const newId = currentSession?.id
     if (currentSessionIdRef.current !== newId) {
@@ -152,6 +158,9 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         currentSessionIdRef.current = newId
         lastSyncMsgCountRef.current = 0
         setMessages([])
+        setSessionInputTokens(0)
+        setCacheHitRate(0)
+        setLastCacheHitTokens(0)
       } else {
         currentSessionIdRef.current = newId
       }
@@ -482,7 +491,8 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const [streamingReasoning, setStreamingReasoning] = useState('')
   const [streamError, setStreamError] = useState<string | null>(null)
   const [showScrollBtn, setShowScrollBtn] = useState(false)
-  const [selectedModel, setSelectedModel] = useState('')
+  // 从 localStorage 同步初始化，避免异步加载默认模型前的空窗期
+  const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('jeeves-default-model') || '')
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const [selectedAgent, setSelectedAgent] = useState(() => localStorage.getItem('jeeves-selected-agent') || '')
   const [agentProfiles, setAgentProfiles] = useState<{ id: string; name: string }[]>([])
@@ -728,6 +738,20 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           setStreamingContent('')
           streamingContentRef.current = ''
 
+          // 安全兜底：如果有仍处于 tool_call 状态的步骤，标记为完成（防止 tool_result 事件丢失）
+          setMessages(prev => prev.map(m => {
+            if (m.role === 'agent_step' && m.agentStep?.stepType === 'tool_call') {
+              return {
+                ...m,
+                agentStep: {
+                  ...m.agentStep!,
+                  stepType: 'tool_call_done',
+                }
+              }
+            }
+            return m
+          }))
+
           // 更新会话累计 Token（用于上下文用量环形进度条）
           // 使用后端计算的累计值 cumulative_input_tokens（后端已跨轮次累加好），
           // 前端直接使用，无需自行累加
@@ -800,6 +824,23 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           } else if (step.stepType === 'tool_call') {
             setMessages(prev => {
               const newMessages = [...prev]
+              
+              // 检查是否已有相同 toolName 的步骤（首次 delta 可能已发送过的）
+              const existingIdx = newMessages.findIndex(
+                m => m.role === 'agent_step' && m.agentStep?.toolName === step.toolName && m.agentStep?.stepType === 'tool_call'
+              )
+              if (existingIdx >= 0) {
+                // 更新已有步骤的参数内容
+                newMessages[existingIdx] = {
+                  ...newMessages[existingIdx],
+                  content: step.content,
+                  agentStep: {
+                    ...newMessages[existingIdx].agentStep!,
+                    content: step.content,
+                  }
+                }
+                return newMessages
+              }
               
               const contentToFlush = streamingContentRef.current.trim()
               if (contentToFlush) {
@@ -878,9 +919,9 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                   m.agentStep?.stepType === 'tool_call' &&
                   m.agentStep?.toolName === step.toolName
                 ) {
-                  // 优先使用 tool_result 字段（实际输出），
+                  // 优先使用 toolResult 字段（实际输出），
                   // 如果已经通过 tool_chunk 累积了内容则保留
-                  const rawResult = (step as any).tool_result
+                  const rawResult = (step as any).toolResult ?? (step as any).tool_result
                   const existingResult = m.agentStep!.toolResult || rawResult || ''
                   updated[i] = {
                     ...m,
@@ -936,8 +977,19 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                 maxTurns: step.maxTurns,
               }
             }])
+          } else if (step.stepType === 'approval_required') {
+            const approvalId = step.approval_id
+            const command = step.approval?.arguments || step.content
+            if (approvalId && command) {
+              setPendingApproval({
+                id: approvalId,
+                command: command,
+                description: step.approval?.message || '',
+                toolName: step.toolName || 'execute_command',
+              })
+            }
+            setIsStreaming(false)
           }
-          // 处理工具确认请求（已移除 delete_file 工具，不再需要）
         },
       },
     )
@@ -961,6 +1013,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     }
   }, [input, isStreaming, pendingImages, workspacePath])
 
+  // sendMessage 引用（通过 useEffect 同步到 ref，供审批对话框直接调用）
   const sendMessage = useCallback((msg: string) => {
     const userMsg: MessageData = {
       id: genId(),
@@ -1537,6 +1590,11 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
           onCancel={() => setShowTreeBrowser(false)}
         />
       )}
+      {/* 命令执行审批对话框 — 直接调用 /chat/approve API 释放阻塞的 runtime */}
+      <ApprovalDialog
+        pending={pendingApproval}
+        onClose={() => setPendingApproval(null)}
+      />
     </div>
   )
 }

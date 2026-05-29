@@ -7,9 +7,84 @@ use std::sync::RwLock;
 use std::os::windows::process::CommandExt;
 use std::time::{Duration, Instant};
 
+/// 内置命令白名单（安全只读命令，跳过审批直接执行）
+pub const BUILTIN_ALLOWLIST: &[&str] = &[
+    // ─── 文件查看 ───
+    "ls", "dir", "cat", "head", "tail", "less", "more", "type",
+    "find", "grep", "findstr", "select-string", "where", "where-object",
+    "wc", "sort", "uniq", "tree",
+    // ─── Git 只读 ───
+    "git status", "git log", "git diff", "git branch", "git show",
+    "git stash list",
+    // ─── 目录操作 ───
+    "pwd", "cd", "echo", "which", "get-location", "get-childitem",
+    "get-item", "test-path",
+    // ─── 信息查询 ───
+    "npm ls", "npm list", "npm view", "cargo check", "cargo metadata",
+    "go list", "python3 --version", "node --version", "npm --version",
+    "rustc --version", "cargo --version",
+    // ─── 网络诊断 ───
+    "ping", "curl -s", "curl --head", "wget --spider", "netstat", "ss",
+    "ipconfig", "ifconfig", "get-netipaddress",
+    // ─── 系统信息 ───
+    "date", "hostname", "uname", "whoami", "ps", "tasklist",
+    "df", "du", "free", "top -n", "uptime", "get-process",
+    "get-service", "get-date",
+];
+
+/// 可运行时更新的白名单缓存（项目级，来自配置文件的 allowlist）
+pub static ALLOW_PATTERNS: once_cell::sync::Lazy<RwLock<Vec<String>>> =
+    once_cell::sync::Lazy::new(|| RwLock::new(Vec::new()));
+
 /// 可运行时更新的黑名单缓存（pub 以便 config.rs 热更新）
 pub static DENY_PATTERNS: once_cell::sync::Lazy<RwLock<Vec<String>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(Vec::new()));
+
+/// 加载项目级白名单到缓存
+pub fn load_allow_patterns() -> Vec<String> {
+    let patterns = match crate::APP_STATE.try_read() {
+        Ok(state) => state.config.shell_allowlist.clone(),
+        Err(_) => {
+            tracing::warn!("[ExecTool] APP_STATE try_read 失败，使用缓存的白名单");
+            if let Ok(cached) = ALLOW_PATTERNS.read() {
+                if !cached.is_empty() {
+                    return cached.clone();
+                }
+            }
+            Vec::new()
+        }
+    };
+    if let Ok(mut cached) = ALLOW_PATTERNS.write() {
+        *cached = patterns.clone();
+    }
+    patterns
+}
+
+/// 检查命令是否命中白名单（内置 + 项目级）
+pub fn check_command_allow(command: &str) -> bool {
+    // 先确保项目级白名单缓存是最新的（与 APP_STATE.config 同步）
+    let _ = load_allow_patterns();
+    let cmd_lower = command.to_lowercase().trim().to_string();
+    // 1. 检查内置白名单
+    for &pattern in BUILTIN_ALLOWLIST {
+        let pat_lower = pattern.to_lowercase();
+        if cmd_lower.starts_with(&pat_lower) {
+            tracing::debug!("[ExecTool] 命令 '{}' 匹配内置白名单 '{}'，直行", command, pattern);
+            return true;
+        }
+    }
+    // 2. 检查项目级白名单
+    if let Ok(allowed) = ALLOW_PATTERNS.read() {
+        for pattern in allowed.iter() {
+            let pat_lower = pattern.to_lowercase();
+            if cmd_lower.starts_with(&pat_lower) {
+                tracing::debug!("[ExecTool] 命令 '{}' 匹配项目白名单 '{}'，直行", command, pattern);
+                return true;
+            }
+        }
+    }
+    false
+}
 
 /// 从配置文件加载黑名单到缓存。如果配置中没有设置，则清空缓存（不阻止任何命令）
 pub fn load_deny_patterns() -> Vec<String> {
@@ -48,7 +123,7 @@ pub struct CommandOutput {
 
 
 /// 检查命令是否被黑名单拦截（词边界匹配 + 子串匹配，大小写不敏感）
-fn check_command_deny<'a>(command: &str, patterns: &'a [String]) -> Option<&'a str> {
+pub fn check_command_deny<'a>(command: &str, patterns: &'a [String]) -> Option<&'a str> {
     if patterns.is_empty() {
         tracing::debug!("[ExecTool] 拒绝模式列表为空，不拦截命令: '{}'", command);
         return None;

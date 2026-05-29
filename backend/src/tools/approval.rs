@@ -4,13 +4,24 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, oneshot};
 
 use super::types::ApprovalRequired;
 
+/// 用户确认决策
+#[derive(Debug, Clone)]
+pub enum ApprovalDecision {
+    /// 允许执行一次
+    AllowOnce,
+    /// 添加白名单并执行
+    AlwaysAllow,
+    /// 拒绝执行
+    Deny,
+}
+
 // ─── ApprovalManager ─────────────────────────────────────────────────
 
-/// 等待确认的操作
+/// 等待确认的操作（含 oneshot 通道，用于阻塞等待用户确认）
 #[derive(Debug)]
 struct PendingApproval {
     pub approval: ApprovalRequired,
@@ -18,6 +29,8 @@ struct PendingApproval {
     pub tool_name: String,
     pub arguments: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 用户确认后的通知通道（运行时 await 这个 rx 来阻塞）
+    pub notify_tx: Option<oneshot::Sender<ApprovalDecision>>,
 }
 
 /// 确认管理器
@@ -52,7 +65,29 @@ impl ApprovalManager {
         }
     }
 
-    /// 记录待确认操作
+    /// 记录待确认操作，返回接收端供运行时 await 阻塞
+    pub async fn add_pending_with_rx(
+        &self,
+        approval_id: String,
+        approval: ApprovalRequired,
+        session_id: String,
+        tool_name: String,
+        arguments: String,
+    ) -> oneshot::Receiver<ApprovalDecision> {
+        let (tx, rx) = oneshot::channel();
+        let pending = PendingApproval {
+            approval,
+            session_id,
+            tool_name,
+            arguments,
+            created_at: chrono::Utc::now(),
+            notify_tx: Some(tx),
+        };
+        self.pending.write().await.insert(approval_id, pending);
+        rx
+    }
+
+    /// 记录待确认操作（旧版，不带阻塞通道）
     pub async fn add_pending(
         &self,
         approval_id: String,
@@ -61,20 +96,32 @@ impl ApprovalManager {
         tool_name: String,
         arguments: String,
     ) {
+        let (tx, _rx) = oneshot::channel();
         let pending = PendingApproval {
             approval,
             session_id,
             tool_name,
             arguments,
             created_at: chrono::Utc::now(),
+            notify_tx: Some(tx),
         };
         self.pending.write().await.insert(approval_id, pending);
     }
 
+    /// 用户确认/拒绝操作（通过 API 调用），返回是否成功找到并处理
+    pub async fn resolve_approval(&self, approval_id: &str, decision: ApprovalDecision) -> bool {
+        let mut map = self.pending.write().await;
+        if let Some(p) = map.remove(approval_id) {
+            if let Some(tx) = p.notify_tx {
+                let _ = tx.send(decision);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
     /// 原子移除并返回待确认信息
-    ///
-    /// 与 `get_pending_full` + `remove_pending` 分两步不同，
-    /// 此方法在写锁内原子完成读取和删除，彻底避免并发重复确认。
     pub async fn take_pending(
         &self,
         approval_id: &str,

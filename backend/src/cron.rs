@@ -216,7 +216,7 @@ async fn tick() -> Result<(), String> {
 }
 
 /// 执行 cron 任务
-async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
+pub async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
     if job.payload.is_empty() {
         return Ok("[Cron] 无执行内容".to_string());
     }

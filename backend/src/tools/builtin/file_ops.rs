@@ -1,6 +1,42 @@
 use crate::tools::builtin::{glob_match, resolve_path};
 use crate::tools::registry::{ToolDef, ToolRegistry};
 use serde_json::json;
+use std::collections::HashMap;
+use std::sync::Mutex;
+
+/// 格式化文件大小为可读字符串
+fn format_file_size(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1}KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{}B", bytes)
+    }
+}
+
+/// ── read_file 常量 ──
+/// 全量读取阈值：小于此值的文件直接全量返回
+const FULL_READ_THRESHOLD_BYTES: u64 = 64 * 1024; // 64KB
+/// 单次读取最大行数
+const MAX_LINES: usize = 2000;
+/// 单行最长字符数（超长行截断）
+const MAX_LINE_LENGTH: usize = 2000;
+/// 输出字节硬上限
+const OUTPUT_MAX_BYTES: usize = 50 * 1024; // 50KB
+/// 二进制检测的采样大小
+const BINARY_SAMPLE_BYTES: usize = 4096;
+
+/// 重复读取计数器（path → 连续读取次数）
+static READ_REPEAT_COUNTER: once_cell::sync::Lazy<Mutex<HashMap<String, usize>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// 重置指定路径的重复读取计数器（由 write_file/edit_file 等工具调用）
+pub fn reset_read_repeat_counter(path: &str) {
+    if let Ok(mut counter) = READ_REPEAT_COUNTER.lock() {
+        counter.remove(path);
+    }
+}
 
 /// 注册文件操作相关工具: read_file, write_file, edit_file, rename_file, glob, grep, list_dir, search_replace
 pub async fn register(registry: &ToolRegistry) {
@@ -10,7 +46,14 @@ pub async fn register(registry: &ToolRegistry) {
                         name: "read_file".to_string(),
             display_name: "读取文件".to_string(),
             description:
-                "Read file content. Params: path (required), offset (optional line number), limit (optional max lines)"
+                "Read file content with line numbers and pagination. \
+                 Params: path (required), offset (optional line number, default 1), \
+                 limit (optional max lines, default 2000, max 2000), \
+                 head (optional, first N lines), tail (optional, last N lines), \
+                 range (optional, inclusive range like 'A-B', 1-indexed). \
+                 Files over 64KB auto-switch to outline mode (metadata + first 80 lines + symbol list). \
+                 Use offset/limit, head/tail, or range to read specific sections of large files. \
+                 Lines longer than 2000 chars are truncated. Output capped at 50KB."
                     .to_string(),
             parameters: json!({
                 "type": "object",
@@ -21,11 +64,23 @@ pub async fn register(registry: &ToolRegistry) {
                     },
                     "offset": {
                         "type": "integer",
-                        "description": "Starting line number"
+                        "description": "Line number to start from (1-indexed, default 1)"
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of lines to read"
+                        "description": "Maximum lines to read (default 2000, max 2000)"
+                    },
+                    "head": {
+                        "type": "integer",
+                        "description": "If set, return only the first N lines"
+                    },
+                    "tail": {
+                        "type": "integer",
+                        "description": "If set, return only the last N lines"
+                    },
+                    "range": {
+                        "type": "string",
+                        "description": "Inclusive line range like '50-100' or '50-50'. 1-indexed. Takes precedence over head/tail."
                     }
                 },
                 "required": ["path"]
@@ -37,14 +92,182 @@ pub async fn register(registry: &ToolRegistry) {
                 >| -> Result<String, String> {
                     let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
                     let resolved_path = resolve_path(path, &args);
+                    let path_str = resolved_path.to_string_lossy().to_string();
+
+                    // 检查文件是否存在 + 获取元数据
+                    let metadata = std::fs::metadata(&resolved_path)
+                        .map_err(|e| format!("Failed to access file: {}", e))?;
+                    let file_size = metadata.len();
+                    let _mtime = metadata.modified().ok();
+
+                    // ── 二进制检测：采样前 4KB 检查 NUL 字节 ──
+                    if file_size > 0 {
+                        use std::io::Read;
+                        let mut file = std::fs::File::open(&resolved_path)
+                            .map_err(|e| format!("Failed to open file: {}", e))?;
+                        let mut sample = vec![0u8; BINARY_SAMPLE_BYTES.min(file_size as usize)];
+                        let n = file.read(&mut sample).unwrap_or(0);
+                        if sample[..n].contains(&0u8) {
+                            return Ok(format!(
+                                "<path>{}</path>\n<type>file</type>\n<binary>true</binary>\n\n\
+                                 [Refused: file appears to be binary. Use 'file' tool or check file info instead.]",
+                                path_str
+                            ));
+                        }
+                    }
+
+                    if metadata.is_dir() {
+                        return Err(format!("'{}' is a directory, not a file", path_str));
+                    }
+
                     let content = std::fs::read_to_string(&resolved_path)
                         .map_err(|e| format!("Failed to read file: {}", e))?;
+                    let total_lines = content.lines().count();
 
-                    let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                    // ── 确定读取范围 ──
+                    // range > head/tail > offset/limit > default(full)
+                    let (start_line, read_limit): (usize, usize) = {
+                        if let Some(range_str) = args.get("range").and_then(|v| v.as_str()) {
+                            // 解析 "A-B" 格式
+                            if let Some((a, b)) = range_str.split_once('-') {
+                                let s = a.trim().parse::<usize>().unwrap_or(1).max(1);
+                                let e = b.trim().parse::<usize>().unwrap_or(total_lines).max(s);
+                                (s - 1, (e - s + 1).min(MAX_LINES))
+                            } else {
+                                (0, MAX_LINES)
+                            }
+                        } else if let Some(head) = args.get("head").and_then(|v| v.as_u64()) {
+                            (0, (head as usize).min(MAX_LINES))
+                        } else if let Some(tail) = args.get("tail").and_then(|v| v.as_u64()) {
+                            let t = (tail as usize).min(MAX_LINES);
+                            if t >= total_lines { (0, total_lines) }
+                            else { (total_lines - t, total_lines) }
+                        } else {
+                            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                            (offset.saturating_sub(1), limit.min(MAX_LINES))
+                        }
+                    };
 
-                    let lines: Vec<&str> = content.lines().skip(offset).take(limit).collect();
-                    Ok(lines.join("\n"))
+                    // ── 重复读取检测 ──
+                    let repeat_key = format!("{}:{}:{}", path_str, start_line, read_limit);
+                    {
+                        if let Ok(mut counter) = READ_REPEAT_COUNTER.lock() {
+                            let count = counter.entry(repeat_key.clone()).or_insert(0);
+                            *count += 1;
+                            if *count >= 4 {
+                                return Ok(format!(
+                                    "<path>{}</path>\n<type>file</type>\n<status>blocked</status>\n\n\
+                                     [BLOCKED: You have read this exact file region 4 times in a row. \
+                                     The content has NOT changed. You already have this information. \
+                                     STOP re-reading and proceed with your task.]",
+                                    path_str
+                                ));
+                            } else if *count >= 3 {
+                                // 第3次附加警告
+                            }
+                        }
+                    }
+
+                    // ── 大文件检测：如果没有分片参数且文件 > 64KB，提示用分片读取 ──
+                    let no_paging = args.get("range").is_none()
+                        && args.get("head").is_none()
+                        && args.get("tail").is_none();
+                    if no_paging && file_size > FULL_READ_THRESHOLD_BYTES && start_line == 0 && read_limit >= MAX_LINES {
+                        // 返回大纲模式：前 80 行 + 文件信息
+                        let outline_limit = 80usize.min(total_lines);
+                        let head_lines: Vec<String> = content.lines().take(outline_limit).enumerate().map(|(i, line)| {
+                            let truncated = if line.len() > MAX_LINE_LENGTH {
+                                format!("{}... [truncated]", &line[..MAX_LINE_LENGTH])
+                            } else { line.to_string() };
+                            format!("{:>6}|{}", i + 1, truncated)
+                        }).collect();
+                        let head_size = head_lines.iter().map(|l| l.len() + 1).sum::<usize>();
+                        let truncated = if head_size > OUTPUT_MAX_BYTES {
+                            let mut byte_sum = 0usize;
+                            let mut keep_count = 0usize;
+                            for line in &head_lines {
+                                byte_sum += line.len() + 1;
+                                if byte_sum > OUTPUT_MAX_BYTES { break; }
+                                keep_count += 1;
+                            }
+                            head_lines[..keep_count].join("\n")
+                        } else {
+                            head_lines.join("\n")
+                        };
+                        return Ok(format!(
+                            "<path>{}</path>\n<type>file</type>\n<size>{} bytes</size>\n<lines>{}</lines>\n\n\
+                             [Large file: {} bytes, {} lines — outline mode (threshold {}KB)]\n\n\
+                             [Head {} lines for orientation]\n{}\n\n\
+                             [To read more, use:\n\
+                              - read_file path=\"{}\" range=\"A-B\"    — 1-indexed line range\n\
+                              - read_file path=\"{}\" head:N / tail:N  — first/last N lines]",
+                            path_str, file_size, total_lines,
+                            format_file_size(file_size), total_lines, FULL_READ_THRESHOLD_BYTES / 1024,
+                            outline_limit, truncated,
+                            path_str, path_str
+                        ));
+                    }
+
+                    // ── 核心读取 ──
+                    let lines: Vec<String> = content.lines()
+                        .skip(start_line)
+                        .take(read_limit)
+                        .enumerate()
+                        .map(|(i, line)| {
+                            let line_num = start_line + i + 1;
+                            // 每行截断
+                            if line.len() > MAX_LINE_LENGTH {
+                                format!("{:>6}|{}... [truncated]", line_num, &line[..MAX_LINE_LENGTH])
+                            } else {
+                                format!("{:>6}|{}", line_num, line)
+                            }
+                        })
+                        .collect();
+
+                    // ── 字节预算检查 ──
+                    let mut byte_sum = 0usize;
+                    let mut keep_count = 0usize;
+                    let mut capped = false;
+                    for line in &lines {
+                        let line_bytes = line.len() + 1; // +1 for newline
+                        if byte_sum + line_bytes > OUTPUT_MAX_BYTES {
+                            capped = true;
+                            break;
+                        }
+                        byte_sum += line_bytes;
+                        keep_count += 1;
+                    }
+                    let last_line = start_line + keep_count;
+                    let output_lines = if capped { &lines[..keep_count] } else { &lines[..] };
+
+                    // 构建输出
+                    let mut output = format!("<path>{}</path>\n<type>file</type>\n", path_str);
+                    if output_lines.is_empty() {
+                        output.push_str(&format!("<lines>0</lines>\n\n(Empty file - {} lines total)", total_lines));
+                    } else {
+                        output.push_str(&format!("<lines>{}</lines>\n\n", total_lines));
+                        output.push_str(&output_lines.join("\n"));
+                        // 截断提示
+                        if capped {
+                            output.push_str(&format!(
+                                "\n\n(Output capped at {}KB. Showing lines {}-{} of {}. Use offset={} to continue.)",
+                                OUTPUT_MAX_BYTES / 1024,
+                                start_line + 1, last_line, total_lines, last_line + 1
+                            ));
+                        } else if last_line < total_lines {
+                            output.push_str(&format!(
+                                "\n\n(Showing lines {}-{} of {}. Use offset={} to continue.)",
+                                start_line + 1, last_line, total_lines, last_line + 1
+                            ));
+                        } else {
+                            output.push_str(&format!(
+                                "\n\n(End of file - total {} lines)", total_lines
+                            ));
+                        }
+                    }
+
+                    Ok(output)
                 },
             ),
         })
@@ -113,6 +336,9 @@ pub async fn register(registry: &ToolRegistry) {
                     std::fs::write(&resolved_path, content)
                         .map_err(|e| format!("Failed to write file: {}", e))?;
 
+                    // 写入后重置该文件的重复读取计数
+                    reset_read_repeat_counter(&resolved_path.to_string_lossy());
+
                     Ok(format!("{} {}", diff_label, resolved_path.display()))
                 },
             ),
@@ -179,6 +405,9 @@ pub async fn register(registry: &ToolRegistry) {
 
                     std::fs::write(&resolved_path, &new_content)
                         .map_err(|e| format!("Failed to write file: {}", e))?;
+
+                    // 编辑后重置该文件的重复读取计数
+                    reset_read_repeat_counter(&resolved_path.to_string_lossy());
 
                     Ok(format!("{} {}", diff_label, resolved_path.display()))
                 },

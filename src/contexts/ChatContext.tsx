@@ -28,7 +28,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [currentModel, setCurrentModel] = useState<Model | null>(null)
   const [isTyping, setIsTyping] = useState(false)
   const [sessionListVersion, setSessionListVersion] = useState(0)
-  const [defaultModelName, setDefaultModelNameState] = useState('')
+  // 从 localStorage 同步初始化默认模型，避免异步加载前显示空值
+  const [defaultModelName, setDefaultModelNameState] = useState(() => localStorage.getItem('jeeves-default-model') || '')
   const [refreshModelKey, setRefreshModelKey] = useState(0)
 
   const addMessage = useCallback((message: Message) => {
@@ -41,6 +42,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const setDefaultModelName = useCallback((name: string) => {
     setDefaultModelNameState(name)
+    if (name) localStorage.setItem('jeeves-default-model', name)
     setRefreshModelKey(k => k + 1)
   }, [])
 

@@ -146,7 +146,7 @@ impl SessionStore {
             name: name.to_string(),
             created_at: now.clone(),
             updated_at: now,
-            model: model.unwrap_or("gpt-4").to_string(),
+            model: model.unwrap_or("").to_string(),
             metadata: None,
         };
 

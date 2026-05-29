@@ -111,14 +111,30 @@ async fn toggle_cron(Path(id): Path<String>) -> Json<serde_json::Value> {
 
 async fn run_cron_now(Path(id): Path<String>) -> Json<serde_json::Value> {
     let sa = cron::get_store();
-    let mut store = sa.lock().await;
-    if store.get(&id).is_none() {
+    let store = sa.lock().await;
+    let job = store.get(&id).cloned();
+    if job.is_none() {
         return Json(serde_json::json!({ "success": false, "message": format!("定时任务 '{}' 未找到", id) }));
     }
-    store.update(&id, |job| {
-        job.last_run_at = Some(chrono::Utc::now().to_rfc3339());
-        job.run_count += 1;
+    let job = job.unwrap();
+    drop(store);
+
+    // 实际执行任务 payload（之前只更新了计数，没有真正触发执行）
+    tokio::spawn(async move {
+        tracing::info!("[Cron] 手动触发任务: {} ({})", job.name, job.id);
+        // 更新执行计数
+        {
+            let sa = cron::get_store();
+            let mut store = sa.lock().await;
+            store.update(&job.id, |j| {
+                j.last_run_at = Some(chrono::Utc::now().to_rfc3339());
+                j.run_count += 1;
+            });
+        }
+        // 执行任务
+        let _ = cron::execute_cron_job(&job).await;
     });
+
     Json(serde_json::json!({ "success": true, "message": "任务已触发" }))
 }
 

@@ -243,28 +243,93 @@ impl AgentSession {
     /// - 建议：在需要时调用，不要频繁触发
     ///
     /// # 行为
-    /// - 保留前 2 条（系统上下文）和最后 `keep_last` 条
-    /// - 中间的旧消息被一条摘要消息替换
+    /// - 保留前 2 条（系统上下文）
+    /// - 尾部按 token 预算保护（约 20000 tokens），而非固定消息条数
+    /// - 中间旧消息被一条摘要消息替换，并附带工具执行记录
     /// - `ai_summary` 为 None 时使用简单的计数占位符；为 Some 时使用 LLM 生成的语义摘要
     /// - 摘要消息 role 设置为 `assistant`（更符合对话语境，防止与 system prompt 混淆）
     pub fn compact_in_place(&mut self, keep_last: usize, ai_summary: Option<String>) {
+        const TAIL_TOKEN_BUDGET: u64 = 20_000;
+        const MIN_TAIL_MESSAGES: usize = 3;
+
         if self.messages.len() <= keep_last + 2 {
             return;
         }
 
         let total = self.messages.len();
-        let to_remove = total - keep_last;
 
-        // 保留前2条（系统上下文）和最后 keep_last 条
+        // 尾部保护：从末尾向前走，按 token 预算保留消息（而非固定条数）
+        let mut tail_tokens: u64 = 0;
+        let mut tail_count: usize = 0;
+        for msg in self.messages.iter().rev().take(total - 2) {
+            let tokens = crate::llm::tokenizer::estimate_string_tokens(&msg.content);
+            // 工具调用和角色开销
+            let extra = match msg.role.as_str() {
+                "assistant" if msg.tool_calls.is_some() => 50u64,
+                "tool" => 20u64,
+                _ => 10u64,
+            };
+            tail_tokens += tokens + extra;
+            tail_count += 1;
+            if tail_tokens >= TAIL_TOKEN_BUDGET && tail_count >= MIN_TAIL_MESSAGES {
+                break;
+            }
+        }
+        // effective_keep 受三个条件约束：
+        // 1. keep_last（硬上限，来自配置）
+        // 2. token 预算（tail_tokens >= TAIL_TOKEN_BUDGET 时停止）
+        // 3. MIN_TAIL_MESSAGES（最少保留条数）
+        let effective_keep = tail_count
+            .min(keep_last)
+            .max(MIN_TAIL_MESSAGES.min(total.saturating_sub(2)));
+
+        // 保留前2条（系统上下文）和后 effective_keep 条（按 token 预算）
         let front: Vec<_> = self.messages.iter().take(2).cloned().collect();
-        let back: Vec<_> = self.messages.iter().skip(to_remove + 2).cloned().collect();
+        let to_remove = total - 2 - effective_keep;
+        let back: Vec<_> = self.messages.iter().skip(2 + to_remove).cloned().collect();
+
+        // 扫描被移除的消息，提取工具执行记录，附加到摘要中
+        let removed_msgs: Vec<&AgentMessage> = self.messages[2..to_remove + 2].iter().collect();
+        let tool_records: Vec<String> = removed_msgs.iter().filter_map(|m| {
+            if m.role == "tool" {
+                if let Some(ref name) = m.tool_name {
+                    // 限制工具结果内容预览
+                    let preview: String = m.content.chars().take(120).collect();
+                    Some(format!("  [{}.{}]: {}", name, m.tool_call_id.as_deref().unwrap_or("?"), preview))
+                } else {
+                    None
+                }
+            } else if m.role == "assistant" {
+                if let Some(ref calls) = m.tool_calls {
+                    if !calls.is_empty() {
+                        let names: Vec<&str> = calls.iter().map(|tc| tc.name.as_str()).collect();
+                        if !names.is_empty() {
+                            Some(format!("  → 调用了: {}", names.join(", ")))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }).collect();
+        let tool_section = if tool_records.is_empty() {
+            String::new()
+        } else {
+            format!("\n\n## Tools Executed\n{}", tool_records.join("\n"))
+        };
 
         let summary_content = match ai_summary {
             Some(ref s) if !s.trim().is_empty() => {
-                format!("[CONVERSATION HISTORY SUMMARY — earlier turns folded for context efficiency]\n\n{}", s.trim())
+                format!("[CONVERSATION HISTORY SUMMARY — earlier turns folded for context efficiency]\n\n{}{}", s.trim(), tool_section)
             }
             _ => {
-                format!("[CONVERSATION HISTORY SUMMARY — removed {} historical messages, showing recent conversation content]", to_remove)
+                format!("[CONVERSATION HISTORY SUMMARY — removed {} historical messages, showing recent conversation content]{}", to_remove, tool_section)
             }
         };
 
@@ -284,7 +349,10 @@ impl AgentSession {
         self.messages.push(summary);
         self.messages.extend(back);
 
-        // 同步重建确定性日志
+        // 压缩后清理孤立 tool_calls/tool 消息（防止违反 API 协议）
+        Self::strip_orphan_tool_calls(&mut self.messages);
+
+        // 同步重建确定性日志（必须在 strip_orphan_tool_calls 之后，确保日志与 messages 一致）
         self.log.clear();
         for msg in &self.messages {
             let entry: LogEntry = msg.into();
@@ -307,53 +375,67 @@ impl AgentSession {
                 self.compaction_count
             );
         }
-
-        // 压缩后清理孤立 tool_calls
-        Self::strip_orphan_tool_calls(&mut self.messages);
     }
 
-    /// 扫描并清理孤立 tool_calls — 不完整配对的 tool_calls 会被移除，防止违反 API 协议
-    fn strip_orphan_tool_calls(messages: &mut Vec<AgentMessage>) {
+    /// 扫描并清理孤立 tool_calls 和孤立的 tool 消息 — 防止违反 API 协议
+    ///
+    /// 清理规则：
+    /// 1. 从 assistant 消息中移除没有对应 tool 响应的 tool_calls
+    /// 2. 移除没有对应 assistant tool_calls 的 tool 消息
+    pub fn strip_orphan_tool_calls(messages: &mut Vec<AgentMessage>) {
         let mut tool_call_ids_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut tool_call_ids_missing: Vec<String> = Vec::new();
+        let mut assistant_tool_call_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-        // 第一遍：收集所有 tool_call_ids
+        // 第一遍：收集所有 tool_call_ids（来自 tool 消息和 assistant 的 tool_calls）
         for msg in messages.iter() {
             if msg.role == "tool" {
                 if let Some(ref id) = msg.tool_call_id {
                     tool_call_ids_seen.insert(id.clone());
                 }
             }
-        }
-
-        // 第二遍：找出未匹配的 tool_calls
-        for msg in messages.iter() {
             if msg.role == "assistant" {
                 if let Some(ref calls) = msg.tool_calls {
                     for tc in calls {
-                        if !tool_call_ids_seen.contains(&tc.id) {
-                            tool_call_ids_missing.push(tc.id.clone());
-                        }
+                        assistant_tool_call_ids.insert(tc.id.clone());
                     }
                 }
             }
         }
 
-        if tool_call_ids_missing.is_empty() {
-            return;
+        // 第二遍：找出未匹配的 tool_calls（assistant 里有但缺少对应 tool 响应）
+        let mut tool_call_ids_missing: Vec<String> = Vec::new();
+        for id in &assistant_tool_call_ids {
+            if !tool_call_ids_seen.contains(id) {
+                tool_call_ids_missing.push(id.clone());
+            }
         }
 
-        // 第三遍：从 assistant 消息中移除缺失的 tool_calls
-        for msg in messages.iter_mut() {
-            if msg.role != "assistant" {
-                continue;
-            }
-            if let Some(ref mut calls) = msg.tool_calls {
-                calls.retain(|tc| !tool_call_ids_missing.contains(&tc.id));
-                if calls.is_empty() {
-                    msg.tool_calls = None;
+        if !tool_call_ids_missing.is_empty() {
+            // 第三遍：从 assistant 消息中移除缺失的 tool_calls
+            for msg in messages.iter_mut() {
+                if msg.role != "assistant" {
+                    continue;
+                }
+                if let Some(ref mut calls) = msg.tool_calls {
+                    calls.retain(|tc| !tool_call_ids_missing.contains(&tc.id));
+                    if calls.is_empty() {
+                        msg.tool_calls = None;
+                    }
                 }
             }
         }
+
+        // 第四遍：移除孤立的 tool 消息（有 tool_call_id 但没有对应的 assistant tool_calls）
+        messages.retain(|msg| {
+            if msg.role == "tool" {
+                if let Some(ref id) = msg.tool_call_id {
+                    if !assistant_tool_call_ids.contains(id) {
+                        // 这条 tool 消息没有对应的 assistant tool_call，移除
+                        return false;
+                    }
+                }
+            }
+            true
+        });
     }
 }

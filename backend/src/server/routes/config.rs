@@ -1,4 +1,4 @@
-use axum::{extract::Path, routing::{get, put, delete}, Json, Router};
+use axum::{extract::Path, routing::{get, put, post, delete}, Json, Router};
 use crate::APP_STATE;
 use crate::config::AppConfig;
 use crate::soul::{AgentConfig, SoulPaths};
@@ -164,10 +164,67 @@ async fn delete_agent(Path(agent_id): Path<String>) -> Json<serde_json::Value> {
     }
 }
 
+/// 获取 shell allowlist
+async fn get_shell_allowlist() -> Json<serde_json::Value> {
+    let state = APP_STATE.read().await;
+    let list = state.config.shell_allowlist.clone();
+    Json(serde_json::json!({"success": true, "data": list}))
+}
+
+/// 添加 shell allowlist 条目
+#[derive(serde::Deserialize)]
+struct AddAllowlistReq {
+    prefix: String,
+}
+async fn add_shell_allowlist(Json(req): Json<AddAllowlistReq>) -> Json<serde_json::Value> {
+    let mut state = APP_STATE.write().await;
+    let prefix = req.prefix.trim().to_lowercase();
+    if prefix.is_empty() {
+        return Json(serde_json::json!({"success": false, "message": "前缀不能为空"}));
+    }
+    // 去重添加
+    if !state.config.shell_allowlist.contains(&prefix) {
+        state.config.shell_allowlist.push(prefix.clone());
+        // 同步到运行时缓存
+        if let Ok(mut cached) = crate::tools::execute::ALLOW_PATTERNS.write() {
+            *cached = state.config.shell_allowlist.clone();
+        }
+        // 保存到文件
+        if let Err(e) = state.config.save() {
+            tracing::error!("保存 allowlist 失败: {}", e);
+        }
+    }
+    tracing::info!("[Allowlist] 添加命令前缀: {}", prefix);
+    Json(serde_json::json!({"success": true}))
+}
+
+/// 删除 shell allowlist 条目
+#[derive(serde::Deserialize)]
+struct RemoveAllowlistReq {
+    prefix: String,
+}
+async fn remove_shell_allowlist(Json(req): Json<RemoveAllowlistReq>) -> Json<serde_json::Value> {
+    let mut state = APP_STATE.write().await;
+    let prefix = req.prefix.trim().to_lowercase();
+    state.config.shell_allowlist.retain(|p| p != &prefix);
+    // 同步到运行时缓存
+    if let Ok(mut cached) = crate::tools::execute::ALLOW_PATTERNS.write() {
+        *cached = state.config.shell_allowlist.clone();
+    }
+    if let Err(e) = state.config.save() {
+        tracing::error!("保存 allowlist 失败: {}", e);
+    }
+    tracing::info!("[Allowlist] 移除命令前缀: {}", prefix);
+    Json(serde_json::json!({"success": true}))
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route("/config", get(get_config))
         .route("/config", put(update_config))
+        .route("/config/shell_allowlist", get(get_shell_allowlist))
+        .route("/config/shell_allowlist", post(add_shell_allowlist))
+        .route("/config/shell_allowlist", delete(remove_shell_allowlist))
         .route("/set-agent", get(log_default_agent))
         .route("/set-agent/:agent_id", get(log_agent_selection))
         .route("/agents", get(list_agents))

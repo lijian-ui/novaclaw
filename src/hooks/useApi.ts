@@ -55,6 +55,9 @@ export type SseCallbacks = {
     toolResult?: string
     turn: number
     maxTurns: number
+    /** 确认请求相关字段（仅 stepType = "approval_required" 时有值） */
+    approval?: { operation_type?: string; tool_name?: string; arguments?: string; message?: string }
+    approval_id?: string
   }) => void
 }
 
@@ -125,6 +128,8 @@ export function startChatStream(
                 toolResult: payload?.tool_result,
                 turn: payload?.turn || 0,
                 maxTurns: payload?.max_turns || 20,
+                approval: payload?.approval,
+                approval_id: payload?.approval_id,
               })
             } else if (parsed.type === 'done') {
               onDone({

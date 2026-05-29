@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 
 // 从 AppConfig 读取，保留默认值作为兜底
 pub const COMPACT_KEEP_LAST_FALLBACK: usize = 20;
+// ReAct 循环安全硬上限（正常情况下不会达到，由上下文使用率驱动退出）
+pub const ITERATION_HARD_LIMIT: usize = 500;
 
 /// 格式化工具调用显示信息
 /// 将 JSON 参数转换为易读的格式，特别是文件类工具显示相对路径和文件名
@@ -126,6 +128,8 @@ pub struct AgentRuntime {
     tool_retry_count: HashMap<String, u32>,
     /// doom-loop 检测：连续相同工具调用的次数
     consecutive_doom_count: u32,
+    /// 连续跳过重复工具调用的次数（超出后主动终止循环）
+    skip_count: u32,
     /// doom-loop 检测：上一次工具调用的去重 key
     last_doom_key: Option<String>,
     /// 是否已进入优雅终止（最后一次无工具调用）
@@ -148,6 +152,8 @@ pub struct AgentRuntime {
     current_turn_pro: bool,
     /// 连续工具调用失败次数（用于失败触发升级）
     consecutive_tool_failures: u32,
+    /// 缓存工具定义 Schema（每个会话期间固定不变，确保前缀缓存稳定）
+    cached_tool_schemas: Option<Vec<crate::tools::types::ToolDefinition>>,
 }
 
 impl AgentRuntime {
@@ -176,6 +182,7 @@ impl AgentRuntime {
             tool_retry_count: HashMap::new(),
             consecutive_doom_count: 0,
             last_doom_key: None,
+            skip_count: 0,
             grace_terminating: false,
             total_cached_tokens: 0,
             last_input_tokens: 0,
@@ -185,20 +192,24 @@ impl AgentRuntime {
             cached_pro_model: Self::find_pro_model_static(),
             current_turn_pro: false,
             consecutive_tool_failures: 0,
+            cached_tool_schemas: None,
         }
     }
 
     // ── 工具结果压缩阈值（超过此字符数的工具结果，在轮次结束后压缩） ──
     const TOOL_RESULT_COMPRESS_LIMIT: usize = 6000;
+    // ── 工具结果 Token 上限（超过此 token 数则截断，适配中文场景） ──
+    const TOOL_RESULT_TOKEN_LIMIT: u64 = 2000;
 
     // ── 预检：消息历史总字符数触发压缩的阈值 ──
-    const PREFLIGHT_CHAR_LIMIT: usize = 500_000;
-    // ── 预检：序列化请求体字节硬限制（超过此值强制截断） ──
-    const PREFLIGHT_BODY_BYTE_HARD_LIMIT: usize = 3_000_000; // ~3MB，DeepSeek 1M context 的安全边界
+    const PREFLIGHT_CHAR_LIMIT: usize = 300_000;
+    // ── 预检：序列化请求体字节硬限制（超过此值强制截断，DeepSeek 网关约 700KB 上限） ──
+    const PREFLIGHT_BODY_BYTE_HARD_LIMIT: usize = 700_000;
     // ── 预检层级阈值（相对于模型上下文窗口的比例） ──
-    const PREFLIGHT_LEVEL1_RATIO: f64 = 0.70; // 告警
-    const PREFLIGHT_LEVEL2_RATIO: f64 = 0.85; // 压缩
-    const PREFLIGHT_LEVEL3_RATIO: f64 = 0.95; // 强制截断
+    // 参考 DeepSeek-Reasonix 的设计：尽早触发，避免挤满窗口后再被动压缩
+    const PREFLIGHT_LEVEL1_RATIO: f64 = 0.30; // ≥30% 告警
+    const PREFLIGHT_LEVEL2_RATIO: f64 = 0.50; // ≥50% 折叠压缩（含 AI 摘要）
+    const PREFLIGHT_LEVEL3_RATIO: f64 = 0.80; // ≥80% 紧急强制截断
 
     pub async fn run_turn(
         &mut self,
@@ -284,8 +295,22 @@ impl AgentRuntime {
             );
         }
 
+        // ── P0: 预取工具定义，缓存到 runtime（确保每次请求的 tools 参数字节一致） ──
+        let tool_schemas = self.tool_registry.get_schemas().await;
+        self.cached_tool_schemas = Some(tool_schemas.clone());
+
         // ── P0: 构建并冻结 system prompt（带指纹检测） ──
-        let frozen = self.build_frozen_system_prompt().await;
+        // 将工具定义列表注入 system prompt 中，使其成为不可变前缀的一部分
+        let mut frozen = self.build_frozen_system_prompt().await;
+        if !tool_schemas.is_empty() && !self.grace_terminating {
+            let tools_text: Vec<String> = tool_schemas.iter().map(|t| {
+                format!("- {}: {}", t.function.name, t.function.description)
+            }).collect();
+            frozen.push_str(&format!(
+                "\n\n# Available Tools\n{}",
+                tools_text.join("\n")
+            ));
+        }
         match self.session.set_frozen_system_prompt(frozen) {
             Ok(is_first) => {
                 if is_first {
@@ -306,7 +331,16 @@ impl AgentRuntime {
         loop {
             iterations += 1;
 
-            // max_iterations == 0 表示无限制
+            // 安全硬上限（500 次），防止不可控的无限循环
+            if iterations > ITERATION_HARD_LIMIT {
+                tracing::error!(
+                    "[Agent] 达到安全硬上限 {} 次迭代，强制退出",
+                    ITERATION_HARD_LIMIT
+                );
+                max_iterations_reached = true;
+                break;
+            }
+            // max_iterations > 0 时作为软上限，触发优雅终止最后一次调用后退出
             if self.max_iterations > 0 && iterations > self.max_iterations {
                 if self.grace_terminating {
                     // 优雅终止已完成，退出循环
@@ -420,6 +454,7 @@ impl AgentRuntime {
 
             if valid_tool_calls.is_empty() {
                 tracing::info!("[Agent] 所有工具调用已执行过，跳过重复执行");
+                self.skip_count += 1;
                 if let Some(ref tx) = step_tx {
                     let _ = tx
                         .send(AgentStep {
@@ -435,8 +470,21 @@ impl AgentRuntime {
                         })
                         .await;
                 }
+                // 连续跳过次数过多时，清除去重缓存并重置跳过计数
+                // 原因：上下文压缩后 LLM 丢失了进度信息，生成了已执行过的工具调用
+                // 清除去重缓存后这些工具可以重新执行，LLM 就能继续推进
+                if self.skip_count >= 5 {
+                    tracing::warn!("[Agent] 连续跳过 {} 次，清除去重缓存让 LLM 继续", self.skip_count);
+                    self.executed_tools.clear();
+                    self.skip_count = 0;
+                    let _ = self.session.messages.iter_mut().last().map(|m| {
+                        m.content.push_str("\n\n[已清除工具去重缓存，你可以重新调用需要的工具]");
+                    });
+                }
                 continue;
             }
+            // 有有效工具调用时重置跳过计数
+            self.skip_count = 0;
 
             tracing::info!("[Agent] 并发执行 {} 个工具调用", valid_tool_calls.len());
 
@@ -552,7 +600,21 @@ impl AgentRuntime {
                         }
 
                         // 明确标注工具返回的是真实数据，避免小模型误判为帮助信息
+                        // 支持按 token 数截断（中文场景字符数不等同于 token 数）
+                        fn truncate_by_tokens(s: &str, max_tokens: u64) -> String {
+                            let estimated = crate::llm::tokenizer::estimate_string_tokens(s);
+                            if estimated <= max_tokens {
+                                return s.to_string();
+                            }
+                            // 按字符长度等比缩放截断
+                            let ratio = max_tokens as f64 / estimated as f64;
+                            let target_chars = (s.len() as f64 * ratio * 0.9) as usize;
+                            let mut end = target_chars.min(s.len());
+                            while !s.is_char_boundary(end) { end -= 1; }
+                            format!("{}...\n\n[结果已截断，原估算 {} token]", &s[..end], estimated)
+                        }
                         let contextualized = format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, truncated);
+                        let contextualized = truncate_by_tokens(&contextualized, Self::TOOL_RESULT_TOKEN_LIMIT);
                         self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
 
                         // 累加重试计数（同 key 递增，用于跨迭代硬限制）
@@ -567,17 +629,17 @@ impl AgentRuntime {
                         
                         tracing::info!("[Agent] 工具 {} 需要用户确认，ID: {}", tc_name, approval_id);
 
-                        // 保存到全局状态
-                        {
+                        // 保存到全局状态并获取通知通道
+                        let rx = {
                             let state = crate::APP_STATE.read().await;
-                            state.approval_manager.add_pending(
+                            state.approval_manager.add_pending_with_rx(
                                 approval_id.clone(),
                                 approval.clone(),
                                 self.session.id.clone(),
                                 tc_name.clone(),
                                 tc_args_json.clone(),
-                            ).await;
-                        }
+                            ).await
+                        };
 
                         // 发送确认事件到前端
                         if let Some(ref tx) = step_tx {
@@ -596,10 +658,100 @@ impl AgentRuntime {
                                 .await;
                         }
 
-                        // 告诉 LLM 正在等待用户确认
-                        let wait_msg = format!("Waiting for user approval to proceed with {} operation.", tc_name);
-                        let contextualized = format!("← {} 工具等待用户确认:\n{}", tc_name, wait_msg);
-                        self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
+                        // ⚠️ 真正阻塞等待用户确认（不继续循环，不前调 LLM）
+                        tracing::info!("[Agent] 等待用户确认工具 {} (approval_id={})...", tc_name, approval_id);
+                        let decision = match tokio::time::timeout(
+                            std::time::Duration::from_secs(300), // 5分钟超时
+                            rx,
+                        ).await {
+                            Ok(Ok(decision)) => decision,
+                            Ok(Err(_)) => {
+                                tracing::warn!("[Agent] 用户确认通道已关闭，视为拒绝");
+                                crate::tools::approval::ApprovalDecision::Deny
+                            }
+                            Err(_) => {
+                                tracing::warn!("[Agent] 用户确认超时(5分钟)，视为拒绝");
+                                crate::tools::approval::ApprovalDecision::Deny
+                            }
+                        };
+
+                        match decision {
+                            crate::tools::approval::ApprovalDecision::AllowOnce => {
+                                tracing::info!("[Agent] 用户允许执行工具 {} 一次", tc_name);
+                                // 重新执行该工具（复用原始参数）
+                                let registry = self.tool_registry.clone();
+                                let name = tc_name.clone();
+                                let ws = self.session.workspace.clone();
+                                let mut parsed_args: serde_json::Value =
+                                    serde_json::from_str(&tc_args_json)
+                                        .unwrap_or(serde_json::Value::Null);
+                                if let Some(obj) = parsed_args.as_object_mut() {
+                                    obj.insert("_session_id".to_string(), serde_json::json!(self.session.id.clone()));
+                                }
+                                let result = registry.execute(&name, parsed_args, ws.as_deref(), None).await;
+                                // 处理执行结果
+                                match result {
+                                    Ok(crate::tools::types::ToolResult::Success(output)) => {
+                                        self.consecutive_tool_failures = 0;
+                                        let truncated = if output.len() > 8000 {
+                                            let mut end = 8000;
+                                            while !output.is_char_boundary(end) { end -= 1; }
+                                            format!("{}...\n\n[结果已截断，原长度: {} 字符]", &output[..end], output.len())
+                                        } else {
+                                            output
+                                        };
+                                        tracing::info!("[Agent] 用户批准后工具 {} 执行成功，结果 {} 字符", name, truncated.len());
+                                        let contextualized = format!("← {} 工具返回的数据:\n{}", name, truncated);
+                                        self.session.push_tool_result(&tc_id, &name, &contextualized);
+                                    }
+                                    _ => {
+                                        let err_msg = format!("用户批准后工具执行失败");
+                                        tracing::warn!("[Agent] 用户批准后工具 {} 执行失败", name);
+                                        let contextualized = format!("← {} 工具返回的数据:\n{}", name, err_msg);
+                                        self.session.push_tool_result(&tc_id, &name, &contextualized);
+                                    }
+                                }
+                            }
+                            crate::tools::approval::ApprovalDecision::AlwaysAllow => {
+                                tracing::info!("[Agent] 用户允许并将 {} 加入白名单", tc_name);
+                                // 逻辑同上（执行工具）
+                                // 白名单已由前端通过 API 添加，这里只需执行一次
+                                let registry = self.tool_registry.clone();
+                                let name = tc_name.clone();
+                                let ws = self.session.workspace.clone();
+                                let mut parsed_args: serde_json::Value =
+                                    serde_json::from_str(&tc_args_json)
+                                        .unwrap_or(serde_json::Value::Null);
+                                if let Some(obj) = parsed_args.as_object_mut() {
+                                    obj.insert("_session_id".to_string(), serde_json::json!(self.session.id.clone()));
+                                }
+                                let result = registry.execute(&name, parsed_args, ws.as_deref(), None).await;
+                                match result {
+                                    Ok(crate::tools::types::ToolResult::Success(output)) => {
+                                        self.consecutive_tool_failures = 0;
+                                        let truncated = if output.len() > 8000 {
+                                            let mut end = 8000;
+                                            while !output.is_char_boundary(end) { end -= 1; }
+                                            format!("{}...\n\n[结果已截断]", &output[..end])
+                                        } else {
+                                            output
+                                        };
+                                        let contextualized = format!("← {} 工具返回的数据:\n{}", name, truncated);
+                                        self.session.push_tool_result(&tc_id, &name, &contextualized);
+                                    }
+                                    _ => {
+                                        let contextualized = format!("← {} 工具返回的数据:\n工具执行失败", name);
+                                        self.session.push_tool_result(&tc_id, &name, &contextualized);
+                                    }
+                                }
+                            }
+                            crate::tools::approval::ApprovalDecision::Deny => {
+                                tracing::info!("[Agent] 用户拒绝了工具 {} 的执行", tc_name);
+                                let err_msg = format!("用户已拒绝执行此命令");
+                                let contextualized = format!("← {} 工具返回的数据:\n{}", tc_name, err_msg);
+                                self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
+                            }
+                        }
                     }
                     Err(e) => {
                         let err_msg = format!("工具执行错误: {}", e);
@@ -859,11 +1011,15 @@ impl AgentRuntime {
             .expect("[Cache] frozen_system_prompt 必须在首次调用前设置")
             .clone();
 
-        let tools = if self.grace_terminating {
+        // 安全兜底：发送前清理可能的孤立 tool_calls/tool 消息，防止违反 API 协议
+        AgentSession::strip_orphan_tool_calls(&mut self.session.messages);
+
+        let tools: Vec<crate::tools::types::ToolDefinition> = if self.grace_terminating {
             // 优雅终止：不传工具，LLM 只能返回文本
             Vec::new()
         } else {
-            self.tool_registry.get_schemas().await
+            // 使用缓存的工具定义（每个会话期间固定不变，确保前缀缓存稳定）
+            self.cached_tool_schemas.clone().unwrap_or_default()
         };
         let tool_count = tools.len();
 
@@ -878,25 +1034,42 @@ impl AgentRuntime {
 
         let mut first_user_msg_idx = None;
         for (i, msg) in self.session.log.entries().iter().enumerate() {
-            let agent_msg = self.session.messages.get(i);
-            let content = if msg.role == "user" && agent_msg.and_then(|m| m.images.as_ref()).is_some() && first_user_msg_idx.is_none() {
-                // 只有第一条带图的 user 消息才嵌入 base64，后续迭代不再重传
-                first_user_msg_idx = Some(i);
-                let imgs = agent_msg.and_then(|m| m.images.as_ref()).unwrap();
-                if imgs.is_empty() {
+            let content = if msg.role == "user" && first_user_msg_idx.is_none() {
+                // 检查是否有图片：从 messages 中读取
+                let has_images = self.session.messages.get(i)
+                    .and_then(|m| m.images.as_ref())
+                    .map(|imgs| !imgs.is_empty())
+                    .unwrap_or(false);
+                if !has_images {
                     serde_json::Value::String(msg.content.clone())
                 } else {
-                    let mut parts: Vec<serde_json::Value> = vec![serde_json::json!({
-                        "type": "text",
-                        "text": &msg.content
-                    })];
-                    for url in imgs {
-                        parts.push(serde_json::json!({
-                            "type": "image_url",
-                            "image_url": { "url": url }
-                        }));
+                    // 只有第一条带图的 user 消息才嵌入 base64，后续迭代不再重传
+                    first_user_msg_idx = Some(i);
+                    // 先取出图片，避免后续可变 borrow 冲突
+                    let imgs = self.session.messages[i].images.clone().unwrap_or_default();
+                    // 释放后续消息中的图片内存（只保留第一条带图的）
+                    for j in (i + 1)..self.session.messages.len() {
+                        if let Some(ref mut later_msg) = self.session.messages.get_mut(j) {
+                            if later_msg.images.is_some() {
+                                later_msg.images = None;
+                            }
+                        }
                     }
-                    serde_json::Value::Array(parts)
+                    if imgs.is_empty() {
+                        serde_json::Value::String(msg.content.clone())
+                    } else {
+                        let mut parts: Vec<serde_json::Value> = vec![serde_json::json!({
+                            "type": "text",
+                            "text": &msg.content
+                        })];
+                        for url in &imgs {
+                            parts.push(serde_json::json!({
+                                "type": "image_url",
+                                "image_url": { "url": url }
+                            }));
+                        }
+                        serde_json::Value::Array(parts)
+                    }
                 }
             } else {
                 serde_json::Value::String(msg.content.clone())
@@ -919,7 +1092,17 @@ impl AgentRuntime {
                 tool_call_id: msg.tool_call_id.clone(),
                 name: msg.name.clone(),
                 // DeepSeek thinking mode 必须回传 reasoning_content，否则 API 返回 400
-                reasoning_content: msg.reasoning_content.clone(),
+                // 但只保留最新一条 assistant 的 reasoning，旧 thinking 剥离（防止模型被自己的旧 thinking 误导）
+                // 参考 DeepSeek-Reasonix 的 stripDroppableReasoningContent
+                reasoning_content: if msg.role == "assistant"
+                    && msg.tool_calls.is_none()
+                    && msg.reasoning_content.is_some()
+                    && i + 1 < messages.len()  // 不是 messages 中最后一条消息
+                {
+                    None // 旧纯文本轮次，剥离 reasoning_content
+                } else {
+                    msg.reasoning_content.clone()
+                },
             });
         }
 
@@ -1063,9 +1246,29 @@ impl AgentRuntime {
                             arguments: String::new(),
                         });
                     }
+                    let is_new_tool = accumulated_tool_calls[index].name.is_empty() && !name.is_empty();
                     accumulated_tool_calls[index].id = id.clone();
                     accumulated_tool_calls[index].name = name.clone();
                     accumulated_tool_calls[index].arguments = arguments.clone();
+                    // 首次检测到新工具名称时，立即发送 tool_call 步骤，让前端第一时间渲染卡片
+                    // （参数可能还不完整，但前端可以先显示工具名，等 finish 后收到完整参数再更新）
+                    if is_new_tool && !name.is_empty() {
+                        if let Some(ref tx) = step_tx {
+                            let _ = tx
+                                .send(AgentStep {
+                                    step_type: "tool_call".to_string(),
+                                    content: arguments.clone(),
+                                    tool_name: Some(name.clone()),
+                                    tool_result: None,
+                                    turn: 0,
+                                    max_turns: self.max_iterations,
+                                    approval: None,
+                                    approval_id: None,
+                                    cached_tokens: None,
+                                })
+                                .await;
+                        }
+                    }
                 }
                 StreamEvent::Usage { prompt_tokens, completion_tokens, cached_tokens: cached } => {
                     input_tokens = prompt_tokens;
@@ -1373,10 +1576,8 @@ impl AgentRuntime {
             return None;
         }
 
-        // 确定使用哪个模型
-        let flash_model = self.find_flash_model();
-        let use_model = flash_model.as_deref().unwrap_or(&self.session.model);
-        let is_flash = flash_model.is_some();
+        // 始终使用当前会话模型（避免用户未配置 flash 模型时摘要生成失败）
+        let use_model = &self.session.model;
 
         // 构建摘要 prompt
         let system_msg = crate::llm::types::ChatMessage {
@@ -1417,9 +1618,8 @@ impl AgentRuntime {
         };
 
         tracing::info!(
-            "[Summary] 生成 AI 摘要: 模型={}{}, 待摘要消息={}, 输入长度={}",
+            "[Summary] 生成 AI 摘要: 模型={}, 待摘要消息={}, 输入长度={}",
             use_model,
-            if is_flash { " (flash)" } else { " (降级/默认)" },
             msg_count,
             formatted.len()
         );
@@ -1589,8 +1789,12 @@ impl AgentRuntime {
             );
         }
 
+        // Level 1.5: 消息数超过 compact_threshold 也触发压缩（应对同一轮内大量工具调用）
+        let msg_count_exceeded = self.config.compact_threshold > 0
+            && self.session.messages.len() > self.config.compact_threshold as usize;
+
         // Level 2: 触发压缩（含 AI 语义摘要，保留对话上下文）
-        if ratio >= Self::PREFLIGHT_LEVEL2_RATIO || total_chars > Self::PREFLIGHT_CHAR_LIMIT {
+        if ratio >= Self::PREFLIGHT_LEVEL2_RATIO || total_chars > Self::PREFLIGHT_CHAR_LIMIT || msg_count_exceeded {
             let keep = if self.config.compact_keep > 0 { self.config.compact_keep } else { COMPACT_KEEP_LAST_FALLBACK };
             tracing::warn!(
                 "[Preflight] 🔄 触发上下文压缩 (ratio={:.1}%, chars={}), 保留最近 {} 条",
@@ -1610,6 +1814,70 @@ impl AgentRuntime {
             let ai_summary = self.generate_ai_summary(hard_keep).await;
             self.session.compact_in_place(hard_keep, ai_summary);
         }
+    }
+
+    /// 每次工具调用后立即压缩，保持 messages 在合理范围内
+    /// 将中间步骤压缩为带关键结果的摘要，保留最近 N 步完整内容
+    fn compact_after_tool(&mut self) {
+        let total = self.session.messages.len();
+        const KEEP_FRONT: usize = 2;   // system + user 输入
+        const KEEP_RECENT: usize = 10;  // 保留最近 10 条（3-4 步完整，LLM 需要足够上下文理解进度）
+        if total <= KEEP_FRONT + KEEP_RECENT {
+            return;
+        }
+        let to_compress = total - KEEP_FRONT - KEEP_RECENT;
+        let removed_msgs: Vec<&crate::agent::session::AgentMessage> =
+            self.session.messages[KEEP_FRONT..KEEP_FRONT + to_compress].iter().collect();
+        // 从被移除的消息中提取关键信息：工具调用 + assistant 核心回复
+        let mut records: Vec<String> = Vec::new();
+        for m in &removed_msgs {
+            if m.role == "tool" {
+                if let Some(name) = &m.tool_name {
+                    let preview: String = m.content.chars().take(120).collect();
+                    let clean = preview.replace('\n', " ").replace('\r', "");
+                    records.push(format!("  [{name}] {clean}"));
+                }
+            } else if m.role == "assistant" {
+                if let Some(ref calls) = m.tool_calls {
+                    if !calls.is_empty() {
+                        let names: Vec<&str> = calls.iter().map(|tc| tc.name.as_str()).collect();
+                        records.push(format!("  → 调用了: {}", names.join(", ")));
+                    }
+                } else if !m.content.starts_with("[INTERMEDIATE STEPS") {
+                    // 记录 assistant 的文字回复摘要（不含已压缩的占位符）
+                    let preview: String = m.content.chars().take(60).collect();
+                    let clean = preview.replace('\n', " ").replace('\r', "");
+                    records.push(format!("  🤖 {clean}"));
+                }
+            }
+        }
+        let record_text = if records.is_empty() {
+            String::new()
+        } else {
+            format!("\n## Progress\n{}", records.join("\n"))
+        };
+        let summary = AgentMessage {
+            role: "assistant".to_string(),
+            content: format!("[INTERMEDIATE STEPS — previous steps completed, key progress below]{}", record_text),
+            tool_calls: None, tool_call_id: None, tool_name: None,
+            first_reasoning: None, again_reasonings: None, reasoning: None, images: None,
+        };
+        let front: Vec<_> = self.session.messages.drain(..KEEP_FRONT).collect();
+        // drain 掉要压缩的中间消息，只剩下尾部 KEEP_RECENT 条
+        let _compressed: Vec<_> = self.session.messages.drain(..to_compress).collect();
+        let recent: Vec<_> = self.session.messages.drain(..).collect(); // 剩余 KEEP_RECENT 条
+        self.session.messages = front;
+        self.session.messages.push(summary);
+        self.session.messages.extend(recent);
+        // 压缩后清理孤立 tool_calls/tool 消息，防止违反 API 协议
+        AgentSession::strip_orphan_tool_calls(&mut self.session.messages);
+        // 同步重建 log
+        self.session.log.clear();
+        for msg in &self.session.messages {
+            let entry: crate::agent::log::LogEntry = msg.into();
+            self.session.log.push(entry);
+        }
+        tracing::info!("[Compact] 即时压缩: 移除了 {} 条，剩余 {} 条", to_compress, self.session.messages.len());
     }
 
     pub fn session(&self) -> &AgentSession {
