@@ -9,8 +9,7 @@ pub async fn register(registry: &ToolRegistry) {
         .register(ToolDef {
                         name: "execute_command".to_string(),
             display_name: "执行命令".to_string(),
-            description: "Execute a shell command and wait for the result (supports up to 300s timeout). "
-                "Params: command (required), description (optional), timeout (default 60s, max 300), workdir (optional)".to_string(),
+            description: "Execute a shell command and wait for the result. Params: command (required), description (optional), workdir (optional)".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -21,10 +20,6 @@ pub async fn register(registry: &ToolRegistry) {
                     "description": {
                         "type": "string",
                         "description": "Clear explanation of what this command does (helps with safety review)"
-                    },
-                    "timeout": {
-                        "type": "integer",
-                        "description": "Maximum execution time in seconds (default 60, max 300)"
                     },
                     "workdir": {
                         "type": "string",
@@ -39,11 +34,7 @@ pub async fn register(registry: &ToolRegistry) {
                     tokio::sync::mpsc::UnboundedSender<String>,
                 >| -> Result<String, String> {
                     let command = args["command"].as_str().ok_or("Missing 'command' parameter")?;
-                    let timeout = args
-                        .get("timeout")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(60)
-                        .min(300);
+                    let timeout = 36000u64; // 命令等待完成，不设严格超时（由 registry 层 10 小时兜底）
                     let workdir_str = args.get("workdir").and_then(|v| v.as_str()).unwrap_or(".");
                     let resolved_workdir = resolve_path(workdir_str, &args);
                     tracing::info!(
@@ -103,12 +94,22 @@ pub async fn register(registry: &ToolRegistry) {
                         }) as Box<dyn Fn(String) + Send>
                     });
 
+                    // 创建取消信号：从 args 中提取 session_id 并查找对应的 cancel flag
+                    let cancel_flag = args.get("_session_id")
+                        .and_then(|v| v.as_str())
+                        .and_then(|sid| {
+                            crate::APP_STATE.try_read().ok().and_then(|state| {
+                                state.cancel_map.get(sid).cloned()
+                            })
+                        });
+
                     let result = crate::tools::execute::execute_command_safe(
                         command,
                         &resolved_workdir,
                         timeout,
                         chunk_cb,
                         &[],
+                        cancel_flag.clone(),
                     );
 
                     if result.blocked {
@@ -123,16 +124,32 @@ pub async fn register(registry: &ToolRegistry) {
                         ));
                     }
 
-                    let mut output = String::new();
-                    output.push_str(&result.stdout);
+                    // 截断 stdout：只保留最后 300 字符（安装过程、进度条等对 LLM 无用）
+                    let stdout = &result.stdout;
+                    let truncated = if stdout.len() > 300 {
+                        let mut pos = 300;
+                        while !stdout.is_char_boundary(pos) { pos -= 1; }
+                        format!("...\n{}", &stdout[stdout.len() - pos..])
+                    } else {
+                        stdout.to_string()
+                    };
 
+                    let mut output = truncated;
                     if let Some(code) = result.exit_code {
                         if code != 0 {
                             output.push_str(&format!("\n\n[Exit code: {}]", code));
                         }
                     }
                     if result.timed_out {
-                        output.push_str(&format!("\n\n[Command timed out after {}s]", timeout));
+                        // 区分"被取消"和"超时"
+                        let is_cancelled = cancel_flag.as_ref()
+                            .map(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+                            .unwrap_or(false);
+                        if is_cancelled {
+                            output.push_str("\n\n[命令已被用户取消]");
+                        } else {
+                            output.push_str(&format!("\n\n[Command timed out after {}s]", timeout));
+                        }
                     }
 
                     Ok(output)

@@ -340,7 +340,7 @@ impl ToolRegistry {
             "write_file" | "edit_file" => 60,
             "glob" | "list_dir" | "rename_file" => 30,
             "web_search" => 60,
-            "execute_command" => 300, // 命令执行最多 5 分钟
+            "execute_command" => 999999, // 命令执行等待完成，不设严格超时（约 11.5 天）
             _ => 120,
         };
         let timeout = std::time::Duration::from_secs(timeout_secs);

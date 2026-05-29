@@ -71,7 +71,7 @@ pub fn submit(command: &str, workdir: PathBuf, timeout_secs: u64) -> String {
     let wd = workdir.clone();
     let task_id = id.clone();
     std::thread::spawn(move || {
-        let result = crate::tools::execute::execute_command_safe(&cmd, &wd, timeout_secs, None, &[]);
+        let result = crate::tools::execute::execute_command_safe(&cmd, &wd, timeout_secs, None, &[], None);
 
         let now = chrono::Utc::now().to_rfc3339();
         if let Ok(mut tasks) = BG_TASK_MANAGER.lock() {

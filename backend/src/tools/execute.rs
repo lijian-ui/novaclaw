@@ -196,6 +196,7 @@ pub fn execute_sync(
     timeout_secs: u64,
     chunk_callback: Option<Box<dyn Fn(String) + Send>>,
     deny_patterns: &[String],
+    cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> CommandOutput {
     tracing::info!(
         "[ExecTool] Starting command: '{}' | workdir: {} | timeout: {}s",
@@ -328,6 +329,15 @@ pub fn execute_sync(
             break;
         }
 
+        // 检查用户取消信号
+        if let Some(ref flag) = cancel_flag {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                tracing::warn!("[ExecTool] Cancel requested by user");
+                timed_out = true; // 复用 timed_out 标志表示被取消
+                break;
+            }
+        }
+
         if last_warn_time.elapsed() > Duration::from_secs(5) {
             let elapsed = deadline.saturating_duration_since(Instant::now()).as_secs();
             tracing::debug!("[ExecTool] Waiting for command... timeout remaining: ~{}s", elapsed);
@@ -413,6 +423,7 @@ pub fn execute_command_safe(
     timeout_secs: u64,
     chunk_callback: Option<Box<dyn Fn(String) + Send>>,
     deny_patterns: &[String],
+    cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> CommandOutput {
     let command = command.to_string();
     let workdir = workdir.to_path_buf();
@@ -436,7 +447,7 @@ pub fn execute_command_safe(
     );
 
     std::thread::spawn(move || {
-        let result = execute_sync(&command, &workdir, timeout_secs, chunk_callback, &patterns);
+        let result = execute_sync(&command, &workdir, timeout_secs, chunk_callback, &patterns, cancel_flag);
         if result.blocked {
             tracing::warn!("[ExecTool] Result: BLOCKED - {}", result.block_reason);
         } else if result.timed_out {
