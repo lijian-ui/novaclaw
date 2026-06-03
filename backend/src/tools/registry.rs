@@ -70,9 +70,9 @@ impl CircuitBreaker {
         }
     }
 
-    /// 使用默认参数创建熔断器（3次失败 / 30秒冷却 / 2次成功恢复）
+    /// 使用默认参数创建熔断器（10次失败 / 10秒冷却 / 2次成功恢复）
     pub fn default_config() -> Self {
-        Self::new(3, 30, 2)
+        Self::new(10, 10, 2)
     }
 
     /// 执行前检查熔断器状态
@@ -208,6 +208,10 @@ pub struct ToolDef {
     pub display_name: String,
     pub description: String,
     pub parameters: Value,
+    /// 截断时跳过保存到磁盘（用于可能泄露密钥或结果无意义的工具）
+    /// 参考 Reasonix 的 skipTruncationSave 字段
+    #[allow(dead_code)]
+    pub skip_truncation_save: bool,
     pub handler: Arc<dyn Fn(Value, Option<mpsc::UnboundedSender<String>>) -> Result<String, String> + Send + Sync>,
 }
 
@@ -311,12 +315,18 @@ impl ToolRegistry {
 
     /// 执行工具（受熔断器 + 超时 + spawn_blocking 保护）
     /// `chunk_tx` 可选：用于流式输出（如 execute_command 的实时终端输出）
+    ///
+    /// # 截断与保存（参考 Reasonix tools.ts dispatch()）
+    /// 工具结果超过 token 上限时：
+    /// 1. 将完整内容保存到 `<workspace>/.novaclaw/truncated-results/` 目录
+    /// 2. 截断消息末尾附上文件路径，LLM 可用 read_file 读取完整内容
+    /// 3. 跳过保存的工具：memory、todo_write 等（可能含敏感信息或结果无意义）
     pub async fn execute(&self, name: &str, mut args: Value, workspace: Option<&str>, chunk_tx: Option<mpsc::UnboundedSender<String>>) -> Result<super::types::ToolResult, String> {
-        let (handler, circuit_breaker) = {
+        let (handler, circuit_breaker, skip_truncation_save) = {
             let tools = self.tools.read().await;
             let cbs = self.circuit_breakers.read().await;
             match tools.get(name) {
-                Some(tool) => (tool.handler.clone(), cbs.get(name).cloned()),
+                Some(tool) => (tool.handler.clone(), cbs.get(name).cloned(), tool.skip_truncation_save),
                 None => return Err(format!("未知工具: {}", name)),
             }
         };
@@ -355,27 +365,56 @@ impl ToolRegistry {
             Err(_) => Err(format!("Tool '{}' timed out after {}s", name, timeout_secs)),
         };
 
-        // 将 String 结果转换为 ToolResult
-        // 特殊的 JSON 格式 `{"__type":"PendingApproval",...}` 表示需要确认
+        // 将 String 结果转换为 ToolResult，并在截断时保存完整内容到磁盘
         let result = match raw_result {
             Ok(s) => {
+                // ── PendingApproval 检测 ──
                 if let Ok(val) = serde_json::from_str::<Value>(&s) {
                     if val.get("__type").and_then(|v| v.as_str()) == Some("PendingApproval") {
                         if let Some(approval) = val.get("approval") {
                             if let Ok(apr) = serde_json::from_value::<super::types::ApprovalRequired>(approval.clone()) {
-                                Ok(super::types::ToolResult::PendingApproval(apr))
-                            } else {
-                                Ok(super::types::ToolResult::Success(s))
+                                return Ok(super::types::ToolResult::PendingApproval(apr));
                             }
-                        } else {
-                            Ok(super::types::ToolResult::Success(s))
                         }
-                    } else {
-                        Ok(super::types::ToolResult::Success(s))
+                        return Ok(super::types::ToolResult::Success(s));
+                    }
+                }
+
+                // ── 截断 + 磁盘保存（参考 Reasonix dispatch()） ──
+                // 阈值：800 tokens（与 runtime.rs 的 TOOL_RESULT_TOKEN_LIMIT 一致）
+                const MAX_RESULT_TOKENS: u64 = 800;
+                let estimated = crate::llm::tokenizer::estimate_string_tokens(&s);
+
+                let final_str = if estimated > MAX_RESULT_TOKENS
+                    && !super::truncated_result_saver::should_skip_save(name, skip_truncation_save)
+                {
+                    // 1. 保存完整内容到磁盘
+                    let ws = workspace.unwrap_or(".");
+                    let save_path = super::truncated_result_saver::save_truncated_result(&s, name, ws);
+
+                    // 2. 截断内容（head + tail，参考 Reasonix truncateForModelByTokens）
+                    let truncated = truncate_by_tokens_with_tail(&s, MAX_RESULT_TOKENS);
+
+                    // 3. 在截断消息末尾附上文件路径
+                    match save_path {
+                        Some(rel_path) => {
+                            format!(
+                                "{}\n\n[…结果已截断，原始约 {} tokens，保留约 {} tokens]\n[完整结果已保存至: {} — 可用 read_file 读取]",
+                                truncated, estimated, MAX_RESULT_TOKENS, rel_path
+                            )
+                        }
+                        None => {
+                            format!(
+                                "{}\n\n[…结果已截断，原始约 {} tokens，保留约 {} tokens]",
+                                truncated, estimated, MAX_RESULT_TOKENS
+                            )
+                        }
                     }
                 } else {
-                    Ok(super::types::ToolResult::Success(s))
-                }
+                    s
+                };
+
+                Ok(super::types::ToolResult::Success(final_str))
             }
             Err(e) => Err(e),
         };
@@ -384,7 +423,7 @@ impl ToolRegistry {
         if let Some(ref cb) = circuit_breaker {
             let is_success = match &result {
                 Ok(super::types::ToolResult::Success(_)) => true,
-                Ok(super::types::ToolResult::PendingApproval(_)) => true, // 确认请求不算失败
+                Ok(super::types::ToolResult::PendingApproval(_)) => true,
                 Err(_) => false,
             };
             cb.after_call(is_success);
@@ -469,5 +508,55 @@ impl ToolRegistry {
         } else {
             false
         }
+    }
+}
+
+/// 按 token 数截断字符串，保留头部 + 尾部（参考 Reasonix truncateForModelByTokens）
+///
+/// - 头部：90% 的 token 预算
+/// - 尾部：10% 的 token 预算（保留错误消息、堆栈末尾等关键信息）
+/// - 中间插入截断标记
+fn truncate_by_tokens_with_tail(s: &str, max_tokens: u64) -> String {
+    let estimated = crate::llm::tokenizer::estimate_string_tokens(s);
+    if estimated <= max_tokens {
+        return s.to_string();
+    }
+
+    // 尾部预算：10%，最多 200 tokens（避免尾部占比过大）
+    let tail_budget = (max_tokens / 10).min(200);
+    let head_budget = max_tokens.saturating_sub(tail_budget);
+
+    // 按比例估算字符数
+    let ratio = s.len() as f64 / estimated as f64;
+    let head_chars = (head_budget as f64 * ratio * 0.95) as usize;
+    let tail_chars = (tail_budget as f64 * ratio * 0.95) as usize;
+
+    // 安全截断（避免 UTF-8 字符边界）
+    let mut head_end = head_chars.min(s.len());
+    while head_end > 0 && !s.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+
+    let tail_start = if tail_chars > 0 && s.len() > tail_chars {
+        let mut start = s.len() - tail_chars;
+        while start < s.len() && !s.is_char_boundary(start) {
+            start += 1;
+        }
+        start
+    } else {
+        s.len() // 没有尾部
+    };
+
+    let head = &s[..head_end];
+    let tail = if tail_start < s.len() { &s[tail_start..] } else { "" };
+    let dropped_chars = s.len().saturating_sub(head.len() + tail.len());
+
+    if tail.is_empty() {
+        format!("{}\n\n[…截断了约 {} chars]", head, dropped_chars)
+    } else {
+        format!(
+            "{}\n\n[…截断了约 {} chars…]\n\n{}",
+            head, dropped_chars, tail
+        )
     }
 }

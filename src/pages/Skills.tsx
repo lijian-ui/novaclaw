@@ -7,7 +7,7 @@ import { Wrench, Trash2, ToggleLeft, ToggleRight } from 'lucide-react'
 
 export function Skills() {
   const [skills, setSkills] = useState<Skill[]>([])
-  const { listSkills, deleteSkill } = useApi()
+  const { listSkills, deleteSkill, toggleSkill } = useApi()
 
   useEffect(() => {
     loadSkills()
@@ -19,6 +19,15 @@ export function Skills() {
       setSkills(result)
     } catch (error) {
       console.error('Failed to load skills:', error)
+    }
+  }
+
+  const handleToggle = async (id: string) => {
+    try {
+      const enabled = await toggleSkill(id)
+      setSkills(prev => prev.map(s => s.id === id ? { ...s, enabled } : s))
+    } catch (error) {
+      console.error('Failed to toggle skill:', error)
     }
   }
 
@@ -90,7 +99,9 @@ export function Skills() {
                     </div>
                     <div className="flex items-center gap-3">
                       <button
-                        className={`p-2 rounded-lg transition-colors ${skill.enabled ? 'bg-green-100 text-green-600' : 'bg-muted-foreground/10 text-muted-foreground'}`}
+                        className={`p-2 rounded-lg transition-colors cursor-pointer ${skill.enabled ? 'bg-green-100 text-green-600 hover:bg-green-200' : 'bg-muted-foreground/10 text-muted-foreground hover:bg-muted-foreground/20'}`}
+                        onClick={() => handleToggle(skill.id)}
+                        title={skill.enabled ? '点击停用' : '点击启用'}
                       >
                         {skill.enabled ? <ToggleRight className="w-5 h-5" /> : <ToggleLeft className="w-5 h-5" />}
                       </button>

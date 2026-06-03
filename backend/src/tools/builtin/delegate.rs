@@ -23,6 +23,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["agent_id", "task"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  chunk_tx: Option<
@@ -48,6 +49,8 @@ pub async fn register(registry: &ToolRegistry) {
                         );
                     }
 
+                    let workspace = args["_workspace"].as_str().map(|s| s.to_string());
+
                     // 在新的线程 + tokio runtime 中运行异步子 Agent
                     let rt = tokio::runtime::Runtime::new()
                         .map_err(|e| format!("Failed to create runtime: {}", e))?;
@@ -60,64 +63,79 @@ pub async fn register(registry: &ToolRegistry) {
                         .map_err(|e| format!("读取智能体 '{}' SOUL.md 失败: {}", agent_id, e))?;
 
                     tracing::info!(
-                        "[SubAgent] 委托任务给 '{}' ({}): {}",
+                        "[SubAgent] 委托任务给 '{}' ({}): {} | 工作目录: {:?}",
                         agent_config.id,
                         agent_config.name,
-                        task
+                        task,
+                        workspace
                     );
 
                     let result = rt.block_on(async {
-                        let state = crate::APP_STATE.read().await;
-
-                        // 确定使用的模型
-                        let model_to_use = match agent_config.model.clone() {
-                            Some(m) => m,
-                            None => state.models_config.default_model.clone(),
-                        };
-
-                        // 获取 provider 和 config
-                        let (provider, config, full_registry) = {
+                        // 尽量缩短持有锁的时间
+                        let (model_to_use, provider, config, full_registry, models_config, subagent_soul) = {
+                            let state = crate::APP_STATE.read().await;
+                            let model = match agent_config.model.clone() {
+                                Some(m) => m,
+                                None => state.models_config.default_model.clone(),
+                            };
                             let provider = state
                                 .models_config
-                                .find_provider_by_model(&model_to_use)
+                                .find_provider_by_model(&model)
                                 .ok_or_else(|| {
-                                    format!("未找到模型 '{}' 的提供商配置", model_to_use)
+                                    format!("未找到模型 '{}' 的提供商配置", model)
                                 })?
                                 .clone();
-                            (provider, state.config.clone(), state.tool_registry.clone())
+                            let models_config = state.models_config.clone();
+
+                            // 生成专用灵魂
+                            let subagent_soul = crate::agent::prompt::SystemPromptBuilder::new(
+                                &state.config,
+                                "Unknown",
+                                workspace.as_deref()
+                            ).build_subagent_prompt(&agent_id, &task);
+
+                            (model, provider, state.config.clone(), state.tool_registry.clone(), models_config, subagent_soul)
                         };
 
                         let llm_client =
                             crate::llm::client::LlmClient::new(provider, config.llm_timeout)
                                 .map_err(|e| format!("创建 LLM 客户端失败: {}", e))?;
 
-                        let sub_tools = if agent_config.enabled_tools.is_empty() {
-                            full_registry
-                        } else {
-                            full_registry.filter_by_names(&agent_config.enabled_tools).await
+                        // 强力限制子 Agent 工具集：禁止写操作，强制搜索操作
+                        let sub_tools = {
+                            let mut tools_to_enable = if agent_config.enabled_tools.is_empty() {
+                                vec!["read_file".to_string(), "list_dir".to_string(), "grep".to_string(), "glob".to_string()]
+                            } else {
+                                agent_config.enabled_tools.clone()
+                            };
+
+                            // 强制添加分析类工具
+                            for core_tool in &["grep", "list_dir", "read_file", "glob", "pin_file"] {
+                                if !tools_to_enable.contains(&core_tool.to_string()) {
+                                    tools_to_enable.push(core_tool.to_string());
+                                }
+                            }
+
+                            // 强制移除写和执行工具（除非是 code-reviewer 显式需要执行测试）
+                            if agent_id == "code-explorer" || agent_id == "web-researcher" {
+                                tools_to_enable.retain(|t| t != "write_file" && t != "execute_command" && t != "apply_patch");
+                            }
+
+                            full_registry.filter_by_names(&tools_to_enable).await
                         };
 
                         let mut sub_session = crate::agent::session::AgentSession::new(
                             &agent_config.name,
                             &model_to_use,
-                            None,
+                            workspace.as_deref(),
                         );
-                        sub_session.system_prompt_override = Some(soul_content);
+                        sub_session.system_prompt_override = Some(subagent_soul);
                         sub_session.push_user(&task);
 
                         let mut sub_config = config.clone();
-                        sub_config.max_iterations = agent_config.max_iterations as usize;
-                        if let Some(t) = agent_config.temperature {
-                            sub_config.temperature = t;
-                        }
-                        if let Some(c) = agent_config.compact_threshold {
-                            sub_config.compact_threshold = c;
-                        }
-                        if let Some(c) = agent_config.compact_keep {
-                            sub_config.compact_keep = c;
-                        }
-
-                        let models_config = state.models_config.clone();
+                        // 强力限制步数：子 Agent 不允许超过 15 步
+                        sub_config.max_iterations = 15; 
+                        
                         let mut agent = crate::agent::runtime::AgentRuntime::new(
                             sub_session,
                             llm_client,

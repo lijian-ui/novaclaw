@@ -1,6 +1,6 @@
 use axum::{
     extract::Path,
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use crate::APP_STATE;
@@ -8,7 +8,8 @@ use crate::APP_STATE;
 /// 列出所有技能
 async fn list_skills() -> Json<serde_json::Value> {
     let state = APP_STATE.read().await;
-    let skills = state.skills_loader.list_skills();
+    let mut skills = state.skills_loader.list_skills();
+    crate::skills::loader::SkillsLoader::apply_enabled_states(&mut skills, &state.config.skills);
     // 转换为前端期望格式
     let skill_list: Vec<serde_json::Value> = skills
         .into_iter()
@@ -29,7 +30,13 @@ async fn list_skills() -> Json<serde_json::Value> {
 /// 获取指定技能
 async fn get_skill(Path(id): Path<String>) -> Json<serde_json::Value> {
     let state = APP_STATE.read().await;
-    match state.skills_loader.get_skill(&id) {
+    let mut skill = state.skills_loader.get_skill(&id);
+    if let Some(ref mut s) = skill {
+        if let Some(&enabled) = state.config.skills.get(&s.name) {
+            s.enabled = enabled;
+        }
+    }
+    match skill {
         Some(skill) => Json(serde_json::json!({
             "success": true,
             "data": {
@@ -178,10 +185,30 @@ async fn upload_skill(
     }))
 }
 
+/// 切换技能的启用/停用状态（存储在全局 config 的 skills map 中）
+async fn toggle_skill(Path(id): Path<String>) -> Json<serde_json::Value> {
+    let mut state = APP_STATE.write().await;
+    // 先验证技能是否存在
+    if state.skills_loader.get_skill(&id).is_none() {
+        return Json(serde_json::json!({ "success": false, "message": "技能未找到" }));
+    }
+    let current = state.config.skills.get(&id).copied().unwrap_or(true);
+    let new_state = !current;
+    state.config.skills.insert(id.clone(), new_state);
+    if let Err(e) = state.config.save() {
+        return Json(serde_json::json!({ "success": false, "message": format!("保存配置失败: {}", e) }));
+    }
+    Json(serde_json::json!({
+        "success": true,
+        "data": { "enabled": new_state }
+    }))
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route("/skills", get(list_skills))
         .route("/skills/upload", post(upload_skill))
         .route("/skills/:id", get(get_skill))
         .route("/skills/:id", delete(delete_skill))
+        .route("/skills/:id/toggle", put(toggle_skill))
 }

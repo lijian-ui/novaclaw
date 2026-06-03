@@ -104,17 +104,31 @@ pub fn format_im_message(msg: &IncomingMessage) -> String {
 pub struct IMSessionManager {
     /// 会话来源 → Agent session ID 映射
     mapping: RwLock<HashMap<SessionSource, String>>,
+    /// 会话互斥锁：防止同一会话并发处理导致状态冲突
+    locks: RwLock<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// 会话持久化存储
     session_store: SessionStore,
 }
+
+use std::sync::Arc;
 
 impl IMSessionManager {
     pub fn new(session_store: SessionStore) -> Self {
         Self {
             mapping: RwLock::new(HashMap::new()),
+            locks: RwLock::new(HashMap::new()),
             session_store,
         }
     }
+
+    /// 获取会话的互斥锁（用于并发控制）
+    pub async fn get_session_lock(&self, session_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.locks.write().await;
+        locks.entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
 
     /// 获取或创建会话（使用确定性 session_id，重启后仍能恢复同一会话）
     pub async fn get_or_create(
@@ -159,7 +173,9 @@ impl IMSessionManager {
                     again_reasonings: None,
                     reasoning: None,
                     images: None,
+                    weight: 0,
                 });
+
             }
             // 刷新缓存
             {

@@ -2,8 +2,16 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { ScrollText, Trash2, Info, AlertTriangle, XCircle, Bug } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { getApiBase } from '@/hooks/useApi'
 
-const WS_URL = 'ws://127.0.0.1:3000/ws/logs'
+function getLogsWsUrl(): string {
+  const apiBase = getApiBase()
+  if (apiBase.startsWith('http://') || apiBase.startsWith('https://')) {
+    return apiBase.replace(/^http/, 'ws').replace(/\/api$/, '/ws/logs')
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}/ws/logs`
+}
 
 type LogLevel = 'all' | 'info' | 'warn' | 'error' | 'debug'
 
@@ -37,7 +45,7 @@ export function LogPanel() {
   const wsRef = useRef<WebSocket | null>(null)
 
   useEffect(() => {
-    const ws = new WebSocket(WS_URL)
+    const ws = new WebSocket(getLogsWsUrl())
     wsRef.current = ws
 
     ws.onopen = () => setConnected(true)

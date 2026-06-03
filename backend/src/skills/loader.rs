@@ -88,6 +88,22 @@ impl SkillsLoader {
         Ok(())
     }
 
+    /// 根据全局 config 的 skills map 覆盖 enabled 状态
+    pub fn apply_enabled_states(skills: &mut [SkillDef], enabled_map: &std::collections::HashMap<String, bool>) {
+        for skill in skills.iter_mut() {
+            if let Some(&enabled) = enabled_map.get(&skill.name) {
+                skill.enabled = enabled;
+            }
+        }
+    }
+
+    /// 过滤出已启用的技能（基于全局 config 的 skills map）
+    pub fn filter_enabled(skills: Vec<SkillDef>, enabled_map: &std::collections::HashMap<String, bool>) -> Vec<SkillDef> {
+        let mut result = skills;
+        Self::apply_enabled_states(&mut result, enabled_map);
+        result.into_iter().filter(|s| s.enabled).collect()
+    }
+
     /// 安装/创建新技能
     pub fn install_skill(&self, skill: &SkillDef) -> Result<(), String> {
         let skill_dir = self.skills_dir.join(&skill.name);

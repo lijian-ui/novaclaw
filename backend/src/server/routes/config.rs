@@ -11,7 +11,17 @@ async fn get_config() -> Json<serde_json::Value> {
 
     Json(serde_json::json!({
         "success": true,
-        "data": config,
+        "data": {
+            "port": config.port,
+            "host": config.host,
+            "max_iterations": config.max_iterations,
+            "compact_threshold": config.compact_threshold,
+            "compact_keep": config.compact_keep,
+            "temperature": config.temperature,
+            "deny_patterns": config.deny_patterns,
+            "shell_allowlist": config.shell_allowlist,
+            "memories_dir": config.memories_dir().to_string_lossy(),
+        },
     }))
 }
 

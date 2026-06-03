@@ -15,11 +15,18 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const { listSkills, deleteSkill, uploadSkill, loading } = useApi()
+  const { listSkills, deleteSkill, uploadSkill, toggleSkill, loading } = useApi()
 
   const loadSkills = useCallback(() => {
     listSkills().then(setSkills).catch(() => {})
   }, [listSkills])
+
+  const handleToggle = useCallback(async (id: string) => {
+    try {
+      const enabled = await toggleSkill(id)
+      setSkills(prev => prev.map(s => s.id === id ? { ...s, enabled } : s))
+    } catch {}
+  }, [toggleSkill])
 
   useEffect(() => {
     loadSkills()
@@ -128,6 +135,15 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => handleToggle(skill.id)}
+                    className={`relative w-7 h-3.5 rounded-full transition-colors mx-1 ${skill.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
+                    title={skill.enabled ? '点击停用' : '点击启用'}
+                  >
+                    <div
+                      className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-foreground transition-transform ${skill.enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`}
+                    />
+                  </button>
                   <button
                     onClick={() => setShowDeleteConfirm(skill.id)}
                     className="p-1 rounded hover:bg-red-500/10 transition-colors"

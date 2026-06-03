@@ -48,6 +48,7 @@ pub async fn register(registry: &ToolRegistry, tinyfish_api_key: &Option<String>
                 },
                 "required": ["query"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 move |args: serde_json::Value,
                       _chunk_tx: Option<

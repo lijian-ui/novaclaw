@@ -69,6 +69,7 @@ Examples:
                 },
                 "required": ["action", "soul"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 move |args: serde_json::Value,
                       _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>|

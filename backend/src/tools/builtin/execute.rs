@@ -28,6 +28,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["command"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  chunk_tx: Option<

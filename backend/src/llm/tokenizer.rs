@@ -15,14 +15,19 @@ use crate::llm::types::ChatMessage;
 
 /// 估算字符串的 Token 数
 ///
-/// 使用加权字符计数法：
-/// - ASCII 字符（英文、数字、标点）：1 token / 4 字符
-/// - 非 ASCII 字符（中文等）：1 token / 2 字符
-/// - 空白字符：1 token / 6 字符
+/// 优先使用 tiktoken-rs 进行精确计数（cl100k_base 编码），
+/// 如果初始化失败，则回退到加权字符计数法。
 pub fn estimate_string_tokens(s: &str) -> u64 {
     if s.is_empty() {
         return 0;
     }
+
+    // 尝试精确计数 (tiktoken cl100k_base)
+    if let Ok(bpe) = tiktoken_rs::cl100k_base() {
+        return bpe.encode_with_special_tokens(s).len() as u64;
+    }
+
+    // 备选方案：加权字符计数法
     let mut ascii_count = 0u64;
     let mut non_ascii_count = 0u64;
     let mut space_count = 0u64;

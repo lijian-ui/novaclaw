@@ -508,6 +508,7 @@ pub async fn register_tools(registry: &crate::tools::registry::ToolRegistry) {
             display_name: entry_name.clone(),
             description: full_description,
             parameters: input_schema,
+            skip_truncation_save: false,
             handler,
         };
 

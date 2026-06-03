@@ -112,13 +112,42 @@ impl From<&super::session::AgentMessage> for LogEntry {
             }
         });
 
+        // 聚合所有推理内容字段（first_reasoning, again_reasonings, reasoning）
+        let mut aggregated_reasoning = String::new();
+        if let Some(ref r) = msg.first_reasoning {
+            aggregated_reasoning.push_str(r);
+        }
+        if let Some(ref rs) = msg.again_reasonings {
+            for r in rs {
+                if !aggregated_reasoning.is_empty() {
+                    aggregated_reasoning.push_str("\n\n");
+                }
+                aggregated_reasoning.push_str(r);
+            }
+        }
+        if let Some(ref r) = msg.reasoning {
+             if !aggregated_reasoning.is_empty() && !r.is_empty() {
+                 if !aggregated_reasoning.contains(r) {
+                    aggregated_reasoning.push_str("\n\n");
+                    aggregated_reasoning.push_str(r);
+                 }
+             } else if aggregated_reasoning.is_empty() {
+                 aggregated_reasoning.push_str(r);
+             }
+        }
+        let reasoning_content = if aggregated_reasoning.is_empty() { None } else { Some(aggregated_reasoning) };
+
         LogEntry {
             role: msg.role.clone(),
             content: msg.content.clone(),
             tool_calls,
-            tool_call_id: msg.tool_call_id.clone(),
+            tool_call_id: if msg.role == "tool" {
+                Some(msg.tool_call_id.clone().unwrap_or_else(|| "missing_id".to_string()))
+            } else {
+                msg.tool_call_id.clone()
+            },
             name: msg.tool_name.clone(),
-            reasoning_content: msg.reasoning.clone(),
+            reasoning_content,
         }
     }
 }
@@ -179,6 +208,7 @@ mod tests {
             again_reasonings: None,
             reasoning: None,
             images: None,
+            weight: 0,
         };
         let entry: LogEntry = (&msg).into();
         assert!(entry.tool_calls.is_none(), "空 tool_calls 应转换为 None");
@@ -214,6 +244,7 @@ mod tests {
             again_reasonings: None,
             reasoning: Some("deepseek reasoning content".to_string()),
             images: None,
+            weight: 0,
         };
         let entry: LogEntry = (&msg).into();
         assert_eq!(entry.reasoning_content, Some("deepseek reasoning content".to_string()),

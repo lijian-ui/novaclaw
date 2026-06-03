@@ -148,7 +148,6 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const currentSessionIdRef = useRef(currentSession?.id)
   const lastSyncMsgCountRef = useRef(0)
 
-
   // 当切换会话时：立即清空本地消息和 Token 统计，防止显示旧会话数据
   useEffect(() => {
     const newId = currentSession?.id
@@ -602,7 +601,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     }).catch(() => {})
 
     // 加载智能体列表
-    fetch('http://127.0.0.1:3000/api/agents').then(r => r.json()).then(body => {
+    fetch(`${getApiBase()}/agents`).then(r => r.json()).then(body => {
       if (body.success && Array.isArray(body.data)) {
         const profiles: { id: string; name: string }[] = body.data.map((a: any) => ({ id: a.id, name: a.name }))
         setAgentProfiles(profiles)
@@ -691,6 +690,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
       {
         onChunk: (chunk) => {
           streamingContentRef.current += chunk
+          // 流式内容不管切不切会话都要更新（会话恢复时需要）
           setStreamingContent(streamingContentRef.current)
 
           // 从流式内容中提取 <think> 标签内容，实时显示思考过程
@@ -1502,7 +1502,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
                                 onClick={() => {
                                   setSelectedAgent(agent.id)
                                   localStorage.setItem('jeeves-selected-agent', agent.id)
-                                  fetch(`http://127.0.0.1:3000/api/set-agent/${encodeURIComponent(agent.id)}`)
+                                  fetch(`${getApiBase()}/set-agent/${encodeURIComponent(agent.id)}`)
                                   setAgentOpen(false)
                                 }}
                               >

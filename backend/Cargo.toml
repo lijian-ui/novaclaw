@@ -89,7 +89,15 @@ async-trait = "0.1"
 # PTY 伪终端（命令执行工具）
 portable-pty = "0.8"
 
+# AST 级符号提取
+tree-sitter = "0.20"
+tree-sitter-rust = "0.20"
+
+# 精确 Token 计量
+tiktoken-rs = "0.5"
+
 # MCP (Model Context Protocol) 客户端
+
 rmcp = { version = "1.7", features = ["client", "transport-child-process", "transport-streamable-http-client"] }
 
 

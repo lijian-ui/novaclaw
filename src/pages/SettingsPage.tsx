@@ -8,6 +8,9 @@ import {
   Globe,
   ChevronRight,
   Shield,
+  Brain,
+  Save,
+  Loader2,
 } from 'lucide-react'
 import { useTheme } from '@/contexts/ThemeContext'
 import { useTranslation } from 'react-i18next'
@@ -25,6 +28,7 @@ const sections: SettingsSection[] = [
   { id: 'appearance', titleKey: 'settings.appearance', icon: Palette, iconColor: 'text-violet-400' },
   { id: 'security', titleKey: 'settings.security', icon: Shield, iconColor: 'text-red-400' },
   { id: 'language', titleKey: 'settings.language', icon: Globe, iconColor: 'text-emerald-400' },
+  { id: 'memory', titleKey: 'settings.memory', icon: Brain, iconColor: 'text-amber-400' },
 ]
 
 interface AppConfig {
@@ -46,6 +50,14 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
   const [activeSection, setActiveSection] = useState<string | null>(null)
 
   const securityTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const memoryTextareaRef = useRef<HTMLTextAreaElement>(null)
+  // 记忆管理
+  const [memoryContent, setMemoryContent] = useState('')
+  const [memoryPath, setMemoryPath] = useState('')
+  const [memoryLoading, setMemoryLoading] = useState(false)
+  const [memorySaving, setMemorySaving] = useState(false)
+  const [memoryStatus, setMemoryStatus] = useState<'idle' | 'saved' | 'error'>('idle')
+  const [memoriesDir, setMemoriesDir] = useState('')
 
   // Agent 配置
   const [config, setConfig] = useState<AppConfig | null>(null)
@@ -56,9 +68,34 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
     fetch(`${getApiBase()}/config`).then(r => r.json()).then(body => {
       if (body.success && body.data) {
         setConfig(body.data)
+        if (body.data.memories_dir) {
+          setMemoriesDir(body.data.memories_dir)
+        }
       }
     }).catch(() => {})
   }, [])
+
+  // 进入记忆页面时加载 MEMORY.md
+  useEffect(() => {
+    if (activeSection === 'memory' && memoriesDir) {
+      const memPath = `${memoriesDir}/MEMORY.md`
+      setMemoryPath(memPath)
+      setMemoryLoading(true)
+      fetch(`${getApiBase()}/files/read`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: memPath }),
+      }).then(r => r.json()).then(body => {
+        if (body.success) {
+          setMemoryContent(body.data || '')
+        } else {
+          setMemoryContent('')
+        }
+      }).catch(() => {
+        setMemoryContent('')
+      }).finally(() => setMemoryLoading(false))
+    }
+  }, [activeSection, memoriesDir])
 
   // 进入安全页面时自动撑开黑名单输入框
   useEffect(() => {
@@ -184,6 +221,68 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
     </div>
   )
 
+  const saveMemory = useCallback(async () => {
+    if (!memoryPath) return
+    setMemorySaving(true)
+    try {
+      const res = await fetch(`${getApiBase()}/files/write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: memoryPath, content: memoryContent }),
+      })
+      const body = await res.json()
+      if (body.success) {
+        setMemoryStatus('saved')
+        setTimeout(() => setMemoryStatus('idle'), 2500)
+      } else {
+        setMemoryStatus('error')
+        setTimeout(() => setMemoryStatus('idle'), 3000)
+      }
+    } catch {
+      setMemoryStatus('error')
+      setTimeout(() => setMemoryStatus('idle'), 3000)
+    }
+    setMemorySaving(false)
+  }, [memoryPath, memoryContent])
+
+  const renderMemory = () => (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
+        <label className="text-sm font-medium text-foreground/90 mb-1 block">持久记忆</label>
+        <p className="text-xs text-foreground/40 mb-3">
+          编辑 <code className="text-amber-400">MEMORY.md</code> 文件，保存跨会话的持久记忆。Agent 会在对话中参考这些信息。
+        </p>
+        {memoryLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-5 h-5 text-foreground/30 animate-spin" />
+          </div>
+        ) : (
+          <textarea
+            ref={memoryTextareaRef}
+            spellCheck={false}
+            value={memoryContent}
+            onChange={e => setMemoryContent(e.target.value)}
+            placeholder="# 我的记忆&#10;&#10;- 用户偏好: ...&#10;- 项目约定: ...&#10;- 技术选型: ..."
+            className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm font-mono text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors resize-y min-h-[300px]"
+          />
+        )}
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={saveMemory}
+          disabled={memorySaving || memoryLoading}
+          className="flex items-center gap-2 px-6 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-sm text-white font-medium transition-colors"
+        >
+          {memorySaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+          {memorySaving ? '保存中...' : memoryStatus === 'saved' ? '已保存' : '保存记忆'}
+        </button>
+        {memoryStatus === 'error' && (
+          <span className="text-xs text-red-400/80">保存失败</span>
+        )}
+      </div>
+    </div>
+  )
+
   const renderSecurity = () => (
     <div className="space-y-4">
       {/* 危险命令黑名单 */}
@@ -230,6 +329,7 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
       case 'appearance': return renderAppearance()
       case 'security': return renderSecurity()
       case 'language': return renderLanguage()
+      case 'memory': return renderMemory()
       default: return null
     }
   }

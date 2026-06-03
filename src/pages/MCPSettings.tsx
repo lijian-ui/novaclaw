@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Plus, Trash2, Plug, X, ChevronRight, ChevronDown, Wrench, ArrowLeft, RefreshCw, Power, PowerOff, Loader2, Pencil } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-const API = 'http://127.0.0.1:3000/api/mcp'
+const API = 'http://127.0.0.1:5173/api/mcp'
 
 interface McpTool {
   name: string

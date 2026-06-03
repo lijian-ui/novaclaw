@@ -13,7 +13,7 @@ interface LogEntry {
   task_id?: string | null
 }
 
-const WS_URL = 'ws://127.0.0.1:3000/ws/logs'
+const WS_URL = 'ws://127.0.0.1:5173/ws/logs'
 
 const levelConfig: Record<string, { label: string; icon: React.ElementType; color: string }> = {
   all: { label: '全部', icon: Terminal, color: '' },

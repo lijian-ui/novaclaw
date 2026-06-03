@@ -2,7 +2,7 @@ import { useState, useCallback, useRef } from 'react'
 import axios from 'axios'
 import type { Session, Message, Model, Skill, CronJob, Layout, ChatRequest, ChatResponse, Config, ProviderConfig } from '@/types'
 
-// 后端地址：Tauri 桌面端直连 3000 端口，浏览器开发环境用 Vite proxy
+// 后端地址：Tauri 桌面端直连 5173 端口，浏览器开发环境用 Vite proxy
 export const getApiBase = (): string => {
   // Vite 的 import.meta.env.DEV 在开发模式下为 true，生产构建为 false
   // Tauri 桌面端使用生产构建，所以 DEV=false，走直连后端
@@ -13,7 +13,7 @@ export const getApiBase = (): string => {
     return '/api'
   }
   // Tauri 桌面端或生产环境：直连后端
-  return 'http://127.0.0.1:3000/api'
+  return 'http://127.0.0.1:5173/api'
 }
 
 const api = axios.create({
@@ -432,6 +432,20 @@ export function useApi() {
     }
   }, [handleError])
 
+  const toggleSkill = useCallback(async (id: string): Promise<boolean> => {
+    setLoading(true)
+    setError(null)
+    try {
+      const response = await api.put(`/skills/${id}/toggle`)
+      return response.data?.data?.enabled ?? false
+    } catch (err) {
+      handleError(err)
+      throw err
+    } finally {
+      setLoading(false)
+    }
+  }, [handleError])
+
   const listCronJobs = useCallback(async (): Promise<CronJob[]> => {
     setLoading(true)
     setError(null)
@@ -652,6 +666,7 @@ export function useApi() {
     getSkill,
     deleteSkill,
     uploadSkill,
+    toggleSkill,
     // Cron
     listCronJobs,
     createCronJob,

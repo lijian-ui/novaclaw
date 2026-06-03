@@ -129,6 +129,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["items"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -181,6 +182,7 @@ pub async fn register(registry: &ToolRegistry) {
                 "properties": {},
                 "required": []
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<

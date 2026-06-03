@@ -387,10 +387,12 @@ function CodeBlock({ className, children }: { className?: string; children: stri
 const markdownComponents: Components = {
   code({ className, children }: { className?: string; children?: React.ReactNode }) {
     const content = String(children).replace(/\n$/, '')
-    if (!className) {
+    // 无 className 且内容不含换行 → 内联代码（如 `console.log()`）
+    // 无 className 但含换行 → 无语言标签的代码块（如目录树），按代码块渲染
+    if (!className && !content.includes('\n')) {
       return <code className="px-1.5 py-0.5 rounded bg-foreground/10 text-[12px] text-emerald-500 font-mono">{children}</code>
     }
-    return <CodeBlock className={className}>{content}</CodeBlock>
+    return <CodeBlock className={className || 'language-'}>{content}</CodeBlock>
   },
   pre({ children }) { return <>{children}</> },
   p({ children, ...props }) { return <p className="text-sm text-foreground/80 leading-relaxed mb-2 last:mb-0" {...props}>{children}</p> },
@@ -896,8 +898,9 @@ export function ChatMessages({
 
   useEffect(() => {
     mermaid.initialize({ startOnLoad: false, theme: isDark ? 'dark' : 'default', securityLevel: 'loose' })
-    mermaid.run()
-  }, [isDark])
+    const timer = setTimeout(() => mermaid.run(), 100)
+    return () => clearTimeout(timer)
+  }, [isDark, messages])
 
   return (
     <div className="px-4 py-4 space-y-8">

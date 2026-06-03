@@ -114,6 +114,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["goal", "steps", "summary"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<

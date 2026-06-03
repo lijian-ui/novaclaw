@@ -17,7 +17,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 // 从 AppConfig 读取，保留默认值作为兜底
-pub const COMPACT_KEEP_LAST_FALLBACK: usize = 20;
+pub const COMPACT_KEEP_LAST_FALLBACK: usize = 40;
+
 // ReAct 循环安全硬上限（正常情况下不会达到，由上下文使用率驱动退出）
 pub const ITERATION_HARD_LIMIT: usize = 500;
 
@@ -154,7 +155,10 @@ pub struct AgentRuntime {
     consecutive_tool_failures: u32,
     /// 缓存工具定义 Schema（每个会话期间固定不变，确保前缀缓存稳定）
     cached_tool_schemas: Option<Vec<crate::tools::types::ToolDefinition>>,
+    /// 文件访问计数器，用于语义级"隐式钉住"
+    file_access_counts: HashMap<String, usize>,
 }
+
 
 impl AgentRuntime {
     pub fn new(
@@ -193,13 +197,15 @@ impl AgentRuntime {
             current_turn_pro: false,
             consecutive_tool_failures: 0,
             cached_tool_schemas: None,
+            file_access_counts: HashMap::new(),
         }
     }
+
 
     // ── 工具结果压缩阈值（超过此字符数的工具结果，在轮次结束后压缩） ──
     const TOOL_RESULT_COMPRESS_LIMIT: usize = 6000;
     // ── 工具结果 Token 上限（超过此 token 数则截断，适配中文场景） ──
-    const TOOL_RESULT_TOKEN_LIMIT: u64 = 2000;
+    const TOOL_RESULT_TOKEN_LIMIT: u64 = 800; // 降低：800 token ≈ 3200 英文字符 ≈ 1600 中文字符
 
     // ── 预检：消息历史总字符数触发压缩的阈值 ──
     const PREFLIGHT_CHAR_LIMIT: usize = 300_000;
@@ -210,6 +216,24 @@ impl AgentRuntime {
     const PREFLIGHT_LEVEL1_RATIO: f64 = 0.30; // ≥30% 告警
     const PREFLIGHT_LEVEL2_RATIO: f64 = 0.50; // ≥50% 折叠压缩（含 AI 摘要）
     const PREFLIGHT_LEVEL3_RATIO: f64 = 0.80; // ≥80% 紧急强制截断
+
+    /// 动态会话部分（Body After Prefix）的 Token 预算
+    /// 当消息历史中除了前 2 条（系统上下文）之外的部分超过此预算时，触发压缩。
+    /// 这有助于保持 DeepSeek 前缀缓存后的"动荡区"大小受控，提高处理效率。
+    const VOLATILE_BODY_TOKEN_BUDGET: u64 = 20_000;
+
+
+    // ── Post-usage 折叠阈值（基于真实 prompt_tokens，参考 Reasonix） ──
+    /// 真实 prompt_tokens / ctxMax ≥ 此值时，下一轮开始前触发折叠
+    const POST_USAGE_FOLD_THRESHOLD: f64 = 0.75;
+    /// 真实 prompt_tokens / ctxMax ≥ 此值时，激进折叠（保留更少尾部）
+    const POST_USAGE_FOLD_AGGRESSIVE_THRESHOLD: f64 = 0.78;
+    /// 真实 prompt_tokens / ctxMax ≥ 此值时，强制退出并生成摘要
+    const POST_USAGE_FORCE_SUMMARY_THRESHOLD: f64 = 0.85;
+    /// 正常折叠：保留上下文窗口的 20% 作为尾部
+    const POST_USAGE_FOLD_TAIL_FRACTION: f64 = 0.20;
+    /// 激进折叠：保留上下文窗口的 10% 作为尾部
+    const POST_USAGE_FOLD_AGGRESSIVE_TAIL_FRACTION: f64 = 0.10;
 
     pub async fn run_turn(
         &mut self,
@@ -267,7 +291,11 @@ impl AgentRuntime {
             user_input.to_string()
         };
 
+        // ── P0: 会话自我修复（防止孤立工具消息导致的 API 400 错误） ──
+        self.session.heal();
+
         self.session.push_user_with_images(&processed_input, images);
+
 
         // ── P0: 上下文压缩检查 ──
         let compact_keep = if self.config.compact_keep > 0 {
@@ -287,6 +315,7 @@ impl AgentRuntime {
             // P1: 生成 AI 摘要（优先使用 flash 模型，降级到当前模型）
             let ai_summary = self.generate_ai_summary(keep).await;
             self.session.compact_in_place(keep, ai_summary);
+            self.session.aggressive_compact_tool_results(3); // 激进清理 3 个回合之前的工具结果
 
             tracing::info!(
                 "[Agent] 压缩完成，当前消息数: {}，累计压缩次数: {}",
@@ -300,17 +329,8 @@ impl AgentRuntime {
         self.cached_tool_schemas = Some(tool_schemas.clone());
 
         // ── P0: 构建并冻结 system prompt（带指纹检测） ──
-        // 将工具定义列表注入 system prompt 中，使其成为不可变前缀的一部分
-        let mut frozen = self.build_frozen_system_prompt().await;
-        if !tool_schemas.is_empty() && !self.grace_terminating {
-            let tools_text: Vec<String> = tool_schemas.iter().map(|t| {
-                format!("- {}: {}", t.function.name, t.function.description)
-            }).collect();
-            frozen.push_str(&format!(
-                "\n\n# Available Tools\n{}",
-                tools_text.join("\n")
-            ));
-        }
+        // 工具定义不注入系统提示（通过 API tools 参数单独传递），确保 frozen prompt 完全静态
+        let frozen = self.build_frozen_system_prompt().await;
         match self.session.set_frozen_system_prompt(frozen) {
             Ok(is_first) => {
                 if is_first {
@@ -392,8 +412,10 @@ impl AgentRuntime {
 
             tracing::info!("[Agent] ReAct 迭代 {}/{}", iterations, self.max_iterations);
 
-            // ⚠️ 预检：每轮 LLM 调用前检查上下文大小
+            // ⚠️ 预检：每轮 LLM 调用前检查上下文大小及修复消息一致性
+            self.session.heal();
             self.maybe_compact_for_preflight().await;
+
 
             let (assistant_message, reasoning_blocks, cancelled, _) = self
                 .call_llm_with_tools_and_retry(&step_tx, cancel.clone())
@@ -551,20 +573,20 @@ impl AgentRuntime {
                     Ok(crate::tools::types::ToolResult::Success(output)) => {
                         // 工具执行成功：重置失败计数
                         self.consecutive_tool_failures = 0;
-                        let truncated = if output.len() > 8000 {
-                            // 安全截断，避免 UTF-8 字符边界溢出
-                            let mut end = 8000;
-                            while !output.is_char_boundary(end) {
-                                end -= 1;
+                        // 首次截断：按 token 数（而非字符数），适配中文场景
+                        // TOOL_RESULT_TOKEN_LIMIT = 800 tokens ≈ 3200 英文字符 ≈ 1600 中文字符
+                        fn truncate_by_tokens(s: &str, max_tokens: u64) -> String {
+                            let estimated = crate::llm::tokenizer::estimate_string_tokens(s);
+                            if estimated <= max_tokens {
+                                return s.to_string();
                             }
-                            format!(
-                                "{}...\n\n[结果已截断，原长度: {} 字符]",
-                                &output[..end],
-                                output.len()
-                            )
-                        } else {
-                            output
-                        };
+                            let ratio = max_tokens as f64 / estimated as f64;
+                            let target_chars = (s.len() as f64 * ratio * 0.9) as usize;
+                            let mut end = target_chars.min(s.len());
+                            while !s.is_char_boundary(end) { end -= 1; }
+                            format!("{}...\n\n[结果已截断，原估算 {} tokens，保留约 {} tokens]", &s[..end], estimated, max_tokens)
+                        }
+                        let truncated = truncate_by_tokens(&output, Self::TOOL_RESULT_TOKEN_LIMIT);
 
                         tracing::info!("[Agent] 工具 {} 执行成功，结果 {} 字符", tc_name, truncated.len());
 
@@ -600,22 +622,61 @@ impl AgentRuntime {
                         }
 
                         // 明确标注工具返回的是真实数据，避免小模型误判为帮助信息
-                        // 支持按 token 数截断（中文场景字符数不等同于 token 数）
-                        fn truncate_by_tokens(s: &str, max_tokens: u64) -> String {
-                            let estimated = crate::llm::tokenizer::estimate_string_tokens(s);
-                            if estimated <= max_tokens {
-                                return s.to_string();
-                            }
-                            // 按字符长度等比缩放截断
-                            let ratio = max_tokens as f64 / estimated as f64;
-                            let target_chars = (s.len() as f64 * ratio * 0.9) as usize;
-                            let mut end = target_chars.min(s.len());
-                            while !s.is_char_boundary(end) { end -= 1; }
-                            format!("{}...\n\n[结果已截断，原估算 {} token]", &s[..end], estimated)
-                        }
                         let contextualized = format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, truncated);
-                        let contextualized = truncate_by_tokens(&contextualized, Self::TOOL_RESULT_TOKEN_LIMIT);
-                        self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
+                        
+                        // 监控工具调用频率
+                        if tc_name == "read_file" {
+                            self.session.consecutive_read_count += 1;
+
+                            // 语义级"隐式钉住"逻辑：如果同一个文件被读取 3 次，自动固定到上下文
+                            if let Ok(args) = serde_json::from_str::<serde_json::Value>(&tc_args_json) {
+                                if let Some(path) = args["path"].as_str() {
+                                    let count = self.file_access_counts.entry(path.to_string()).or_insert(0);
+                                    *count += 1;
+                                    if *count == 3 {
+                                        tracing::info!("[Implicit Pin] 文件 '{}' 被频繁访问，已自动钉入上下文", path);
+                                        self.session.pin_file(path.to_string(), output.clone());
+                                    }
+                                }
+                            }
+                        } else {
+                            self.session.consecutive_read_count = 0;
+                        }
+
+                        // 如果连续读取过多，注入隐式警告
+                        let mut final_output = if self.session.consecutive_read_count >= 3 {
+                            format!("{}\n\n[SYSTEM WARNING: 注意，你作为主 Agent 已经读取了 {} 个文件。继续亲自读取将严重浪费 Token。请立即停止，并使用 delegate_task 委派 code-explorer 或 code-reviewer 来完成深度分析。]", contextualized, self.session.consecutive_read_count)
+                        } else {
+                            contextualized
+                        };
+
+                        // 如果是委派任务成功，注入总结提示
+                        if tc_name == "delegate_task" {
+                            final_output = format!("{}\n\n[SYSTEM NOTE: 子 Agent 已提交深度报告。作为 Orchestrator，你的职责是直接整合这些报告。除非有极其严重的矛盾，否则严禁再次亲自读取原始文件。请直接输出最终总结。]", final_output);
+                        }
+
+                        // 拦截并处理 PIN/UNPIN 请求
+                        if tc_name == "pin_file" && output.starts_with("PIN_REQUEST:") {
+                            let parts: Vec<&str> = output.splitn(3, ':').collect();
+                            if parts.len() == 3 {
+                                let path = parts[1].to_string();
+                                let content = parts[2].to_string();
+                                self.session.pin_file(path.clone(), content);
+                                tracing::info!("[Agent] 已将文件固定到上下文: {}", path);
+                                let success_msg = format!("← pin_file 工具返回的数据:\n已将文件 {} 固定到上下文", path);
+                                self.session.push_tool_result(&tc_id, &tc_name, &success_msg);
+                            } else {
+                                self.session.push_tool_result(&tc_id, &tc_name, &final_output);
+                            }
+                        } else if tc_name == "unpin_file" && output.starts_with("UNPIN_REQUEST:") {
+                            let path = output.trim_start_matches("UNPIN_REQUEST:").to_string();
+                            self.session.unpin_file(&path);
+                            tracing::info!("[Agent] 已取消固定文件: {}", path);
+                            let success_msg = format!("← unpin_file 工具返回的数据:\n已取消固定文件 {}", path);
+                            self.session.push_tool_result(&tc_id, &tc_name, &success_msg);
+                        } else {
+                            self.session.push_tool_result(&tc_id, &tc_name, &final_output);
+                        }
 
                         // 累加重试计数（同 key 递增，用于跨迭代硬限制）
                         *self.tool_retry_count.entry(key.clone()).or_insert(0) += 1;
@@ -698,11 +759,31 @@ impl AgentRuntime {
                                             while !output.is_char_boundary(end) { end -= 1; }
                                             format!("{}...\n\n[结果已截断，原长度: {} 字符]", &output[..end], output.len())
                                         } else {
-                                            output
+                                            output.clone()
                                         };
                                         tracing::info!("[Agent] 用户批准后工具 {} 执行成功，结果 {} 字符", name, truncated.len());
                                         let contextualized = format!("← {} 工具返回的数据:\n{}", name, truncated);
-                                        self.session.push_tool_result(&tc_id, &name, &contextualized);
+                                        
+                                        // 拦截并处理 PIN/UNPIN 请求 (批准后)
+                                        if name == "pin_file" && output.starts_with("PIN_REQUEST:") {
+                                            let parts: Vec<&str> = output.splitn(3, ':').collect();
+                                            if parts.len() == 3 {
+                                                let path = parts[1].to_string();
+                                                let content = parts[2].to_string();
+                                                self.session.pin_file(path.clone(), content);
+                                                let success_msg = format!("← pin_file 工具返回的数据:\n已将文件 {} 固定到上下文", path);
+                                                self.session.push_tool_result(&tc_id, &name, &success_msg);
+                                            } else {
+                                                self.session.push_tool_result(&tc_id, &name, &contextualized);
+                                            }
+                                        } else if name == "unpin_file" && output.starts_with("UNPIN_REQUEST:") {
+                                            let path = output.trim_start_matches("UNPIN_REQUEST:").to_string();
+                                            self.session.unpin_file(&path);
+                                            let success_msg = format!("← unpin_file 工具返回的数据:\n已取消固定文件 {}", path);
+                                            self.session.push_tool_result(&tc_id, &name, &success_msg);
+                                        } else {
+                                            self.session.push_tool_result(&tc_id, &name, &contextualized);
+                                        }
                                     }
                                     _ => {
                                         let err_msg = format!("用户批准后工具执行失败");
@@ -734,10 +815,49 @@ impl AgentRuntime {
                                             while !output.is_char_boundary(end) { end -= 1; }
                                             format!("{}...\n\n[结果已截断]", &output[..end])
                                         } else {
-                                            output
+                                            output.clone()
                                         };
-                                        let contextualized = format!("← {} 工具返回的数据:\n{}", name, truncated);
-                                        self.session.push_tool_result(&tc_id, &name, &contextualized);
+                        let contextualized = format!("← {} 工具返回的数据:\n{}", name, truncated);
+                        
+                        // 监控工具调用频率
+                        if name == "read_file" {
+                            self.session.consecutive_read_count += 1;
+                        } else {
+                            self.session.consecutive_read_count = 0;
+                        }
+
+                        // 如果连续读取过多，注入隐式警告
+                        let mut final_output = if self.session.consecutive_read_count >= 3 {
+                            format!("{}\n\n[SYSTEM WARNING: 注意，你作为主 Agent 已经读取了 {} 个文件。继续亲自读取将严重浪费 Token。请立即停止，并使用 delegate_task 委派 code-explorer 或 code-reviewer 来完成深度分析。]", contextualized, self.session.consecutive_read_count)
+                        } else {
+                            contextualized
+                        };
+
+                        // 如果是委派任务成功，注入总结提示
+                        if name == "delegate_task" {
+                            final_output = format!("{}\n\n[SYSTEM NOTE: 子 Agent 已提交深度报告。作为 Orchestrator，你的职责是直接整合这些报告。除非有极其严重的矛盾，否则严禁再次亲自读取原始文件。请直接输出最终总结。]", final_output);
+                        }
+
+                        // 拦截并处理 PIN/UNPIN 请求 (白名单执行后)
+                        if name == "pin_file" && output.starts_with("PIN_REQUEST:") {
+                            let parts: Vec<&str> = output.splitn(3, ':').collect();
+                            if parts.len() == 3 {
+                                let path = parts[1].to_string();
+                                let content = parts[2].to_string();
+                                self.session.pin_file(path.clone(), content);
+                                let success_msg = format!("← pin_file 工具返回的数据:\n已将文件 {} 固定到上下文", path);
+                                self.session.push_tool_result(&tc_id, &name, &success_msg);
+                            } else {
+                                self.session.push_tool_result(&tc_id, &name, &final_output);
+                            }
+                        } else if name == "unpin_file" && output.starts_with("UNPIN_REQUEST:") {
+                            let path = output.trim_start_matches("UNPIN_REQUEST:").to_string();
+                            self.session.unpin_file(&path);
+                            let success_msg = format!("← unpin_file 工具返回的数据:\n已取消固定文件 {}", path);
+                            self.session.push_tool_result(&tc_id, &name, &success_msg);
+                        } else {
+                            self.session.push_tool_result(&tc_id, &name, &final_output);
+                        }
                                     }
                                     _ => {
                                         let contextualized = format!("← {} 工具返回的数据:\n工具执行失败", name);
@@ -957,6 +1077,48 @@ impl AgentRuntime {
                         } else {
                             self.session.cache_miss_tokens += input_tokens;
                         }
+
+                        // ── Post-usage 折叠决策（基于真实 prompt_tokens，参考 Reasonix） ──
+                        // 在 LLM 返回真实 token 数后，决定是否在下一轮前折叠历史
+                        // 这比事前估算更准确，避免过早/过晚触发压缩
+                        let ctx_window = self.estimate_context_window();
+                        if ctx_window > 0 && input_tokens > 0 {
+                            let ratio = input_tokens as f64 / ctx_window as f64;
+                            if ratio >= Self::POST_USAGE_FORCE_SUMMARY_THRESHOLD {
+                                // ≥85%：下一轮必须强制压缩（标记，在下次 maybe_compact_for_preflight 中处理）
+                                tracing::warn!(
+                                    "[PostUsage] 🔴 真实 prompt_tokens={} / ctx={} = {:.1}% ≥ {:.0}%，下一轮强制压缩",
+                                    input_tokens, ctx_window, ratio * 100.0,
+                                    Self::POST_USAGE_FORCE_SUMMARY_THRESHOLD * 100.0
+                                );
+                                // 立即触发激进压缩，不等下一轮
+                                let hard_keep = (COMPACT_KEEP_LAST_FALLBACK / 2).max(5);
+                                let ai_summary = self.generate_ai_summary(hard_keep).await;
+                                self.session.compact_in_place(hard_keep, ai_summary);
+                            } else if ratio >= Self::POST_USAGE_FOLD_AGGRESSIVE_THRESHOLD {
+                                // 78-85%：激进折叠，保留 10% 尾部
+                                let tail_budget = (ctx_window as f64 * Self::POST_USAGE_FOLD_AGGRESSIVE_TAIL_FRACTION) as u64;
+                                let keep = self.estimate_keep_by_token_budget(tail_budget);
+                                tracing::warn!(
+                                    "[PostUsage] ⚠️ 真实 prompt_tokens={} / ctx={} = {:.1}% ≥ {:.0}%，激进折叠保留 {} 条",
+                                    input_tokens, ctx_window, ratio * 100.0,
+                                    Self::POST_USAGE_FOLD_AGGRESSIVE_THRESHOLD * 100.0, keep
+                                );
+                                let ai_summary = self.generate_ai_summary(keep).await;
+                                self.session.compact_in_place(keep, ai_summary);
+                            } else if ratio >= Self::POST_USAGE_FOLD_THRESHOLD {
+                                // 75-78%：正常折叠，保留 20% 尾部
+                                let tail_budget = (ctx_window as f64 * Self::POST_USAGE_FOLD_TAIL_FRACTION) as u64;
+                                let keep = self.estimate_keep_by_token_budget(tail_budget);
+                                tracing::info!(
+                                    "[PostUsage] 📦 真实 prompt_tokens={} / ctx={} = {:.1}% ≥ {:.0}%，折叠保留 {} 条",
+                                    input_tokens, ctx_window, ratio * 100.0,
+                                    Self::POST_USAGE_FOLD_THRESHOLD * 100.0, keep
+                                );
+                                let ai_summary = self.generate_ai_summary(keep).await;
+                                self.session.compact_in_place(keep, ai_summary);
+                            }
+                        }
                     }
                     return Ok((msg, blocks, cancelled, cached_tokens));
                 }
@@ -998,6 +1160,31 @@ impl AgentRuntime {
                 }
             }
         }
+    }
+
+    /// 根据 token 预算估算应保留的消息条数
+    /// 从尾部向前累积，直到超过预算，返回可保留的条数
+    fn estimate_keep_by_token_budget(&self, tail_budget_tokens: u64) -> usize {
+        let total = self.session.messages.len();
+        if total <= 2 {
+            return total;
+        }
+        let mut cumulative: u64 = 0;
+        let mut keep_count: usize = 0;
+        for msg in self.session.messages.iter().rev().take(total - 2) {
+            let tokens = tokenizer::quick_estimate_message_tokens(&msg.content, &msg.role);
+            let extra: u64 = match msg.role.as_str() {
+                "assistant" if msg.tool_calls.is_some() => 50,
+                "tool" => 20,
+                _ => 10,
+            };
+            cumulative += tokens + extra;
+            if cumulative > tail_budget_tokens && keep_count >= 3 {
+                break;
+            }
+            keep_count += 1;
+        }
+        keep_count.max(3).min(COMPACT_KEEP_LAST_FALLBACK)
     }
 
     async fn call_llm_with_tools(
@@ -1106,14 +1293,73 @@ impl AgentRuntime {
             });
         }
 
-        // ── P0: 将 volatile 后缀追加到最后一个 user 消息末尾 ──
-        // 这样 `frozen_system + history` 整体保持稳定，缓存前缀不受 volatile 影响
+        // ── P0: 发送前"治愈"消息（参考 Reasonix healActiveLogBeforeSend） ──
+        // 1. heal: 截断过大的 tool 结果
+        //    - 历史中的 tool 消息：LLM 首次调用时已看到完整内容，后续轮次只需摘要
+        //    - 按 token 数截断（而非字符数），避免中文场景 2× token 代价
+        //    - 阈值 400 tokens ≈ 1600 英文字符 ≈ 800 中文字符（历史消息比首次更激进）
+        const MAX_HISTORY_TOOL_RESULT_TOKENS: u64 = 400;
+        for msg in &mut messages {
+            if msg.role == "tool" {
+                if let serde_json::Value::String(ref content) = msg.content {
+                    let estimated = crate::llm::tokenizer::estimate_string_tokens(content);
+                    if estimated > MAX_HISTORY_TOOL_RESULT_TOKENS {
+                        // 按比例估算截断位置
+                        let ratio = MAX_HISTORY_TOOL_RESULT_TOKENS as f64 / estimated as f64;
+                        let target_chars = (content.len() as f64 * ratio * 0.9) as usize;
+                        let mut end = target_chars.min(content.len());
+                        while !content.is_char_boundary(end) { end -= 1; }
+                        msg.content = serde_json::Value::String(format!(
+                            "{}...\n[历史结果已截断: 原始约 {} tokens，保留约 {} tokens]",
+                            &content[..end], estimated, MAX_HISTORY_TOOL_RESULT_TOKENS
+                        ));
+                    }
+                }
+            }
+        }
+        // 2. shrink: 压缩过大的 tool_call 参数（如 write_file 的大段代码内容）
+        //    - 按 token 数截断，阈值 600 tokens
+        const MAX_TOOL_CALL_ARG_TOKENS: u64 = 600;
+        for msg in &mut messages {
+            if msg.role == "assistant" {
+                if let Some(ref mut calls) = msg.tool_calls {
+                    for call in calls {
+                        let args = &call.function.arguments;
+                        let estimated = crate::llm::tokenizer::estimate_string_tokens(args);
+                        if estimated > MAX_TOOL_CALL_ARG_TOKENS {
+                            let ratio = MAX_TOOL_CALL_ARG_TOKENS as f64 / estimated as f64;
+                            let target_chars = (args.len() as f64 * ratio * 0.9) as usize;
+                            let mut end = target_chars.min(args.len());
+                            while !args.is_char_boundary(end) { end -= 1; }
+                            call.function.arguments = format!(
+                                "{}...\n[参数已压缩: 原始约 {} tokens]",
+                                &args[..end], estimated
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // 3. strip: 剥离旧 reasoning（已在上面消息循环中完成）
+
+        // ── P0: 将 volatile 后缀追加到第一个 user 消息末尾 ──
+        //
+        // 设计原则（参考 Reasonix）：
+        // - volatile 内容（memory、skills）只追加到第一条 user 消息
+        // - 后续轮次的 user 消息保持原始内容，字节稳定
+        // - 这样 system + 第一条user + 历史 的前缀在同一会话内保持稳定
+        // - memory 变化时接受一次 cache miss（下次 run_turn 重建 volatile_suffix）
+        //
+        // 注意：日期和环境信息已移入 frozen system prompt，不在此处处理
         if let Some(ref volatile) = self.volatile_suffix {
-            if let Some(last_msg) = messages.last_mut() {
-                if last_msg.role == "user" {
-                    if let serde_json::Value::String(ref content) = last_msg.content {
-                        let augmented = format!("{}\n\n---\n## Context & Environment\n\n{}", content, volatile);
-                        last_msg.content = serde_json::Value::String(augmented);
+            if !volatile.trim().is_empty() {
+                // 找第一条 user 消息（索引1，system 是索引0）
+                if let Some(first_user) = messages.iter_mut().find(|m| m.role == "user") {
+                    if let serde_json::Value::String(ref content) = first_user.content {
+                        // 将易变后缀注入到第一个 user 消息中，利用 DeepSeek 前缀缓存
+                        let augmented = format!("{}\n\n---\n## Session Context\n\n{}", content, volatile);
+                        first_user.content = serde_json::Value::String(augmented);
+                        tracing::debug!("[Cache] 易变后缀已注入到首条 User 消息");
                     }
                 }
             }
@@ -1432,7 +1678,9 @@ impl AgentRuntime {
             again_reasonings,
             reasoning,
             images: None,
+            weight: 0,
         };
+
 
         Ok((agent_msg, reasoning_blocks, was_cancelled, input_tokens, output_tokens, cached_tokens))
     }
@@ -1655,14 +1903,6 @@ impl AgentRuntime {
             return String::new();
         }
 
-        let os_name = if cfg!(target_os = "windows") {
-            "Windows"
-        } else if cfg!(target_os = "macos") {
-            "macOS"
-        } else {
-            "Linux"
-        };
-
         let (memory_content, skills) = {
             let state = crate::APP_STATE.read().await;
             let memory = state.memory_store.list_memories();
@@ -1673,13 +1913,24 @@ impl AgentRuntime {
             (mem, skills)
         };
 
+        // 注意：OS、日期、工作目录已移入 frozen system prompt（build_frozen 中的 build_environment）
+        // volatile 只保留真正可能在会话中变化的内容：memory 和 skills
+        let os_name = if cfg!(target_os = "windows") {
+            "Windows"
+        } else if cfg!(target_os = "macos") {
+            "macOS"
+        } else {
+            "Linux"
+        };
+
         let builder = crate::agent::prompt::SystemPromptBuilder::new(
             &self.config,
             os_name,
             self.session.workspace.as_deref(),
         )
         .with_skills(skills)
-        .with_memory(memory_content);
+        .with_memory(memory_content)
+        .with_pinned_files(Some(self.session.get_pinned_files_context()));
 
         builder.build_volatile()
     }
@@ -1770,6 +2021,13 @@ impl AgentRuntime {
         let estimated_tokens: u64 = self.session.messages.iter()
             .map(|m| tokenizer::quick_estimate_message_tokens(&m.content, &m.role))
             .sum();
+        
+        // 估算"动荡区"（Body After Prefix）的 Token 数
+        let volatile_tokens: u64 = self.session.messages.iter()
+            .skip(2) // 跳过前 2 条（系统上下文）
+            .map(|m| tokenizer::quick_estimate_message_tokens(&m.content, &m.role))
+            .sum();
+
         let context_window = self.estimate_context_window();
 
         let ratio = if context_window > 0 {
@@ -1778,7 +2036,7 @@ impl AgentRuntime {
             0.0
         };
 
-        // Level 1: 告警
+        // Level 1: 告警（≥30%）
         if ratio >= Self::PREFLIGHT_LEVEL1_RATIO {
             tracing::warn!(
                 "[Preflight] ⚠️ 上下文使用率 {:.1}% (估算 {} tokens / {} 窗口), 模型: {}",
@@ -1789,24 +2047,36 @@ impl AgentRuntime {
             );
         }
 
+        // Level 1.2: 动荡区超过预算触发压缩（重点优化 DeepSeek 缓存后的处理压力）
+        let volatile_exceeded = volatile_tokens > Self::VOLATILE_BODY_TOKEN_BUDGET;
+        if volatile_exceeded {
+            tracing::info!(
+                "[Preflight] ⚡ 动荡区 Token {} 超过预算 {}, 触发就地压缩以优化缓存性能",
+                volatile_tokens,
+                Self::VOLATILE_BODY_TOKEN_BUDGET
+            );
+        }
+
         // Level 1.5: 消息数超过 compact_threshold 也触发压缩（应对同一轮内大量工具调用）
         let msg_count_exceeded = self.config.compact_threshold > 0
             && self.session.messages.len() > self.config.compact_threshold as usize;
 
-        // Level 2: 触发压缩（含 AI 语义摘要，保留对话上下文）
-        if ratio >= Self::PREFLIGHT_LEVEL2_RATIO || total_chars > Self::PREFLIGHT_CHAR_LIMIT || msg_count_exceeded {
+        // Level 2: 触发压缩（≥50% 或字符数超限 或 动荡区超限）
+        if ratio >= Self::PREFLIGHT_LEVEL2_RATIO || total_chars > Self::PREFLIGHT_CHAR_LIMIT || msg_count_exceeded || volatile_exceeded {
             let keep = if self.config.compact_keep > 0 { self.config.compact_keep } else { COMPACT_KEEP_LAST_FALLBACK };
             tracing::warn!(
-                "[Preflight] 🔄 触发上下文压缩 (ratio={:.1}%, chars={}), 保留最近 {} 条",
-                ratio * 100.0, total_chars, keep
+                "[Preflight] 🔄 触发上下文压缩 (ratio={:.1}%, volatile={}, chars={}), 保留最近 {} 条",
+                ratio * 100.0, volatile_tokens, total_chars, keep
             );
             let ai_summary = self.generate_ai_summary(keep).await;
             self.session.compact_in_place(keep, ai_summary);
         }
 
-        // Level 3: 强制截断（保留更少消息，含 AI 语义摘要）
+        // Level 3: 强制截断（≥80%）
         if ratio >= Self::PREFLIGHT_LEVEL3_RATIO {
-            let hard_keep = (COMPACT_KEEP_LAST_FALLBACK / 2).max(5);
+            // 激进折叠：保留上下文窗口 10% 的尾部
+            let tail_budget = (context_window as f64 * 0.10) as u64;
+            let hard_keep = self.estimate_keep_by_token_budget(tail_budget);
             tracing::warn!(
                 "[Preflight] 🔴 上下文严重超限 (ratio={:.1}%), 强制截断到 {} 条",
                 ratio * 100.0, hard_keep
@@ -1815,6 +2085,7 @@ impl AgentRuntime {
             self.session.compact_in_place(hard_keep, ai_summary);
         }
     }
+
 
     /// 每次工具调用后立即压缩，保持 messages 在合理范围内
     /// 将中间步骤压缩为带关键结果的摘要，保留最近 N 步完整内容
@@ -1833,6 +2104,7 @@ impl AgentRuntime {
         for m in &removed_msgs {
             if m.role == "tool" {
                 if let Some(name) = &m.tool_name {
+                    // 预览截断：按 token 感知，中文场景 120 字符可能只有 60 token
                     let preview: String = m.content.chars().take(120).collect();
                     let clean = preview.replace('\n', " ").replace('\r', "");
                     records.push(format!("  [{name}] {clean}"));
@@ -1843,8 +2115,7 @@ impl AgentRuntime {
                         let names: Vec<&str> = calls.iter().map(|tc| tc.name.as_str()).collect();
                         records.push(format!("  → 调用了: {}", names.join(", ")));
                     }
-                } else if !m.content.starts_with("[INTERMEDIATE STEPS") {
-                    // 记录 assistant 的文字回复摘要（不含已压缩的占位符）
+                } else if !m.content.starts_with("[INTERMEDIATE STEPS") && !m.content.starts_with("[CONVERSATION HISTORY") {
                     let preview: String = m.content.chars().take(60).collect();
                     let clean = preview.replace('\n', " ").replace('\r', "");
                     records.push(format!("  🤖 {clean}"));
@@ -1861,17 +2132,16 @@ impl AgentRuntime {
             content: format!("[INTERMEDIATE STEPS — previous steps completed, key progress below]{}", record_text),
             tool_calls: None, tool_call_id: None, tool_name: None,
             first_reasoning: None, again_reasonings: None, reasoning: None, images: None,
+            weight: 0,
         };
+
         let front: Vec<_> = self.session.messages.drain(..KEEP_FRONT).collect();
-        // drain 掉要压缩的中间消息，只剩下尾部 KEEP_RECENT 条
         let _compressed: Vec<_> = self.session.messages.drain(..to_compress).collect();
-        let recent: Vec<_> = self.session.messages.drain(..).collect(); // 剩余 KEEP_RECENT 条
+        let recent: Vec<_> = self.session.messages.drain(..).collect();
         self.session.messages = front;
         self.session.messages.push(summary);
         self.session.messages.extend(recent);
-        // 压缩后清理孤立 tool_calls/tool 消息，防止违反 API 协议
         AgentSession::strip_orphan_tool_calls(&mut self.session.messages);
-        // 同步重建 log
         self.session.log.clear();
         for msg in &self.session.messages {
             let entry: crate::agent::log::LogEntry = msg.into();

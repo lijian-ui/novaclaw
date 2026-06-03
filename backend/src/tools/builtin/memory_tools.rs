@@ -39,6 +39,7 @@ pub async fn register(
                 },
                 "required": ["action"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 move |args: serde_json::Value,
                       _chunk_tx: Option<
@@ -135,6 +136,7 @@ pub async fn register(
                 },
                 "required": ["query"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 move |args: serde_json::Value,
                       _chunk_tx: Option<
@@ -210,6 +212,7 @@ pub async fn register(
                 },
                 "required": ["name"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 move |args: serde_json::Value,
                       _chunk_tx: Option<

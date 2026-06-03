@@ -159,8 +159,14 @@ impl IMGateway {
 
         // 1. 获取或创建 Agent 会话
         let session = session_mgr.get_or_create(&source, &msg).await?;
+        let session_id = session.id.clone();
+
+        // 1.1 加锁：防止同一会话并发处理（处理群聊多用户同时 @ 的撞车问题）
+        let lock = session_mgr.get_session_lock(&session_id).await;
+        let _guard = lock.lock().await;
 
         // 2. 格式化用户消息（注入平台上下文）
+
         let user_text = im_session::format_im_message(&msg);
 
         // 3. 获取 LLM 客户端的配置

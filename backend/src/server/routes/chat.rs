@@ -110,7 +110,9 @@ fn storage_msg_to_agent_msg(m: &storage::Message) -> AgentMessage {
         tool_call_id: m.tool_call_id.clone(), tool_name: m.tool_name.clone(),
         first_reasoning: m.first_reasoning.clone(), again_reasonings: m.again_reasonings.clone(), reasoning: m.reasoning.clone(),
         images: None,
+        weight: 0,
     }
+
 }
 
 fn make_storage_msg(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>) -> storage::Message {
@@ -129,7 +131,7 @@ fn make_storage_msg(session_id: &str, role: &str, content: &str, tool_calls: Opt
     }
 }
 
-fn make_storage_msg_with_reasoning(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, first_reasoning: Option<String>, again_reasonings: Option<Vec<String>>, reasoning: Option<String>) -> storage::Message {
+pub fn make_storage_msg_with_reasoning(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, first_reasoning: Option<String>, again_reasonings: Option<Vec<String>>, reasoning: Option<String>) -> storage::Message {
     storage::Message {
         id: uuid::Uuid::new_v4().to_string(),
         session_id: session_id.to_string(),
@@ -145,7 +147,7 @@ fn make_storage_msg_with_reasoning(session_id: &str, role: &str, content: &str, 
     }
 }
 
-fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, first_reasoning: Option<String>, again_reasonings: Option<Vec<String>>, reasoning: Option<String>, input_tokens: u64, output_tokens: u64, cached_tokens: u64, last_input_tokens: u64, last_output_tokens: u64, cache_hit_rate: f64) -> storage::Message {
+pub fn make_storage_msg_with_tokens(session_id: &str, role: &str, content: &str, tool_calls: Option<Vec<storage::ToolCall>>, tool_call_id: Option<String>, tool_name: Option<String>, first_reasoning: Option<String>, again_reasonings: Option<Vec<String>>, reasoning: Option<String>, input_tokens: u64, output_tokens: u64, cached_tokens: u64, last_input_tokens: u64, last_output_tokens: u64, cache_hit_rate: f64) -> storage::Message {
     storage::Message {
         id: uuid::Uuid::new_v4().to_string(),
         session_id: session_id.to_string(),
@@ -185,9 +187,14 @@ async fn chat(Json(req): Json<ChatRequestHttp>) -> Json<serde_json::Value> {
     let history = state.session_store.get_messages(&session_id).unwrap_or_default();
     let mut agent_session = AgentSession::new(&make_session_title(&req.message), &model, None);
     agent_session.id = session_id.clone();
+    agent_session.session_store = Some(state.session_store.clone());
     for m in &history { if m.role != "system" { agent_session.push_message(storage_msg_to_agent_msg(m)); } }
 
-    let mut runtime = AgentRuntime::new(agent_session, llm_client, Arc::new(state.tool_registry.clone()), &state.config, state.models_config.clone(), state.skills_loader.list_skills());
+    let skills = crate::skills::loader::SkillsLoader::filter_enabled(
+        state.skills_loader.list_skills(),
+        &state.config.skills,
+    );
+    let mut runtime = AgentRuntime::new(agent_session, llm_client, Arc::new(state.tool_registry.clone()), &state.config, state.models_config.clone(), skills);
     let result = match runtime.run_turn(&req.message, None, None, &[]).await {
         Ok(r) => r, Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
     };
@@ -229,6 +236,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
         let history = state.session_store.get_messages(&session_id).unwrap_or_default();
         let mut agent_session = AgentSession::new(&make_session_title(&req.message), &model, req.workspace.as_deref());
         agent_session.id = session_id.clone();
+        agent_session.session_store = Some(state.session_store.clone());
         // 如果指定了智能体，从文件系统加载 SOUL.md 和 Agent 配置
         let mut config = state.config.clone();
         if let Some(ref agent_id) = req.agent_id {
@@ -282,7 +290,11 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
             Ok(c) => c,
             Err(e) => { let _ = sse_tx.send(serde_json::json!({"type": "error", "data": {"message": e.to_string()}}).to_string()).await; return; }
         };
-        let skills = state.skills_loader.list_skills();
+        let config_skills = state.config.skills.clone();
+        let skills = crate::skills::loader::SkillsLoader::filter_enabled(
+            state.skills_loader.list_skills(),
+            &config_skills,
+        );
         let tool_registry = Arc::new(state.tool_registry.clone());
         let history_msg_count = agent_session.messages.len();
         let models_config = state.models_config.clone();

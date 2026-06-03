@@ -4,6 +4,159 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+/// 提取代码文件中的符号（函数、类等）
+fn extract_symbols(content: &str, path: Option<&str>) -> String {
+    // 优先尝试使用 Tree-sitter (目前支持 Rust)
+    if let Some(p) = path {
+        if p.ends_with(".rs") {
+            if let Some(ts_outline) = extract_symbols_rust_treesitter(content) {
+                return ts_outline;
+            }
+        }
+    }
+
+    use regex::Regex;
+    // 匹配 Rust, JS/TS, Python, Go 等常见语言的定义
+    let patterns = [
+        // Rust: pub fn name, fn name, struct Name, enum Name, impl Name, trait Name
+        r"(?m)^(?:pub\s+)?(?:async\s+)?fn\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        r"(?m)^(?:pub\s+)?(?:struct|enum|trait|type|impl)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        // JS/TS: export function name, function name, class Name, interface Name, const name = () =>
+        r"(?m)^(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        r"(?m)^(?:export\s+)?(?:class|interface|type|enum)\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        r"(?m)^(?:export\s+)?const\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:async\s*)?\(",
+        // Python: def name, class Name
+        r"(?m)^def\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        r"(?m)^class\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        // Go: func name, type Name
+        r"(?m)^func\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+        r"(?m)^type\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+    ];
+
+    let mut symbols = Vec::new();
+    for pattern in patterns {
+        if let Ok(re) = Regex::new(pattern) {
+            for cap in re.captures_iter(content) {
+                if let Some(m) = cap.get(0) {
+                    let line_num = content[..m.start()].lines().count() + 1;
+                    symbols.push(format!("{:>6}| {}", line_num, m.as_str().trim()));
+                }
+            }
+        }
+    }
+    
+    // 按行号排序
+    symbols.sort_by_key(|s| {
+        s.split('|').next().unwrap_or("0").trim().parse::<usize>().unwrap_or(0)
+    });
+    
+    symbols.join("\n")
+}
+
+/// 使用 Tree-sitter 提取 Rust 符号大纲
+fn extract_symbols_rust_treesitter(content: &str) -> Option<String> {
+    use tree_sitter::{Parser, Query, QueryCursor};
+    
+    let mut parser = Parser::new();
+    parser.set_language(tree_sitter_rust::language()).ok()?;
+    
+    let tree = parser.parse(content, None)?;
+    let root_node = tree.root_node();
+    
+    // 定义查询：提取函数、结构体、枚举、实现、Trait 等
+    let query_str = r#"
+        (function_item name: (identifier) @name) @item
+        (struct_item name: (type_identifier) @name) @item
+        (enum_item name: (type_identifier) @name) @item
+        (trait_item name: (type_identifier) @name) @item
+        (impl_item type: (_) @name) @item
+        (type_item name: (type_identifier) @name) @item
+        (mod_item name: (identifier) @name) @item
+        (macro_definition name: (identifier) @name) @item
+    "#;
+    
+    let query = Query::new(tree_sitter_rust::language(), query_str).ok()?;
+    let mut cursor = QueryCursor::new();
+    let matches = cursor.matches(&query, root_node, content.as_bytes());
+    
+    let mut symbols = Vec::new();
+    for m in matches {
+        if m.captures.len() >= 2 {
+            let item_node = m.captures[0].node;
+            let name_node = m.captures[1].node;
+            
+            let start_byte = name_node.start_byte();
+            let end_byte = name_node.end_byte();
+            
+            // 安全地截取字符串，避免字符边界问题
+            let mut end = end_byte;
+            while !content.is_char_boundary(end) { end -= 1; }
+            let name = &content[start_byte..end];
+            
+            let line_num = item_node.start_position().row + 1;
+            let kind = item_node.kind().replace("_item", "");
+            
+            symbols.push(format!("{:>6}| {} {}", line_num, kind, name));
+        }
+    }
+    
+    if symbols.is_empty() {
+        None
+    } else {
+        Some(symbols.join("\n"))
+    }
+}
+
+/// 使用 Tree-sitter 在 Rust 文件中查找指定符号的行号范围
+fn find_symbol_range_rust(content: &str, target_name: &str) -> Option<(usize, usize)> {
+    use tree_sitter::{Parser, Query, QueryCursor};
+    
+    let mut parser = Parser::new();
+    parser.set_language(tree_sitter_rust::language()).ok()?;
+    
+    let tree = parser.parse(content, None)?;
+    let root_node = tree.root_node();
+    
+    // 查询所有具名项及其名称
+    let query_str = r#"
+        (function_item name: (identifier) @name) @item
+        (struct_item name: (type_identifier) @name) @item
+        (enum_item name: (type_identifier) @name) @item
+        (trait_item name: (type_identifier) @name) @item
+        (impl_item type: (_) @name) @item
+        (type_item name: (type_identifier) @name) @item
+        (mod_item name: (identifier) @name) @item
+        (macro_definition name: (identifier) @name) @item
+    "#;
+    
+    let query = Query::new(tree_sitter_rust::language(), query_str).ok()?;
+    let mut cursor = QueryCursor::new();
+    let matches = cursor.matches(&query, root_node, content.as_bytes());
+    
+    for m in matches {
+        if m.captures.len() >= 2 {
+            let item_node = m.captures[0].node;
+            let name_node = m.captures[1].node;
+            
+            let start_byte = name_node.start_byte();
+            let end_byte = name_node.end_byte();
+            
+            // 安全截取
+            let mut end = end_byte;
+            while !content.is_char_boundary(end) { end -= 1; }
+            let name = &content[start_byte..end];
+            
+            if name == target_name {
+                let start_line = item_node.start_position().row + 1;
+                let end_line = item_node.end_position().row + 1;
+                return Some((start_line, end_line));
+            }
+        }
+    }
+    
+    None
+}
+
 /// 格式化文件大小为可读字符串
 fn format_file_size(bytes: u64) -> String {
     if bytes >= 1024 * 1024 {
@@ -43,48 +196,24 @@ pub async fn register(registry: &ToolRegistry) {
     // read_file tool
     registry
         .register(ToolDef {
-                        name: "read_file".to_string(),
+            name: "read_file".to_string(),
             display_name: "读取文件".to_string(),
-            description:
-                "Read file content with line numbers and pagination. \
-                 Params: path (required), offset (optional line number, default 1), \
-                 limit (optional max lines, default 2000, max 2000), \
-                 head (optional, first N lines), tail (optional, last N lines), \
-                 range (optional, inclusive range like 'A-B', 1-indexed). \
-                 Files over 64KB auto-switch to outline mode (metadata + first 80 lines + symbol list). \
-                 Use offset/limit, head/tail, or range to read specific sections of large files. \
-                 Lines longer than 2000 chars are truncated. Output capped at 50KB."
-                    .to_string(),
+            description: "Read file content. Supports range reading and symbol-based reading. \
+                          Use 'symbol' to read a specific function/struct definition precisely. \
+                          Use 'outline' to see all symbols first.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "File path (relative paths resolve to working directory, absolute paths used directly)"
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "description": "Line number to start from (1-indexed, default 1)"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum lines to read (default 2000, max 2000)"
-                    },
-                    "head": {
-                        "type": "integer",
-                        "description": "If set, return only the first N lines"
-                    },
-                    "tail": {
-                        "type": "integer",
-                        "description": "If set, return only the last N lines"
-                    },
-                    "range": {
-                        "type": "string",
-                        "description": "Inclusive line range like '50-100' or '50-50'. 1-indexed. Takes precedence over head/tail."
-                    }
+                    "path": { "type": "string", "description": "File path" },
+                    "offset": { "type": "integer", "description": "Start line (1-based)", "default": 1 },
+                    "limit": { "type": "integer", "description": "Number of lines to read", "default": 500 },
+                    "outline": { "type": "boolean", "description": "If true, only returns symbols/outline of the file", "default": false },
+                    "symbol": { "type": "string", "description": "Read a specific symbol definition (function, struct, etc.) precisely using Tree-sitter" }
                 },
                 "required": ["path"]
             }),
+
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -93,6 +222,17 @@ pub async fn register(registry: &ToolRegistry) {
                     let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
                     let resolved_path = resolve_path(path, &args);
                     let path_str = resolved_path.to_string_lossy().to_string();
+
+                    // 打印详细参数日志，方便观察 LLM 是否使用了 symbol 等高级功能
+                    tracing::info!(
+                        "[Tool: read_file] path=\"{}\", symbol={:?}, outline={:?}, range={:?}-{:?}",
+                        path_str,
+                        args.get("symbol").and_then(|v| v.as_str()),
+                        args.get("outline").and_then(|v| v.as_bool()),
+                        args.get("offset"),
+                        args.get("limit")
+                    );
+
 
                     // 检查文件是否存在 + 获取元数据
                     let metadata = std::fs::metadata(&resolved_path)
@@ -124,30 +264,40 @@ pub async fn register(registry: &ToolRegistry) {
                         .map_err(|e| format!("Failed to read file: {}", e))?;
                     let total_lines = content.lines().count();
 
-                    // ── 确定读取范围 ──
-                    // range > head/tail > offset/limit > default(full)
-                    let (start_line, read_limit): (usize, usize) = {
-                        if let Some(range_str) = args.get("range").and_then(|v| v.as_str()) {
-                            // 解析 "A-B" 格式
-                            if let Some((a, b)) = range_str.split_once('-') {
-                                let s = a.trim().parse::<usize>().unwrap_or(1).max(1);
-                                let e = b.trim().parse::<usize>().unwrap_or(total_lines).max(s);
-                                (s - 1, (e - s + 1).min(MAX_LINES))
+                    // ── Outline 模式 ──
+                    if args.get("outline").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        let symbols = extract_symbols(&content, Some(path));
+                        return Ok(format!(
+                            "<path>{}</path>\n<type>file</type>\n<lines>{}</lines>\n<mode>outline</mode>\n\n{}",
+                            path_str, total_lines, symbols
+                        ));
+                    }
+
+                    // ── Symbol 模式 ──
+                    if let Some(target_symbol) = args.get("symbol").and_then(|v| v.as_str()) {
+                        if path.ends_with(".rs") {
+                            if let Some((start_line, end_line)) = find_symbol_range_rust(&content, target_symbol) {
+                                let lines: Vec<&str> = content.lines()
+                                    .skip(start_line.saturating_sub(1))
+                                    .take(end_line - start_line + 1)
+                                    .collect();
+                                let result = lines.join("\n");
+                                return Ok(format!(
+                                    "<path>{}</path>\n<type>file</type>\n<symbol>{}</symbol>\n<range>{}-{}</range>\n\n{}",
+                                    path_str, target_symbol, start_line, end_line, result
+                                ));
                             } else {
-                                (0, MAX_LINES)
+                                return Err(format!("Symbol '{}' not found in {}", target_symbol, path_str));
                             }
-                        } else if let Some(head) = args.get("head").and_then(|v| v.as_u64()) {
-                            (0, (head as usize).min(MAX_LINES))
-                        } else if let Some(tail) = args.get("tail").and_then(|v| v.as_u64()) {
-                            let t = (tail as usize).min(MAX_LINES);
-                            if t >= total_lines { (0, total_lines) }
-                            else { (total_lines - t, total_lines) }
-                        } else {
-                            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-                            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
-                            (offset.saturating_sub(1), limit.min(MAX_LINES))
                         }
+                    }
+
+                    let (start_line, read_limit) = {
+                        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                        (offset.saturating_sub(1), limit.min(MAX_LINES))
                     };
+
 
                     // ── 重复读取检测 ──
                     let repeat_key = format!("{}:{}:{}", path_str, start_line, read_limit);
@@ -174,7 +324,7 @@ pub async fn register(registry: &ToolRegistry) {
                         && args.get("head").is_none()
                         && args.get("tail").is_none();
                     if no_paging && file_size > FULL_READ_THRESHOLD_BYTES && start_line == 0 && read_limit >= MAX_LINES {
-                        // 返回大纲模式：前 80 行 + 文件信息
+                        // 返回大纲模式：前 80 行 + 文件信息 + 符号列表
                         let outline_limit = 80usize.min(total_lines);
                         let head_lines: Vec<String> = content.lines().take(outline_limit).enumerate().map(|(i, line)| {
                             let truncated = if line.len() > MAX_LINE_LENGTH {
@@ -195,16 +345,25 @@ pub async fn register(registry: &ToolRegistry) {
                         } else {
                             head_lines.join("\n")
                         };
+
+                        let symbols = extract_symbols(&content, Some(&path));
+                        let symbols_preview = if symbols.len() > 2000 {
+                            format!("{}... (truncated)", &symbols[..2000])
+                        } else {
+                            symbols
+                        };
+
                         return Ok(format!(
                             "<path>{}</path>\n<type>file</type>\n<size>{} bytes</size>\n<lines>{}</lines>\n\n\
-                             [Large file: {} bytes, {} lines — outline mode (threshold {}KB)]\n\n\
+                             [Large file: {} bytes, {} lines — auto-outline mode (threshold {}KB)]\n\n\
                              [Head {} lines for orientation]\n{}\n\n\
-                             [To read more, use:\n\
+                             [Major Symbols]\n{}\n\n\
+                             [To read specific parts, use:\n\
                               - read_file path=\"{}\" range=\"A-B\"    — 1-indexed line range\n\
                               - read_file path=\"{}\" head:N / tail:N  — first/last N lines]",
                             path_str, file_size, total_lines,
                             format_file_size(file_size), total_lines, FULL_READ_THRESHOLD_BYTES / 1024,
-                            outline_limit, truncated,
+                            outline_limit, truncated, symbols_preview,
                             path_str, path_str
                         ));
                     }
@@ -295,6 +454,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["path", "content"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -371,6 +531,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["path", "old_string", "new_string"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -437,6 +598,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["pattern"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -509,6 +671,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["pattern"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -622,6 +785,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["pattern", "replacement"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -711,6 +875,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": []
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -788,6 +953,7 @@ pub async fn register(registry: &ToolRegistry) {
                 },
                 "required": ["path", "new_path"]
             }),
+            skip_truncation_save: false,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -816,6 +982,71 @@ pub async fn register(registry: &ToolRegistry) {
                         .map_err(|e| format!("Failed to rename: {}", e))?;
 
                     Ok(format!("Renamed: {} -> {}", old_resolved.display(), new_resolved.display()))
+                },
+            ),
+        })
+        .await;
+
+    // pin_file tool
+    registry
+        .register(ToolDef {
+            name: "pin_file".to_string(),
+            display_name: "固定文件".to_string(),
+            description: "Pin a file's content to the persistent frozen context (System Prompt). \
+                          Use this for core code files you need to refer to frequently. \
+                          This reduces re-reading and ensures the content is always available in cache. \
+                          Params: path (required)"
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path to pin"
+                    }
+                },
+                "required": ["path"]
+            }),
+            skip_truncation_save: false,
+            handler: std::sync::Arc::new(
+                |args: serde_json::Value, _| -> Result<String, String> {
+                    let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
+                    let resolved_path = resolve_path(path, &args);
+                    if !resolved_path.exists() {
+                        return Err(format!("File not found: {}", resolved_path.display()));
+                    }
+                    let content = std::fs::read_to_string(&resolved_path)
+                        .map_err(|e| format!("Failed to read file: {}", e))?;
+                    
+                    // 注意：这里的返回结果会被 AgentRuntime 拦截并执行真正的 pin 操作
+                    Ok(format!("PIN_REQUEST:{}:{}", path, content))
+                },
+            ),
+        })
+        .await;
+
+    // unpin_file tool
+    registry
+        .register(ToolDef {
+            name: "unpin_file".to_string(),
+            display_name: "取消固定".to_string(),
+            description: "Remove a file from the persistent frozen context. Params: path (required)"
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path to unpin"
+                    }
+                },
+                "required": ["path"]
+            }),
+            skip_truncation_save: false,
+            handler: std::sync::Arc::new(
+                |args: serde_json::Value, _| -> Result<String, String> {
+                    let path = args["path"].as_str().ok_or("Missing 'path' parameter")?;
+                    Ok(format!("UNPIN_REQUEST:{}", path))
                 },
             ),
         })

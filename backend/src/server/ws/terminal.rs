@@ -6,13 +6,12 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use std::collections::HashMap;
-use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use uuid::Uuid;
+use std::io::{Read, Write};
+use portable_pty::{native_pty_system, CommandBuilder, PtySize, MasterPty, Child as PtyChild};
 
 pub fn routes() -> Router {
     Router::new()
@@ -65,26 +64,36 @@ static TERMINAL_MANAGER: once_cell::sync::Lazy<TerminalManager> =
 
 pub struct TerminalSession {
     pub id: String,
-    pub child: tokio::process::Child,
-    pub stdin: tokio::process::ChildStdin,
+    pub master: Box<dyn MasterPty + Send>,
+    pub child: Box<dyn PtyChild + Send>,
+    pub writer: Arc<std::sync::Mutex<Box<dyn Write + Send>>>,
     pub cwd: std::path::PathBuf,
 }
 
 impl TerminalSession {
     pub async fn spawn(id: &str, cwd: std::path::PathBuf) -> Result<Self, String> {
+        let pty_system = native_pty_system();
+        
+        let pty_pair = pty_system
+            .openpty(PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("Failed to open pty: {}", e))?;
+
         let shell = if cfg!(target_os = "windows") {
             "powershell.exe"
         } else {
             "bash"
         };
 
-        let mut cmd = tokio::process::Command::new(shell);
-        cmd.current_dir(&cwd);
+        let mut cmd = CommandBuilder::new(shell);
+        cmd.cwd(cwd.clone());
 
         if cfg!(target_os = "windows") {
             cmd.args(&["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass"]);
-            #[cfg(windows)]
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         } else {
             cmd.args(&["--norc"]);
         }
@@ -94,97 +103,47 @@ impl TerminalSession {
             cmd.env("LANG", "zh_CN.UTF-8");
         }
 
-        let mut child = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| format!("Failed to spawn shell: {}", e))?;
+        let child = pty_pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("Failed to spawn command in pty: {}", e))?;
 
-        let stdin = child.stdin.take().ok_or("Failed to get stdin")?;
+        let writer = pty_pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("Failed to take writer: {}", e))?;
 
         Ok(Self {
             id: id.to_string(),
+            master: pty_pair.master,
             child,
-            stdin,
+            writer: Arc::new(std::sync::Mutex::new(writer)),
             cwd,
         })
     }
 
     pub async fn kill(&mut self) {
-        let _ = self.child.kill().await;
-        let _ = self.child.wait().await;
+        let _ = self.child.kill();
     }
 
     pub async fn write_stdin(&mut self, data: &str) -> Result<(), String> {
-        use tokio::io::AsyncWriteExt;
-        self.stdin
+        let mut writer = self.writer.lock().map_err(|_| "Failed to lock writer")?;
+        writer
             .write_all(data.as_bytes())
-            .await
             .map_err(|e| format!("Write error: {}", e))?;
-        self.stdin
+        writer
             .flush()
-            .await
             .map_err(|e| format!("Flush error: {}", e))
     }
 
-    #[cfg(unix)]
     pub async fn send_ctrl_c(&self) -> Result<(), String> {
-        use nix::sys::signal::{kill, Signal};
-        use nix::unistd::Pid;
-        if let Some(pid) = self.child.id() {
-            kill(Pid::from_raw(pid as i32), Signal::SIGINT)
-                .map_err(|e| format!("Failed to send SIGINT: {}", e))?;
-            Ok(())
-        } else {
-            Err("No child process".to_string())
-        }
-    }
-
-    #[cfg(windows)]
-    pub async fn send_ctrl_c(&self) -> Result<(), String> {
-        use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_C_EVENT};
-        
-        if let Some(pid) = self.child.id() {
-            unsafe {
-                if GenerateConsoleCtrlEvent(CTRL_C_EVENT, pid) == 0 {
-                    return Err("Failed to send Ctrl+C event".to_string());
-                }
-            }
-            Ok(())
-        } else {
-            Err("No child process".to_string())
-        }
-    }
-}
-
-async fn pipe_output(
-    mut reader: impl tokio::io::AsyncRead + Unpin,
-    ws_sender: Arc<Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
-    cancel: Arc<AtomicBool>,
-    is_stderr: bool,
-) {
-    let mut buf = vec![0u8; 4096];
-    loop {
-        if cancel.load(Ordering::Relaxed) {
-            break;
-        }
-
-        match tokio::io::AsyncReadExt::read(&mut reader, &mut buf).await {
-            Ok(0) => break,
-            Ok(n) => {
-                let data = decode_windows_output(&buf[..n]);
-                let msg_type = if is_stderr { "stderr" } else { "stdout" };
-                if let Ok(mut sender) = ws_sender.try_lock() {
-                    let _ = sender
-                        .send(Message::Text(
-                            serde_json::json!({"type": msg_type, "data": data}).to_string(),
-                        ))
-                        .await;
-                }
-            }
-            Err(_) => break,
-        }
+        let mut writer = self.writer.lock().map_err(|_| "Failed to lock writer")?;
+        writer
+            .write_all(b"\x03")
+            .map_err(|e| format!("Write error: {}", e))?;
+        writer
+            .flush()
+            .map_err(|e| format!("Flush error: {}", e))
     }
 }
 
@@ -224,7 +183,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
     let session_id = match TERMINAL_MANAGER.create_session(cwd.clone()).await {
         Ok(id) => {
             tracing::debug!("[Terminal] Created session: {}", id);
-            let welcome = "\x1b[32m--- Jeeves Terminal ---\x1b[0m\r\n";
+            let welcome = "\x1b[32m--- Jeeves Terminal (Real PTY) ---\x1b[0m\r\n";
             let mut sender = ws_sender.lock().await;
             let _ = sender
                 .send(Message::Text(
@@ -246,42 +205,46 @@ async fn handle_terminal_socket(socket: WebSocket) {
     };
 
     if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
-        let mut session_lock = session.lock().await;
+        let session_lock = session.lock().await;
         
-        let stdout = match session_lock.child.stdout.take() {
-            Some(s) => s,
-            None => {
-                tracing::error!("[Terminal] stdout 已被占用，无法启动终端会话 {}", session_id);
-                return;
-            }
-        };
-        let stderr = match session_lock.child.stderr.take() {
-            Some(s) => s,
-            None => {
-                tracing::error!("[Terminal] stderr 已被占用，无法启动终端会话 {}", session_id);
+        let reader = match session_lock.master.try_clone_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("[Terminal] Failed to clone pty reader: {}", e);
                 return;
             }
         };
 
-        let ws_clone1 = ws_sender.clone();
-        let ws_clone2 = ws_sender.clone();
-        let cancel1 = cancel_flag.clone();
-        let cancel2 = cancel_flag.clone();
+        let ws_clone = ws_sender.clone();
+        let cancel_clone = cancel_flag.clone();
 
-        tokio::spawn(async move {
-            pipe_output(stdout, ws_clone1, cancel1, false).await;
+        tokio::task::spawn_blocking(move || {
+            let mut reader = reader;
+            let mut buf = [0u8; 4096];
+            let rt = tokio::runtime::Handle::current();
+            loop {
+                if cancel_clone.load(Ordering::Relaxed) {
+                    break;
+                }
+                match reader.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let data = decode_windows_output(&buf[..n]);
+                        let msg = serde_json::json!({
+                            "type": "stdout",
+                            "data": data,
+                        }).to_string();
+
+                        let ws_sender = ws_clone.clone();
+                        rt.block_on(async move {
+                            let mut sender = ws_sender.lock().await;
+                            let _ = sender.send(Message::Text(msg)).await;
+                        });
+                    }
+                    Err(_) => break,
+                }
+            }
         });
-
-        tokio::spawn(async move {
-            pipe_output(stderr, ws_clone2, cancel2, true).await;
-        });
-
-        #[cfg(windows)]
-        {
-            let _ = session_lock.write_stdin("[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\r\n").await;
-        }
-
-        let _ = session_lock.write_stdin("\r\n").await;
     }
 
     while let Some(msg) = ws_receiver.next().await {
@@ -297,12 +260,7 @@ async fn handle_terminal_socket(socket: WebSocket) {
                 match cmd_type {
                     "stdin" => {
                         let data = parsed["data"].as_str().unwrap_or("");
-                        if data == "\x03" {
-                            if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
-                                let session_lock = session.lock().await;
-                                let _ = session_lock.send_ctrl_c().await;
-                            }
-                        } else {
+                        if !data.is_empty() {
                             if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
                                 let mut session_lock = session.lock().await;
                                 if let Err(e) = session_lock.write_stdin(data).await {
@@ -323,12 +281,10 @@ async fn handle_terminal_socket(socket: WebSocket) {
                         let cmd = parsed["command"].as_str()
                             .or_else(|| parsed["data"].as_str())
                             .unwrap_or("");
-                        if !cmd.is_empty() {
-                            let line = format!("{}\r\n", cmd);
-                            if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
-                                let mut session_lock = session.lock().await;
-                                let _ = session_lock.write_stdin(&line).await;
-                            }
+                        let line = format!("{}\r\n", cmd);
+                        if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
+                            let mut session_lock = session.lock().await;
+                            let _ = session_lock.write_stdin(&line).await;
                         }
                     }
                     "cd" => {
@@ -337,6 +293,19 @@ async fn handle_terminal_socket(socket: WebSocket) {
                         if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
                             let mut session_lock = session.lock().await;
                             let _ = session_lock.write_stdin(&cd_cmd).await;
+                        }
+                    }
+                    "resize" => {
+                        let cols = parsed["cols"].as_u64().unwrap_or(80) as u16;
+                        let rows = parsed["rows"].as_u64().unwrap_or(24) as u16;
+                        if let Some(session) = TERMINAL_MANAGER.get_session(&session_id).await {
+                            let session_lock = session.lock().await;
+                            let _ = session_lock.master.resize(portable_pty::PtySize {
+                                rows,
+                                cols,
+                                pixel_width: 0,
+                                pixel_height: 0,
+                            });
                         }
                     }
                     _ => tracing::warn!("[Terminal] Unknown msg type: {}", cmd_type),
@@ -387,7 +356,7 @@ async fn try_restart_shell(
             let mut sender = ws_sender.lock().await;
             let _ = sender
                 .send(Message::Text(
-                    serde_json::json!({"type":"error","data": format!("Shell crashed: {}", e)}).to_string(),
+                    serde_json::json!({"type":"error","data": format!("Failed to restart shell: {}", e)}).to_string(),
                 ))
                 .await;
         }

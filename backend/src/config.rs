@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::fs;
 
@@ -37,6 +38,9 @@ pub struct AppConfig {
     /// 命令白名单前缀列表（匹配到的命令跳过审批直接执行）
     #[serde(default)]
     pub shell_allowlist: Vec<String>,
+    /// 技能启用状态映射 { skill_name: enabled }
+    #[serde(default)]
+    pub skills: HashMap<String, bool>,
 }
 
 /// 模型配置（单独存放）
@@ -135,15 +139,16 @@ pub struct ProviderConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            port: 3000,
+            port: 5173,
             host: "127.0.0.1".to_string(),
             llm_timeout: 60,
             max_retries: 1,
             max_iterations: 0, // 0=无硬上限，由上下文使用率驱动循环
             temperature: 0.7,
-            compact_threshold: 40,
-            compact_keep: 20,
+            compact_threshold: 100,
+            compact_keep: 40,
             allowed_origins: vec![
+
                 "http://localhost:1420".to_string(),
                 "http://localhost:5173".to_string(),
                 "http://127.0.0.1:1420".to_string(),
@@ -166,6 +171,7 @@ impl Default for AppConfig {
                 "ssh -o StrictHostKeyChecking=no".into(),
             ],
             shell_allowlist: vec![],
+            skills: HashMap::new(),
         }
     }
 }
@@ -627,7 +633,7 @@ mod tests {
     #[test]
     fn test_default_app_config() {
         let config = AppConfig::default();
-        assert_eq!(config.port, 3000);
+        assert_eq!(config.port, 5173);
         assert_eq!(config.host, "127.0.0.1");
     }
 

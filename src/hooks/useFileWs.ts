@@ -1,9 +1,18 @@
+import { getApiBase } from './useApi'
+
 /**
  * 共享文件 WebSocket 单例
  * FileExplorer 和 useFileEditor 共用同一个连接
  */
 
-const WS_URL = 'ws://127.0.0.1:3000/ws/files'
+function getFilesWsUrl(): string {
+  const apiBase = getApiBase()
+  if (apiBase.startsWith('http://') || apiBase.startsWith('https://')) {
+    return apiBase.replace(/^http/, 'ws').replace(/\/api$/, '/ws/files')
+  }
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}/ws/files`
+}
 
 type WsListener = (msg: Record<string, unknown>) => void
 
@@ -25,7 +34,7 @@ export function getFileWebSocket(): Promise<WebSocket> {
   if (connectPromise) return connectPromise
 
   connectPromise = new Promise((resolve, reject) => {
-    const ws = new WebSocket(WS_URL)
+    const ws = new WebSocket(getFilesWsUrl())
     let resolved = false
 
     ws.onopen = () => {

@@ -1,9 +1,14 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { TerminalMessage, UseTerminalReturn } from '@/types/terminal'
+import { getApiBase } from './useApi'
 
 /** 终端 WebSocket URL 生成 */
 function getTerminalWsUrl(): string {
+  const apiBase = getApiBase()
+  if (apiBase.startsWith('http://') || apiBase.startsWith('https://')) {
+    return apiBase.replace(/^http/, 'ws').replace(/\/api$/, '/ws/terminal')
+  }
   if (typeof window === 'undefined') {
     return 'ws://127.0.0.1:3000/ws/terminal'
   }
@@ -54,6 +59,10 @@ export function useTerminal(
 
   /** 建立 WebSocket 连接 */
   const connect = useCallback(() => {
+    if (!terminalRef.current) {
+      setTimeout(connect, 50)
+      return
+    }
     const existing = wsRef.current
     if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
       return

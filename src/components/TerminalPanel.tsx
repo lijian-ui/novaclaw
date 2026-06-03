@@ -78,9 +78,6 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
   const fitAddonRef = useRef<FitAddon | null>(null)
   const termContainerRef = useRef<HTMLDivElement>(null)
   const initializedRef = useRef(false)
-  const lineBufferRef = useRef('')
-  const historyRef = useRef<string[]>([])
-  const historyIdxRef = useRef(-1)
   useTranslation()
 
   const [height, setHeight] = useState(DEFAULT_HEIGHT)
@@ -99,6 +96,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
     sendCommand,
     killProcess,
     clearOutput,
+    resize,
     disconnect,
   } = useTerminal(terminalRef)
 
@@ -132,79 +130,14 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
     term.loadAddon(new WebLinksAddon())
     term.open(termContainerRef.current!)
 
-    /** VSCode 风格行输入模式：缓存输入，Enter 发送，↑↓ 历史，Ctrl+C 中断，Ctrl+L 清屏 */
+    /** 真 PTY 模式：直接将用户所有的输入及控制键发送到后端 shell */
     const disposeOnData = term.onData((data: string) => {
-      if (data === '\x03') {
-        // Ctrl+C: 立即发送到 shell，绕过输入缓冲
-        sendInputRef.current('\x03')
-        lineBufferRef.current = ''
-        term.write('^C\r\n')
-        return
-      }
-
-      for (const ch of data) {
-        if (ch === '\r') {
-          const cmd = lineBufferRef.current
-          if (cmd.trim()) {
-            historyRef.current.push(cmd)
-            historyIdxRef.current = historyRef.current.length
-          }
-          lineBufferRef.current = ''
-          term.write('\r\n')
-          sendCommandRef.current(cmd)
-        } else if (ch === '\x7f' || ch === '\b') {
-          if (lineBufferRef.current.length > 0) {
-            lineBufferRef.current = lineBufferRef.current.slice(0, -1)
-            term.write('\b \b')
-          }
-        } else if (ch === '\x0c') {
-          // Ctrl+L: 清屏
-          term.write('\x0c')
-        } else if (ch === '\x1b') {
-          // ESC 清除当前行
-          if (lineBufferRef.current.length > 0) {
-            term.write('\b \b'.repeat(lineBufferRef.current.length))
-            lineBufferRef.current = ''
-          }
-        } else if (ch >= ' ') {
-          lineBufferRef.current += ch
-          term.write(ch)
-        }
-      }
+      sendInputRef.current(data)
     })
 
-    /** 处理上下箭头历史导航（VT100 序列） */
-    const disposeOnEscape = term.onData((data: string) => {
-      if (data === '\x1b[A') {
-        // 上箭头：显示上一条历史
-        if (historyRef.current.length > 0 && historyIdxRef.current > 0) {
-          historyIdxRef.current--
-          // 清除当前行
-          if (lineBufferRef.current.length > 0) {
-            term.write('\b \b'.repeat(lineBufferRef.current.length))
-          }
-          const cmd = historyRef.current[historyIdxRef.current]
-          lineBufferRef.current = cmd
-          term.write(cmd)
-        }
-      } else if (data === '\x1b[B') {
-        // 下箭头：显示下一条历史
-        if (historyIdxRef.current < historyRef.current.length - 1) {
-          historyIdxRef.current++
-          if (lineBufferRef.current.length > 0) {
-            term.write('\b \b'.repeat(lineBufferRef.current.length))
-          }
-          const cmd = historyRef.current[historyIdxRef.current]
-          lineBufferRef.current = cmd
-          term.write(cmd)
-        } else {
-          historyIdxRef.current = historyRef.current.length
-          if (lineBufferRef.current.length > 0) {
-            term.write('\b \b'.repeat(lineBufferRef.current.length))
-          }
-          lineBufferRef.current = ''
-        }
-      }
+    /** 处理终端窗口尺寸变化，同步到后端 PTY */
+    const disposeOnResize = term.onResize(({ cols, rows }) => {
+      resize(cols, rows)
     })
 
     terminalRef.current = term
@@ -261,7 +194,7 @@ export function TerminalPanel({ visible, onClose }: TerminalPanelProps) {
     return () => {
       clearTimeout(fitTimer)
       disposeOnData.dispose()
-      disposeOnEscape.dispose()
+      disposeOnResize.dispose()
       container?.removeEventListener('contextmenu', handleContextMenu)
       window.removeEventListener('resize', handleResize)
       ro.disconnect()
