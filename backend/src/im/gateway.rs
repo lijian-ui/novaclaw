@@ -304,6 +304,8 @@ impl IMGateway {
             models_config,
             skills,
         );
+        // 注入 IM 回复上下文（告知 LLM 如何通过 im_push 回复）
+        runtime.im_reply_context = Some(im_session::build_im_reply_context(&msg));
 
         // 5. 尝试启动流式回复（仅 DingTalk 支持 AI Card 流式）
         let (stream_tx, is_streaming) = {

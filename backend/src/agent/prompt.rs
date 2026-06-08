@@ -32,6 +32,8 @@ pub struct SystemPromptBuilder<'a> {
     memory_content: Option<String>,
     /// 固定到上下文的文件内容
     pinned_files_content: Option<String>,
+    /// IM 回复上下文（platform, robot, target_id 等）
+    im_reply_context: Option<String>,
 }
 
 impl<'a> SystemPromptBuilder<'a> {
@@ -49,6 +51,7 @@ impl<'a> SystemPromptBuilder<'a> {
             soul_manager: None,
             memory_content: None,
             pinned_files_content: None,
+            im_reply_context: None,
         }
     }
 
@@ -106,6 +109,12 @@ impl<'a> SystemPromptBuilder<'a> {
         self
     }
 
+    /// 注入 IM 回复上下文
+    pub fn with_im_reply_context(mut self, context: Option<String>) -> Self {
+        self.im_reply_context = context;
+        self
+    }
+
     /// 构建完整的系统提示词（向后兼容，包含所有层）
     pub async fn build(&self) -> String {
         let frozen = self.build_frozen().await;
@@ -125,7 +134,7 @@ impl<'a> SystemPromptBuilder<'a> {
         sections.join("\n\n")
     }
 
-    /// 构建易变后缀（memory、技能、日期、Pinned Files）
+    /// 构建易变后缀（memory、技能、日期、Pinned Files、IM 上下文）
     pub fn build_volatile(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
         sections.push(format!("## Current Time\n- Today: {}", chrono::Local::now().format("%Y-%m-%d %A")));
@@ -133,6 +142,11 @@ impl<'a> SystemPromptBuilder<'a> {
         if let Some(ref pinned) = self.pinned_files_content {
             if !pinned.is_empty() {
                 sections.push(pinned.clone());
+            }
+        }
+        if let Some(ref im_ctx) = self.im_reply_context {
+            if !im_ctx.is_empty() {
+                sections.push(im_ctx.clone());
             }
         }
         if !self.skill_list.is_empty() {

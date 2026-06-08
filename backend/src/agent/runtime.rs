@@ -157,6 +157,8 @@ pub struct AgentRuntime {
     cached_tool_schemas: Option<Vec<crate::tools::types::ToolDefinition>>,
     /// 文件访问计数器，用于语义级"隐式钉住"
     file_access_counts: HashMap<String, usize>,
+    /// IM 回复上下文（仅在 IM 会话时设置，用于 volatile suffix）
+    pub im_reply_context: Option<String>,
 }
 
 
@@ -198,6 +200,7 @@ impl AgentRuntime {
             consecutive_tool_failures: 0,
             cached_tool_schemas: None,
             file_access_counts: HashMap::new(),
+            im_reply_context: None,
         }
     }
 
@@ -1964,7 +1967,7 @@ impl AgentRuntime {
             "Linux"
         };
 
-        let builder = crate::agent::prompt::SystemPromptBuilder::new(
+        let mut builder = crate::agent::prompt::SystemPromptBuilder::new(
             &self.config,
             os_name,
             self.session.workspace.as_deref(),
@@ -1972,6 +1975,10 @@ impl AgentRuntime {
         .with_skills(skills)
         .with_memory(memory_content)
         .with_pinned_files(Some(self.session.get_pinned_files_context()));
+
+        if let Some(ref im_ctx) = self.im_reply_context {
+            builder = builder.with_im_reply_context(Some(im_ctx.clone()));
+        }
 
         builder.build_volatile()
     }

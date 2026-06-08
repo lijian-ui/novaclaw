@@ -43,34 +43,33 @@ pub fn format_im_message(msg: &IncomingMessage) -> String {
     };
     let sender = msg.sender_name.as_deref().unwrap_or("未知用户");
     let group_name = msg.conversation_title.as_deref().unwrap_or("");
+
+    match msg.conversation_type {
+        ConversationType::Private => {
+            // 私聊：无需额外标识
+            msg.text.clone()
+        }
+        ConversationType::Group => {
+            // 群聊：标注发送者身份
+            if group_name.is_empty() {
+                format!("[来自 {}] {}", sender, msg.text)
+            } else {
+                format!("[{}] {} (来自群聊「{}」)", sender, msg.text, group_name)
+            }
+        }
+    }
+}
+
+/// 构建 IM 回复上下文（注入 volatile suffix，告知 LLM 如何通过 im_push 回复）
+pub fn build_im_reply_context(msg: &IncomingMessage) -> String {
+    let platform_name = platform_chinese_name(&msg.platform);
+    let conv_type = match msg.conversation_type {
+        ConversationType::Private => "私聊",
+        ConversationType::Group => "群聊",
+    };
     let sender_id = msg.sender_id.as_deref().unwrap_or("");
     let sender_staff_id = msg.sender_staff_id.as_deref().unwrap_or("");
     let uid = if !sender_staff_id.is_empty() { sender_staff_id } else { sender_id };
-
-    let prefix = match msg.conversation_type {
-        ConversationType::Private => {
-            format!(
-                "[来自 {} {}，用户：{} (userId={}, robot={})]\n",
-                platform_name, conv_type, sender, uid, msg.account_id
-            )
-        }
-        ConversationType::Group => {
-            if group_name.is_empty() {
-                format!(
-                    "[来自 {} {}，发送者：{} (userId={}, robot={})]\n",
-                    platform_name, conv_type, sender, uid, msg.account_id
-                )
-            } else {
-                format!(
-                    "[来自 {} {}「{}」，发送者：{} (userId={}, robot={})]\n",
-                    platform_name, conv_type, group_name, sender, uid, msg.account_id
-                )
-            }
-        }
-    };
-
-    // 附加提示：告知 LLM 可以用 im_push 回复
-    let mut result = format!("{}{}", prefix, msg.text);
     let target_id = match msg.conversation_type {
         ConversationType::Private => uid,
         ConversationType::Group => &msg.conversation_id,
@@ -79,25 +78,11 @@ pub fn format_im_message(msg: &IncomingMessage) -> String {
         ConversationType::Private => "private",
         ConversationType::Group => "group",
     };
-    if !target_id.is_empty() {
-        let scene_desc = match msg.conversation_type {
-            ConversationType::Private => {
-                format!(
-                    "\n\n[当前对话场景：{} {}，robot=\"{}\", target_id=\"{}\"]",
-                    platform_name, conv_type, msg.account_id, target_id
-                )
-            }
-            ConversationType::Group => {
-                format!(
-                    "\n\n[当前对话场景：{} {}，robot=\"{}\", openConversationId=\"{}\"]",
-                    platform_name, conv_type, msg.account_id, target_id
-                )
-            }
-        };
-        result.push_str(&scene_desc);
-    }
 
-    result
+    format!(
+        "## IM Reply Context\n- Platform: {} ({})\n- Robot: {}\n- Reply target: type={}, id={}",
+        platform_name, conv_type, msg.account_id, target_type_str, target_id
+    )
 }
 
 /// IM 会话映射管理器
