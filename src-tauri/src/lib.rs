@@ -21,7 +21,7 @@ pub fn run() {
         }))
         .setup(|app| {
             let window = app.get_webview_window("main").expect("窗口不存在");
-            let app_handle = app.handle();
+            let app_handle = app.handle().clone();
 
             window.on_window_event(move |event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
