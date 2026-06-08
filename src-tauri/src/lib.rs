@@ -21,14 +21,16 @@ pub fn run() {
         }))
         .setup(|app| {
             let window = app.get_webview_window("main").expect("窗口不存在");
-            let app_handle = app.handle().clone();
 
-            window.on_window_event(move |event| {
+            window.clone().on_window_event(move |event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    // 隐藏整个应用而非仅隐藏窗口
-                    // 这样 Mac 上点击 Dock 图标能正确恢复窗口
-                    let _ = app_handle.hide();
+                    // Mac: 最小化到 Dock（点击 Dock 图标可恢复）
+                    // Windows/Linux: 隐藏窗口（点击任务栏图标可恢复）
+                    #[cfg(target_os = "macos")]
+                    let _ = window.minimize();
+                    #[cfg(not(target_os = "macos"))]
+                    let _ = window.hide();
                 }
             });
 
