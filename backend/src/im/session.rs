@@ -162,6 +162,7 @@ impl IMSessionManager {
             let history = self.session_store.get_messages(&existing.id).unwrap_or_default();
             let mut session = AgentSession::new(&existing.name, &existing.model, None);
             session.id = existing.id.clone();
+            session.session_store = Some(self.session_store.clone());
             for m in &history {
                 session.push_message(AgentMessage {
                     role: m.role.clone(),
@@ -218,6 +219,7 @@ impl IMSessionManager {
 
         let mut session = AgentSession::new(&session_name, &current_default_model, None);
         session.id = stored.id;
+        session.session_store = Some(self.session_store.clone());
 
         // 存入内存映射
         {

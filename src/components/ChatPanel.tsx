@@ -560,7 +560,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     setShowScrollBtn(distFromBottom > 100)
   }, [])
 
-  const { abortRef, listProviders, getDefaultModel, updateSessionModel } = useApi()
+  const { abortRef, listProviders, getDefaultModel, setDefaultModel, updateSessionModel } = useApi()
 
   // Load model list from backend
   const loadModels = useCallback(() => {
@@ -634,7 +634,9 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   // Save default model when user changes selection
   const handleModelChange = useCallback((modelName: string) => {
     setSelectedModel(modelName)
-    // 仅更新当前会话的模型，不修改全局默认模型（避免跨会话泄漏）
+    // 更新全局默认模型（IM 等后台场景也使用默认模型）
+    setDefaultModel(modelName).catch(() => {})
+    // 更新当前会话的模型（避免前端跨会话泄漏）
     if (currentSession?.id) {
       setCurrentSession({ ...currentSession, model: modelName })
       updateSessionModel(currentSession.id, modelName).catch(() => {})
@@ -646,7 +648,7 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
     setSessionInputTokens(0)
     setCacheHitRate(0)
     setLastCacheHitTokens(0)
-  }, [modelOptions, currentSession, setCurrentSession, updateSessionModel])
+  }, [modelOptions, currentSession, setCurrentSession, updateSessionModel, setDefaultModel])
 
   // 获取当前选中模型对应的图标
   const selectedModelIcon = useCallback(() => {

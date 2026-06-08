@@ -285,7 +285,10 @@ impl IMGateway {
                 .clone();
             let app_config = state.config.clone();
             let registry = Arc::new(state.tool_registry.clone());
-            let skill_list = state.skills_loader.list_skills();
+            let skill_list = crate::skills::loader::SkillsLoader::filter_enabled(
+                state.skills_loader.list_skills(),
+                &state.config.skills,
+            );
             let mm_config = state.models_config.clone();
             (provider, app_config, registry, mm_config, skill_list)
         };
