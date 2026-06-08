@@ -145,7 +145,7 @@ pub async fn register(registry: &ToolRegistry) {
                             vec![],
                         );
 
-                        match agent.run_turn("", None, None, &[]).await {
+                        match agent.run_turn("", None, None, &[], &[]).await {
                             Ok(result) => {
                                 tracing::info!(
                                     "[SubAgent] '{}' 任务完成，输出 {} 字符",

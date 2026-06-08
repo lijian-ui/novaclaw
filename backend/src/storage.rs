@@ -199,6 +199,14 @@ impl SessionStore {
             }
         }
 
+        // 删除关联媒体文件入站目录
+        let media_inbound_path = crate::config::get_media_inbound_dir(id);
+        if media_inbound_path.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&media_inbound_path) {
+                tracing::warn!("删除媒体文件目录失败 ({}): {}", media_inbound_path.display(), e);
+            }
+        }
+
         tracing::info!("删除会话: {}", id);
         Ok(())
     }

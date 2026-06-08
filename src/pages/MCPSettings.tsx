@@ -250,9 +250,9 @@ export function MCPSettings({ onBack }: MCPSettingsProps) {
                     <RefreshCw className={`w-3.5 h-3.5 text-foreground/40 ${discovering === server.name ? 'animate-spin' : ''}`} />
                   </button>
                   <button onClick={() => handleToggle(server.name)}
-                    className={`relative w-8 h-4 rounded-full transition-colors mx-1 ${server.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
+                    className={`relative w-9 h-5 rounded-full transition-colors ${server.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
                     title={server.enabled ? t('mcpSettings.disable') : t('mcpSettings.enable')}>
-                    <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${server.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${server.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
                   </button>
                   <button onClick={() => setShowDeleteConfirm(server.name)} className="p-1 rounded hover:bg-red-500/10 transition-colors" title={t('mcpSettings.delete')}>
                     <Trash2 className="w-3.5 h-3.5 text-foreground/40 hover:text-red-400" />

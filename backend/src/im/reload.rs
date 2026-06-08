@@ -69,7 +69,8 @@ pub async fn reload_gateway() {
                                     incoming_tx,
                                     acc_id,
                                     acc_name,
-                                ),
+                                )
+                                .with_client(dt_client.clone()),
                             )
                             .await;
                     }
@@ -107,6 +108,7 @@ pub async fn reload_gateway() {
                     let wx_client = std::sync::Arc::new(
                         crate::weixin::WeixinClient::new(
                             base_url.to_string(),
+                            format!("https://cdn.{}", base_url.trim_start_matches("https://")),
                             account_id.clone(),
                             account_cfg.credentials.client_id.clone(),
                         )

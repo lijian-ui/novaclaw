@@ -76,9 +76,38 @@ async fn get_session_messages(Query(params): Query<HashMap<String, String>>) -> 
     }
 }
 
+#[derive(Deserialize)]
+struct UpdateSessionReq {
+    #[serde(default)]
+    model: Option<String>,
+}
+
+/// 更新会话（模型等）
+async fn update_session(
+    Query(params): Query<HashMap<String, String>>,
+    Json(req): Json<UpdateSessionReq>,
+) -> Json<serde_json::Value> {
+    let session_id = match params.get("session_id") {
+        Some(id) => id,
+        None => return Json(serde_json::json!({"success": false, "message": "缺少 session_id 参数"})),
+    };
+    let state = APP_STATE.read().await;
+    let mut session = match state.session_store.get_session(session_id) {
+        Ok(s) => s,
+        Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
+    };
+    if let Some(model) = &req.model {
+        session.model = model.clone();
+    }
+    session.updated_at = chrono::Utc::now().to_rfc3339();
+    match state.session_store.update_session(&session) {
+        Ok(_) => Json(serde_json::json!({ "success": true, "data": session })),
+        Err(e) => Json(serde_json::json!({ "success": false, "message": e.to_string() })),
+    }
+}
+
 pub fn routes() -> Router {
     Router::new()
         .route("/sessions", get(list_sessions).post(create_session))
-        // 由于 Axum {param} 语法在此版本不可用，改用查询参数
-        .route("/session", get(get_session_messages).delete(delete_session))
+        .route("/session", get(get_session_messages).delete(delete_session).put(update_session))
 }

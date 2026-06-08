@@ -340,6 +340,12 @@ pub const MSG_KEY_TEXT: &str = "sampleText";
 pub const MSG_KEY_MARKDOWN: &str = "sampleMarkdown";
 pub const MSG_KEY_IMAGE: &str = "sampleImageMsg";
 pub const MSG_KEY_LINK: &str = "sampleLink";
+/// 文件消息
+pub const MSG_KEY_FILE: &str = "sampleFile";
+/// 视频消息
+pub const MSG_KEY_VIDEO: &str = "sampleVideo";
+/// 音频消息
+pub const MSG_KEY_AUDIO: &str = "sampleAudio";
 
 /// 文本消息参数
 #[derive(Debug, Serialize)]
@@ -359,6 +365,44 @@ pub struct MarkdownMsgParam {
 pub struct ImageMsgParam {
     #[serde(rename = "photoURL")]
     pub photo_url: String,
+}
+
+/// 文件消息参数
+#[derive(Debug, Serialize)]
+pub struct FileMsgParam {
+    #[serde(rename = "mediaId")]
+    pub media_id: String,
+    #[serde(rename = "fileName")]
+    pub file_name: String,
+}
+
+/// 视频消息参数
+#[derive(Debug, Serialize)]
+pub struct VideoMsgParam {
+    #[serde(rename = "videoMediaId")]
+    pub video_media_id: String,
+    #[serde(rename = "videoType")]
+    pub video_type: String,
+    pub duration: i64,
+}
+
+/// 音频消息参数
+#[derive(Debug, Serialize)]
+pub struct AudioMsgParam {
+    #[serde(rename = "audioMediaId")]
+    pub audio_media_id: String,
+    pub duration: i64,
+}
+
+/// Webhook 回复时的 @ 配置
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct WebhookAtConfig {
+    #[serde(rename = "atDingtalkIds", skip_serializing_if = "Option::is_none")]
+    pub at_dingtalk_ids: Option<Vec<String>>,
+    #[serde(rename = "atUserIds", skip_serializing_if = "Option::is_none")]
+    pub at_user_ids: Option<Vec<String>>,
+    #[serde(rename = "isAtAll")]
+    pub is_at_all: bool,
 }
 
 // ─── Webhook 回复 ──────────────────────────────────
@@ -388,6 +432,26 @@ impl WebhookReply {
             text: None,
             markdown: Some(serde_json::json!({"title": title, "text": text})),
             at: None,
+        }
+    }
+
+    /// 创建带 @ 的文本回复
+    pub fn text_with_at(content: &str, at: &WebhookAtConfig) -> Self {
+        Self {
+            msgtype: "text".to_string(),
+            text: Some(serde_json::json!({"content": content})),
+            markdown: None,
+            at: Some(serde_json::to_value(at).unwrap_or_default()),
+        }
+    }
+
+    /// 创建带 @ 的 Markdown 回复
+    pub fn markdown_with_at(title: &str, text: &str, at: &WebhookAtConfig) -> Self {
+        Self {
+            msgtype: "markdown".to_string(),
+            text: None,
+            markdown: Some(serde_json::json!({"title": title, "text": text})),
+            at: Some(serde_json::to_value(at).unwrap_or_default()),
         }
     }
 }

@@ -73,6 +73,14 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     loadSessions()
   }, [loadSessions, sessionListVersion])
 
+  // 定时轮询：自动检测后端新增的会话（如 IM 会话）
+  useEffect(() => {
+    const interval = setInterval(() => {
+      refreshSessionList()
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [refreshSessionList])
+
   const handleCreateSession = async () => {
     try {
       // 创建新任务，继承当前选中的默认模型

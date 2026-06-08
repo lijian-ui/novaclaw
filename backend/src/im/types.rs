@@ -114,6 +114,19 @@ impl fmt::Display for SessionSource {
     }
 }
 
+/// 附件信息结构体
+///
+/// 存储用户发送的媒体文件原始字节数据，由 IMGateway 统一保存到磁盘。
+#[derive(Debug, Clone)]
+pub struct Attachment {
+    /// 文件名（含扩展名）
+    pub file_name: String,
+    /// 文件二进制数据
+    pub data: Vec<u8>,
+    /// MIME 类型
+    pub mime_type: String,
+}
+
 /// 标准化入站消息
 ///
 /// 由各个平台的适配器将平台原生消息转换为此格式。
@@ -140,6 +153,10 @@ pub struct IncomingMessage {
     pub text: String,
     /// 媒体资源 URL 列表
     pub media_urls: Vec<String>,
+    /// 视频 data URL 列表 (data:video/...;base64, 格式，用于多模态 LLM)
+    pub video_data_urls: Vec<String>,
+    /// 附件列表（文件、视频等二进制内容，由 IMGateway 统一持久化到磁盘）
+    pub attachments: Vec<Attachment>,
     /// 原始消息 JSON（调试/转发用）
     pub raw: serde_json::Value,
     /// 会话 Webhook URL（钉钉独有，用于快速回复）
@@ -223,8 +240,8 @@ impl PlatformCapabilities {
     pub fn dingtalk() -> Self {
         Self {
             supports_markdown: true,
-            supports_images: false, // 钉钉图片需先上传 media_id，暂不支持
-            supports_files: false,
+            supports_images: true,
+            supports_files: true,
             max_message_length: 20000,
         }
     }

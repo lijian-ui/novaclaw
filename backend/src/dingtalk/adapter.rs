@@ -202,4 +202,135 @@ impl IMAdapter for DingTalkAdapter {
         }
         Ok(())
     }
+
+    async fn send_image(
+        &self,
+        target: &MessageTarget,
+        url: &str,
+        _caption: Option<&str>,
+    ) -> Result<SendResult, AppError> {
+        match target.conversation_type {
+            ConversationType::Private => {
+                self.client
+                    .send_private_image(vec![target.conversation_id.clone()], url)
+                    .await?;
+            }
+            ConversationType::Group => {
+                self.client
+                    .send_group_image(&target.conversation_id, url)
+                    .await?;
+            }
+        }
+        Ok(SendResult::ok())
+    }
+
+    async fn send_file(
+        &self,
+        target: &MessageTarget,
+        url: &str,
+        file_name: &str,
+    ) -> Result<SendResult, AppError> {
+        tracing::info!("[钉钉] 发送文件: target={}, url存在={}, fileName={}",
+            target.conversation_id, !url.is_empty(), file_name);
+
+        match target.conversation_type {
+            ConversationType::Private => {
+                self.client
+                    .send_private_file(vec![target.conversation_id.clone()], url, file_name)
+                    .await?;
+            }
+            ConversationType::Group => {
+                self.client
+                    .send_group_file(&target.conversation_id, url, file_name)
+                    .await?;
+            }
+        }
+
+        tracing::info!("[钉钉] 文件发送成功");
+        Ok(SendResult::ok())
+    }
+
+    async fn send_video(
+        &self,
+        target: &MessageTarget,
+        url: &str,
+        _caption: Option<&str>,
+    ) -> Result<SendResult, AppError> {
+        tracing::info!("[钉钉] 发送视频: target={}, url存在={}",
+            target.conversation_id, !url.is_empty());
+
+        // 默认时长 0（由钉钉服务端自动获取）
+        let duration: i64 = 0;
+
+        match target.conversation_type {
+            ConversationType::Private => {
+                self.client
+                    .send_private_video(vec![target.conversation_id.clone()], url, duration)
+                    .await?;
+            }
+            ConversationType::Group => {
+                self.client
+                    .send_group_video(&target.conversation_id, url, duration)
+                    .await?;
+            }
+        }
+
+        tracing::info!("[钉钉] 视频发送成功");
+        Ok(SendResult::ok())
+    }
+
+    async fn send_audio(
+        &self,
+        target: &MessageTarget,
+        url: &str,
+    ) -> Result<SendResult, AppError> {
+        tracing::info!("[钉钉] 发送音频: target={}, url存在={}",
+            target.conversation_id, !url.is_empty());
+
+        // 默认时长 0（由钉钉服务端自动获取）
+        let duration: i64 = 0;
+
+        match target.conversation_type {
+            ConversationType::Private => {
+                self.client
+                    .send_private_audio(vec![target.conversation_id.clone()], url, duration)
+                    .await?;
+            }
+            ConversationType::Group => {
+                self.client
+                    .send_group_audio(&target.conversation_id, url, duration)
+                    .await?;
+            }
+        }
+
+        tracing::info!("[钉钉] 音频发送成功");
+        Ok(SendResult::ok())
+    }
+
+    /// 回复原始消息并 @ 消息发送者
+    async fn reply_with_at(
+        &self,
+        original: &IncomingMessage,
+        text: &str,
+    ) -> Result<SendResult, AppError> {
+        // 优先使用 sessionWebhook 回复（实时性最好）
+        if let Some(webhook) = &original.session_webhook {
+            let user_id = original.sender_staff_id.as_deref()
+                .or(original.sender_id.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let at_user_ids = if user_id.is_empty() {
+                vec![]
+            } else {
+                vec![user_id]
+            };
+            self.client
+                .reply_with_at(webhook, text, at_user_ids)
+                .await?;
+        } else {
+            // 兜底：通过 REST API 回复
+            return self.reply(original, text).await;
+        }
+        Ok(SendResult::ok())
+    }
 }

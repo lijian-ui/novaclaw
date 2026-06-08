@@ -3,26 +3,46 @@ use crate::IM_GATEWAY;
 use crate::tools::registry::{ToolDef, ToolRegistry};
 use serde_json::json;
 
+/// 将平台字符串解析为 PlatformType
+fn parse_platform(s: &str) -> PlatformType {
+    match s {
+        "dingtalk" => PlatformType::DingTalk,
+        "weixin" | "wechat" => PlatformType::Custom("weixin".to_string()),
+        "wecom" | "wechatwork" => PlatformType::WeChatWork,
+        "feishu" => PlatformType::Feishu,
+        "slack" => PlatformType::Slack,
+        "discord" => PlatformType::Discord,
+        "telegram" => PlatformType::Telegram,
+        other => PlatformType::Custom(other.to_string()),
+    }
+}
+
 /// 注册 im_push 工具
 pub async fn register(registry: &ToolRegistry) {
     registry
         .register(ToolDef {
                         name: "im_push".to_string(),
             display_name: "IM推送".to_string(),
-            description: r#"Send a message to an IM platform (DingTalk, etc.) via a specific bot account.
+            description: r#"Send a message to an IM platform via a specific bot account.
 Use this to proactively push notifications, alerts, or scheduled messages to users or groups.
 
+The 'platform' specifies which IM platform (e.g. 'dingtalk', 'weixin').
 The 'robot' specifies the bot account to send from (e.g. 'bot1', 'default').
 The 'target_id' is the recipient — for private messages it's the user's userId,
 for group messages it's the openConversationId.
 You can find these IDs in the message context when users chat with the bot.
 
 Examples:
-- im_push(robot="bot1", target_type="private", target_id="manager123", content="任务完成")
-- im_push(robot="bot2", target_type="group", target_id="cidxxx", content="大家好")"#.to_string(),
+- im_push(platform="dingtalk", robot="bot1", target_type="private", target_id="manager123", content="任务完成")
+- im_push(platform="weixin", robot="bot1", target_type="private", target_id="wx_user123", content="你好")"#.to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "platform": {
+                        "type": "string",
+                        "description": "IM platform (e.g. 'dingtalk', 'weixin', 'wecom', 'feishu')",
+                        "default": "dingtalk"
+                    },
                     "robot": {
                         "type": "string",
                         "description": "Bot account ID to send from (e.g. 'bot1', 'bot2', 'default')"
@@ -57,6 +77,7 @@ Examples:
                 move |args: serde_json::Value,
                       _chunk_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>|
                  -> Result<String, String> {
+                    let platform_str = args["platform"].as_str().unwrap_or("dingtalk");
                     let robot = args["robot"].as_str().ok_or("Missing 'robot' — specify which bot account to send from")?.to_string();
                     let target_type = args["target_type"].as_str().ok_or("Missing 'target_type'")?;
                     let target_id = args["target_id"].as_str().ok_or("Missing 'target_id'")?;
@@ -64,6 +85,7 @@ Examples:
                     let content_type = args["content_type"].as_str().unwrap_or("text");
                     let title = args["title"].as_str().unwrap_or("");
 
+                    let platform = parse_platform(platform_str);
                     let conversation_type = match target_type {
                         "private" => ConversationType::Private,
                         "group" => ConversationType::Group,
@@ -72,7 +94,7 @@ Examples:
 
                     let target = MessageTarget {
                         account_id: robot.clone(),
-                        platform: PlatformType::DingTalk,
+                        platform,
                         conversation_id: target_id.to_string(),
                         conversation_type,
                     };
@@ -87,14 +109,16 @@ Examples:
                         let adapter = gw.registry.get(&composite_key).await
                             .ok_or_else(|| format!("机器人账号 '{}' 未注册或未连接 (key={})", robot, composite_key))?;
 
-                        let result = if content_type == "markdown" && !title.is_empty() {
+                        // 微信不支持 markdown
+                        let supports_md = target.platform.as_str() == "dingtalk";
+                        let result = if content_type == "markdown" && !title.is_empty() && supports_md {
                             adapter.send_markdown(&target, title, content).await
                         } else {
                             adapter.send_text(&target, content).await
                         };
 
                         match result {
-                            Ok(_) => Ok(json!({"success": true, "message": format!("消息已通过 {} 发送", robot)}).to_string()),
+                            Ok(_) => Ok(json!({"success": true, "message": format!("消息已通过 {}:{} 发送", platform_str, robot)}).to_string()),
                             Err(e) => Err(format!("发送失败: {}", e)),
                         }
                     })

@@ -8,9 +8,12 @@
 use crate::error::AppError;
 use crate::im::registry::{AccountInfo, AccountRegistry};
 use crate::im::session::{self as im_session, IMSessionManager};
-use crate::im::types::{IncomingMessage, MessageTarget, PlatformType, SendResult};
+use crate::im::types::{Attachment, IncomingMessage, MessageTarget, PlatformType, SendResult};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::time::Duration;
+use tokio::sync::{mpsc, Mutex};
+use uuid::Uuid;
 
 /// IM 网关
 pub struct IMGateway {
@@ -110,10 +113,15 @@ impl IMGateway {
     async fn process_incoming_loop(self: Arc<Self>, mut rx: mpsc::UnboundedReceiver<IncomingMessage>) {
         tracing::info!("IMGateway 入站消息处理器已启动");
 
-        // 初始化会话管理器
+        // 初始化会话管理器（使用 Arc 共享，支持跨任务访问）
         let sessions_dir = crate::config::get_sessions_dir();
         let session_store = crate::storage::SessionStore::new(&sessions_dir);
-        let session_mgr = IMSessionManager::new(session_store);
+        let session_mgr = Arc::new(IMSessionManager::new(session_store));
+
+        // 消息缓冲区：同一会话短时间内到达的多条消息合并为一条再处理
+        // iLink Bot 会将文本和媒体拆分为多条独立消息推送
+        let pending: Arc<Mutex<HashMap<String, Vec<IncomingMessage>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
 
         while let Some(msg) = rx.recv().await {
             // 群聊：检查是否需要响应
@@ -122,21 +130,69 @@ impl IMGateway {
                 continue;
             }
 
-            let sender = msg.sender_name.as_deref().unwrap_or("?");
+            let sender = msg.sender_name.as_deref().unwrap_or("?").to_string();
             tracing::info!(
                 "[{}] IM → Agent: [{}] {}: {}",
                 msg.account_id,
                 msg.platform,
                 sender,
-                &msg.text[..msg.text.len().min(80)],
+                &crate::utils::safe_truncate(&msg.text, 80),
             );
 
-            // 每个消息独立 try 块，防止单条消息异常影响后续
-            if let Err(e) = self
-                .process_single_message(&session_mgr, msg)
-                .await
-            {
-                tracing::error!("处理 IM 消息失败: {}", e);
+            // 计算会话唯一 key（用于消息合并）
+            let source = im_session::session_source_from_incoming(&msg);
+            let session_key = source.to_string();
+
+            // 将消息加入缓冲区，判断是否为首条（决定是否启动延迟处理任务）
+            let is_first = {
+                let mut buf = pending.lock().await;
+                let entry = buf.entry(session_key.clone()).or_default();
+                let is_first = entry.is_empty();
+                entry.push(msg);
+                is_first
+            };
+
+            if is_first {
+                // 首条消息：启动延迟处理任务，等待短时间内同会话的后续消息合并
+                let gateway = self.clone();
+                let mgr = session_mgr.clone();
+                let key = session_key.clone();
+                let buf = pending.clone();
+                tokio::spawn(async move {
+                    // 等待 300ms 收集同会话的后续消息
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+
+                    // 取出缓冲区内所有消息
+                    let merged = {
+                        let mut map = buf.lock().await;
+                        map.remove(&key)
+                    };
+
+                    if let Some(msgs) = merged {
+                        if msgs.is_empty() {
+                            return;
+                        }
+
+                        // 多条消息合并为一条（含文本、图片、视频、附件）
+                        let combined = if msgs.len() == 1 {
+                            msgs.into_iter().next().unwrap()
+                        } else {
+                            merge_messages(msgs)
+                        };
+
+                        tracing::info!(
+                            "[Gateway] 合并消息: text_prefix={}, media_urls={}, video_data_urls={}, attachments={}",
+                            crate::utils::safe_truncate(&combined.text, 50),
+                            combined.media_urls.len(),
+                            combined.video_data_urls.len(),
+                            combined.attachments.len(),
+                        );
+
+                        if let Err(e) = gateway.process_single_message(&mgr, combined).await {
+                            tracing::error!("处理 IM 消息失败: {}", e);
+                        }
+                    }
+                });
             }
         }
 
@@ -146,7 +202,7 @@ impl IMGateway {
     /// 处理单条入站消息：会话 → Agent → 回复
     async fn process_single_message(
         &self,
-        session_mgr: &IMSessionManager,
+        session_mgr: &Arc<IMSessionManager>,
         msg: IncomingMessage,
     ) -> Result<(), AppError> {
         use crate::agent::runtime::AgentRuntime;
@@ -167,7 +223,53 @@ impl IMGateway {
 
         // 2. 格式化用户消息（注入平台上下文）
 
-        let user_text = im_session::format_im_message(&msg);
+        let mut user_text = im_session::format_im_message(&msg);
+
+        // 2.1 处理附件：保存到磁盘并追加路径到消息文本
+        if !msg.attachments.is_empty() {
+            let inbound_dir = crate::config::get_media_inbound_dir(&session_id);
+            if let Err(e) = std::fs::create_dir_all(&inbound_dir) {
+                tracing::warn!("[Gateway] 创建附件目录失败: {}", e);
+            } else {
+                let mut path_texts: Vec<String> = Vec::new();
+                for attachment in &msg.attachments {
+                    let uuid = Uuid::new_v4();
+                    let safe_name = format!("{}_{}", uuid, attachment.file_name);
+                    let file_path = inbound_dir.join(&safe_name);
+                    match std::fs::write(&file_path, &attachment.data) {
+                        Ok(_) => {
+                            let path_str = file_path.to_string_lossy().to_string();
+                            tracing::info!("[Gateway] 附件已保存: {}", path_str);
+                            // 视频类附件已通过 video_data_urls 传递给多模态 LLM，
+                            // 不再追加路径文本到 user_text，避免 LLM 尝试用系统工具查看视频文件
+                            if !attachment.mime_type.starts_with("video/") {
+                                path_texts.push(format!("[附件: {} -> {}]", attachment.file_name, path_str));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("[Gateway] 保存附件失败 ({}): {}", safe_name, e);
+                        }
+                    }
+                }
+                if !path_texts.is_empty() {
+                    let attachment_text = path_texts.join("\n");
+                    if user_text.is_empty() {
+                        user_text = attachment_text;
+                    } else {
+                        user_text = format!("{}\n\n{}", user_text, attachment_text);
+                    }
+                }
+            }
+        }
+
+        // 日志：记录 media_urls 信息（图片调试用）
+        tracing::info!(
+            "[Gateway] 处理消息: text_prefix={}, session_id={}, media_urls数量={}, 首条前缀={}",
+            crate::utils::safe_truncate(&msg.text, 50),
+            session_id,
+            msg.media_urls.len(),
+            msg.media_urls.first().map(|u| crate::utils::safe_truncate(u, 60)).unwrap_or("(无)".to_string())
+        );
 
         // 3. 获取 LLM 客户端的配置
         let (provider, config, tool_registry, models_config, skills) = {
@@ -234,12 +336,40 @@ impl IMGateway {
             });
         }
 
-        // 7. 执行 Agent
-        let result = runtime.run_turn(&user_text, step_tx, None, &[]).await?;
+        // 7. 执行 Agent（传入图片/视频 Base64 data URL 以支持多模态识别）
+        if !msg.video_data_urls.is_empty() {
+            // 视频消息：先回复"正在下载"，后台异步处理
+            let _ = self.reply(&msg, "收到视频，正在下载并处理中，请稍候...").await;
+        }
+        let result = runtime.run_turn(&user_text, step_tx, None, &msg.media_urls, &msg.video_data_urls).await?;
         let reply_content = result.content.trim().to_string();
 
         // 8. 持久化会话消息
         {
+            // 8a. 将图片 Base64 data URL 保存到磁盘，获得文件路径列表
+            let image_paths: Option<Vec<String>> = {
+                if msg.media_urls.is_empty() {
+                    None
+                } else {
+                    let paths: Vec<String> = msg.media_urls
+                        .iter()
+                        .filter_map(|url| {
+                            match crate::server::routes::chat::save_image_data_url(url, &result.session_id) {
+                                Ok(filename) => {
+                                    tracing::info!("[Gateway] 图片已保存: {}/{}", result.session_id, filename);
+                                    Some(filename)
+                                }
+                                Err(e) => {
+                                    tracing::warn!("[Gateway] 保存图片失败: {}", e);
+                                    None
+                                }
+                            }
+                        })
+                        .collect();
+                    if paths.is_empty() { None } else { Some(paths) }
+                }
+            };
+
             let _ = crate::APP_STATE
                 .read()
                 .await
@@ -262,7 +392,7 @@ impl IMGateway {
                     cached_tokens: None,
                     last_input_tokens: None,
                     last_output_tokens: None,
-                    image_paths: None,
+                    image_paths: image_paths.clone(),
                     message_type: None,
                     cache_hit_rate: None,
                 });
@@ -309,7 +439,7 @@ impl IMGateway {
         } else {
             tracing::info!(
                 "Agent → IM: {}，长度={}字符",
-                &reply_content.chars().take(50).collect::<String>(),
+                &crate::utils::safe_truncate(&reply_content, 50),
                 reply_content.len()
             );
             self.reply(&msg, &reply_content).await?;
@@ -317,4 +447,43 @@ impl IMGateway {
 
         Ok(())
     }
+}
+
+/// 合并同一会话短时间内到达的多条消息为一条。
+///
+/// iLink Bot 等 SDK 会将文本和媒体拆分为多条独立消息推送，
+/// 此函数将它们合并为一条 IncomingMessage，确保 Agent 能同时看到文本和媒体内容。
+fn merge_messages(msgs: Vec<IncomingMessage>) -> IncomingMessage {
+    let mut iter = msgs.into_iter();
+    let mut base = iter.next().expect("merge_messages: empty input");
+
+    for msg in iter {
+        // 合并文本（非空且不重复则追加）
+        if !msg.text.is_empty() && !base.text.contains(&msg.text) {
+            if base.text.is_empty() {
+                base.text = msg.text;
+            } else {
+                base.text.push('\n');
+                base.text.push_str(&msg.text);
+            }
+        }
+        // 合并媒体资源
+        base.media_urls.extend(msg.media_urls);
+        base.video_data_urls.extend(msg.video_data_urls);
+        base.attachments.extend(msg.attachments);
+        // 保留最后的时间戳
+        base.timestamp = base.timestamp.max(msg.timestamp);
+        // 保留最后一条的 raw（更完整）
+        base.raw = msg.raw;
+        // 保留非空的 session_webhook
+        if msg.session_webhook.is_some() {
+            base.session_webhook = msg.session_webhook;
+        }
+        // 保留非空的 sender_name
+        if msg.sender_name.is_some() {
+            base.sender_name = msg.sender_name;
+        }
+    }
+
+    base
 }

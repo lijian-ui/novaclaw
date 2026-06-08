@@ -334,6 +334,19 @@ export function useApi() {
     }
   }, [handleError])
 
+  const updateSessionModel = useCallback(async (sessionId: string, model: string): Promise<void> => {
+    setLoading(true)
+    setError(null)
+    try {
+      await api.put(`/session`, { model }, { params: { session_id: sessionId } })
+    } catch (err) {
+      handleError(err)
+      throw err
+    } finally {
+      setLoading(false)
+    }
+  }, [handleError])
+
   const getMessages = useCallback(async (sessionId: string): Promise<Message[]> => {
     setLoading(true)
     setError(null)
@@ -659,6 +672,7 @@ export function useApi() {
     createSession,
     getSession,
     deleteSession,
+    updateSessionModel,
     getMessages,
     addMessage,
     // Skills

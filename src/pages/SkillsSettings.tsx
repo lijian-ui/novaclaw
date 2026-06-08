@@ -137,11 +137,11 @@ export function SkillsSettings({ onBack }: SkillsSettingsProps) {
                 <div className="flex items-center gap-1 shrink-0">
                   <button
                     onClick={() => handleToggle(skill.id)}
-                    className={`relative w-7 h-3.5 rounded-full transition-colors mx-1 ${skill.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
+                    className={`relative w-9 h-5 rounded-full transition-colors ${skill.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
                     title={skill.enabled ? '点击停用' : '点击启用'}
                   >
                     <div
-                      className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-foreground transition-transform ${skill.enabled ? 'translate-x-3.5' : 'translate-x-0.5'}`}
+                      className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${skill.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`}
                     />
                   </button>
                   <button

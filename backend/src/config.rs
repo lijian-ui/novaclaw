@@ -7,24 +7,34 @@ use std::fs;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     /// HTTP 服务器端口
+    #[serde(default)]
     pub port: u16,
     /// 监听地址
+    #[serde(default)]
     pub host: String,
     /// LLM 请求超时（秒）
+    #[serde(default)]
     pub llm_timeout: u32,
     /// 最大重试次数
+    #[serde(default)]
     pub max_retries: u32,
     /// 最大 Agent 迭代次数（0=无限制）
+    #[serde(default)]
     pub max_iterations: usize,
     /// Agent 温度参数
+    #[serde(default)]
     pub temperature: f64,
     /// 上下文压缩阈值（消息数超过此值时触发压缩）
+    #[serde(default)]
     pub compact_threshold: usize,
     /// 上下文压缩保留消息数
+    #[serde(default)]
     pub compact_keep: usize,
     /// 允许的来源（CORS）
+    #[serde(default)]
     pub allowed_origins: Vec<String>,
     /// Prompt 注入保护开关
+    #[serde(default)]
     pub prompt_injection_protection: bool,
     /// 数据目录（可选，用于自定义路径）
     pub data_dir: Option<String>,
@@ -41,6 +51,9 @@ pub struct AppConfig {
     /// 技能启用状态映射 { skill_name: enabled }
     #[serde(default)]
     pub skills: HashMap<String, bool>,
+    /// 命令审批模式: "approval"（需审批）或 "auto"（自动执行）
+    #[serde(default)]
+    pub approval_mode: String,
 }
 
 /// 模型配置（单独存放）
@@ -172,6 +185,7 @@ impl Default for AppConfig {
             ],
             shell_allowlist: vec![],
             skills: HashMap::new(),
+            approval_mode: "approval".to_string(),
         }
     }
 }
@@ -565,6 +579,34 @@ pub fn get_memories_dir() -> PathBuf {
 /// | Linux  | ~/.local/share/jeeves/sessions/          |
 pub fn get_sessions_dir() -> PathBuf {
     get_base_dir().join("sessions")
+}
+
+/// 获取媒体文件入站目录（按会话ID区分）
+///
+/// 用于存放用户发送的附件（文件、视频等），按会话 ID 分目录管理，
+/// 删除会话时同步删除对应目录。
+///
+/// | 平台   | 路径示例                                                        |
+/// |--------|-----------------------------------------------------------------|
+/// | Win    | %USERPROFILE%\Documents\jeeves\sessions\media\inbound\{session_id}\ |
+/// | macOS  | ~/Library/Application Support/jeeves/sessions/media/inbound/{session_id}/ |
+/// | Linux  | ~/.local/share/jeeves/sessions/media/inbound/{session_id}/       |
+pub fn get_media_inbound_dir(session_id: &str) -> PathBuf {
+    get_sessions_dir().join("media").join("inbound").join(session_id)
+}
+
+/// 获取媒体文件临时目录
+///
+/// 用于存放临时媒体文件（如图片解密后的临时缓存），
+/// 应用重启时可能清理。
+///
+/// | 平台   | 路径示例                                              |
+/// |--------|-------------------------------------------------------|
+/// | Win    | %USERPROFILE%\Documents\jeeves\sessions\media\temp\ |
+/// | macOS  | ~/Library/Application Support/jeeves/sessions/media/temp/ |
+/// | Linux  | ~/.local/share/jeeves/sessions/media/temp/           |
+pub fn get_media_temp_dir() -> PathBuf {
+    get_sessions_dir().join("media").join("temp")
 }
 
 /// 获取日志存放目录

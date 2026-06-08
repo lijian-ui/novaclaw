@@ -199,6 +199,7 @@ async fn tick() -> Result<(), String> {
                     tracing::info!("[Cron] 任务完成: {} | 输出:\n{}", job.name, output);
                     CRON_STORE.lock().await.update(&job_id, |j| {
                         j.status = "idle".to_string();
+                        j.last_error = None;
                     });
                 }
                 Err(e) => {
@@ -266,7 +267,7 @@ pub async fn execute_cron_job(job: &CronJob) -> Result<String, String> {
     );
 
     tracing::info!("[Cron] 开始通过 Agent 执行 payload...");
-    let result = agent.run_turn(&job.payload, None, None, &[]).await
+    let result = agent.run_turn(&job.payload, None, None, &[], &[]).await
         .map_err(|e| format!("Agent 执行失败: {}", e))?;
 
     tracing::info!("[Cron] Agent 执行完成: {} 字符", result.content.len());

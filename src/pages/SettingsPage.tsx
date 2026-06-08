@@ -11,6 +11,7 @@ import {
   Brain,
   Save,
   Loader2,
+  FileCheck,
 } from 'lucide-react'
 import { useTheme } from '@/contexts/ThemeContext'
 import { useTranslation } from 'react-i18next'
@@ -27,6 +28,7 @@ interface SettingsSection {
 const sections: SettingsSection[] = [
   { id: 'appearance', titleKey: 'settings.appearance', icon: Palette, iconColor: 'text-violet-400' },
   { id: 'security', titleKey: 'settings.security', icon: Shield, iconColor: 'text-red-400' },
+  { id: 'audit', titleKey: 'settings.audit', icon: FileCheck, iconColor: 'text-cyan-400' },
   { id: 'language', titleKey: 'settings.language', icon: Globe, iconColor: 'text-emerald-400' },
   { id: 'memory', titleKey: 'settings.memory', icon: Brain, iconColor: 'text-amber-400' },
 ]
@@ -324,10 +326,50 @@ export function SettingsPage({ onBack }: SettingsSettingsProps) {
     </div>
   )
 
+  const renderAudit = () => (
+    <div className="space-y-4">
+      <div className="rounded-xl border border-border bg-foreground/[0.02] p-4">
+        <label className="text-sm font-medium text-foreground/90 mb-3 block">{t('settings.audit')}</label>
+        <p className="text-xs text-foreground/50 mb-4">{t('settings.auditDesc')}</p>
+        <div className="space-y-3">
+          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${(config as any)?.approval_mode !== 'auto' ? 'border-blue-500/50 bg-blue-500/10' : 'border-border bg-foreground/5 hover:bg-foreground/10'}`}>
+            <input type="radio" name="approval_mode" value="approval"
+              checked={(config as any)?.approval_mode !== 'auto'}
+              onChange={() => saveConfig({ approval_mode: 'approval' } as any)}
+              className="accent-blue-500"
+            />
+            <div>
+              <span className="text-sm font-medium text-foreground/90">{t('settings.auditApproval')}</span>
+              <p className="text-xs text-foreground/50 mt-0.5">{t('settings.auditApprovalDesc')}</p>
+            </div>
+          </label>
+          <label className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${(config as any)?.approval_mode === 'auto' ? 'border-blue-500/50 bg-blue-500/10' : 'border-border bg-foreground/5 hover:bg-foreground/10'}`}>
+            <input type="radio" name="approval_mode" value="auto"
+              checked={(config as any)?.approval_mode === 'auto'}
+              onChange={() => saveConfig({ approval_mode: 'auto' } as any)}
+              className="accent-blue-500"
+            />
+            <div>
+              <span className="text-sm font-medium text-foreground/90">{t('settings.auditAuto')}</span>
+              <p className="text-xs text-foreground/50 mt-0.5">{t('settings.auditAutoDesc')}</p>
+            </div>
+          </label>
+        </div>
+        {agentSaveStatus === 'saved' && (
+          <span className="text-xs text-green-400/80 mt-3 block">{t('settings.saved')}</span>
+        )}
+        {agentSaveStatus === 'error' && (
+          <span className="text-xs text-red-400/80 mt-3 block">{t('settings.saveError')}</span>
+        )}
+      </div>
+    </div>
+  )
+
   const renderSection = () => {
     switch (activeSection) {
       case 'appearance': return renderAppearance()
       case 'security': return renderSecurity()
+      case 'audit': return renderAudit()
       case 'language': return renderLanguage()
       case 'memory': return renderMemory()
       default: return null

@@ -53,6 +53,10 @@ impl AppState {
     pub fn new() -> Self {
         config::ensure_directories_exists();
         let config = config::AppConfig::load();
+        // 初始化命令审批模式缓存
+        if let Ok(mut mode) = crate::tools::execute::APPROVAL_MODE.write() {
+            *mode = config.approval_mode.clone();
+        }
         let models_config = config::ModelsConfig::load();
         Self {
             tool_registry: tools::registry::ToolRegistry::default(),
@@ -282,7 +286,8 @@ pub async fn initialize() {
                                     incoming_tx,
                                     acc_id,
                                     acc_name,
-                                ),
+                                )
+                                .with_client(dt_client.clone()),
                             )
                             .await;
                     }
@@ -321,6 +326,7 @@ pub async fn initialize() {
                     let wx_client = std::sync::Arc::new(
                         crate::weixin::WeixinClient::new(
                             base_url.to_string(),
+                            format!("https://cdn.{}", base_url.trim_start_matches("https://")),
                             account_id.clone(),
                             account_cfg.credentials.client_id.clone(),
                         )

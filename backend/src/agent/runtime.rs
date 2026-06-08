@@ -209,8 +209,9 @@ impl AgentRuntime {
 
     // ── 预检：消息历史总字符数触发压缩的阈值 ──
     const PREFLIGHT_CHAR_LIMIT: usize = 300_000;
-    // ── 预检：序列化请求体字节硬限制（超过此值强制截断，DeepSeek 网关约 700KB 上限） ──
-    const PREFLIGHT_BODY_BYTE_HARD_LIMIT: usize = 700_000;
+    // ── 预检：序列化请求体字节硬限制（超过此值强制截断，DeepSeek 网关约 700KB 上限）
+    // 处理视频 base64（多模态）时需放宽限制，避免小视频也触发截断
+    const PREFLIGHT_BODY_BYTE_HARD_LIMIT: usize = 5_000_000;
     // ── 预检层级阈值（相对于模型上下文窗口的比例） ──
     // 参考 DeepSeek-Reasonix 的设计：尽早触发，避免挤满窗口后再被动压缩
     const PREFLIGHT_LEVEL1_RATIO: f64 = 0.30; // ≥30% 告警
@@ -241,6 +242,7 @@ impl AgentRuntime {
         step_tx: Option<mpsc::Sender<AgentStep>>,
         cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
         images: &[String],
+        videos: &[String],
     ) -> Result<AgentResult, AppError> {
         let mut iterations = 0;
         let mut final_content = String::new();
@@ -294,7 +296,7 @@ impl AgentRuntime {
         // ── P0: 会话自我修复（防止孤立工具消息导致的 API 400 错误） ──
         self.session.heal();
 
-        self.session.push_user_with_images(&processed_input, images);
+        self.session.push_user_with_images_and_videos(&processed_input, images, videos);
 
 
         // ── P0: 上下文压缩检查 ──
@@ -1222,27 +1224,35 @@ impl AgentRuntime {
         let mut first_user_msg_idx = None;
         for (i, msg) in self.session.log.entries().iter().enumerate() {
             let content = if msg.role == "user" && first_user_msg_idx.is_none() {
-                // 检查是否有图片：从 messages 中读取
+                // 检查是否有图片或视频：从 messages 中读取
                 let has_images = self.session.messages.get(i)
                     .and_then(|m| m.images.as_ref())
                     .map(|imgs| !imgs.is_empty())
                     .unwrap_or(false);
-                if !has_images {
+                let has_videos = self.session.messages.get(i)
+                    .and_then(|m| m.videos.as_ref())
+                    .map(|vids| !vids.is_empty())
+                    .unwrap_or(false);
+                if !has_images && !has_videos {
                     serde_json::Value::String(msg.content.clone())
                 } else {
-                    // 只有第一条带图的 user 消息才嵌入 base64，后续迭代不再重传
+                    // 只有第一条带媒体（图片/视频）的 user 消息才嵌入 base64，后续迭代不再重传
                     first_user_msg_idx = Some(i);
-                    // 先取出图片，避免后续可变 borrow 冲突
+                    // 先取出图片和视频，避免后续可变 borrow 冲突
                     let imgs = self.session.messages[i].images.clone().unwrap_or_default();
-                    // 释放后续消息中的图片内存（只保留第一条带图的）
+                    let vids = self.session.messages[i].videos.clone().unwrap_or_default();
+                    // 释放后续消息中的媒体内存（只保留第一条带媒体的）
                     for j in (i + 1)..self.session.messages.len() {
                         if let Some(ref mut later_msg) = self.session.messages.get_mut(j) {
                             if later_msg.images.is_some() {
                                 later_msg.images = None;
                             }
+                            if later_msg.videos.is_some() {
+                                later_msg.videos = None;
+                            }
                         }
                     }
-                    if imgs.is_empty() {
+                    if imgs.is_empty() && vids.is_empty() {
                         serde_json::Value::String(msg.content.clone())
                     } else {
                         let mut parts: Vec<serde_json::Value> = vec![serde_json::json!({
@@ -1253,6 +1263,14 @@ impl AgentRuntime {
                             parts.push(serde_json::json!({
                                 "type": "image_url",
                                 "image_url": { "url": url }
+                            }));
+                        }
+                        for url in &vids {
+                            parts.push(serde_json::json!({
+                                "type": "video_url",
+                                "video_url": { "url": url },
+                                "fps": 2,
+                                "media_resolution": "default"
                             }));
                         }
                         serde_json::Value::Array(parts)
@@ -1294,6 +1312,28 @@ impl AgentRuntime {
         }
 
         // ── P0: 发送前"治愈"消息（参考 Reasonix healActiveLogBeforeSend） ──
+        // 0. sanitize: 清理所有消息内容中的控制字符（避免 JSON 序列化污染）
+        for msg in &mut messages {
+            if let serde_json::Value::String(ref content) = msg.content {
+                let sanitized: String = content.chars()
+                    .filter(|c| !c.is_control() || *c == '\n' || *c == '\t' || *c == '\r')
+                    .collect();
+                if sanitized.len() != content.len() {
+                    msg.content = serde_json::Value::String(sanitized);
+                }
+            }
+            // 同时清理 tool_call arguments 中的控制字符
+            if let Some(ref mut calls) = msg.tool_calls {
+                for call in calls {
+                    let sanitized: String = call.function.arguments.chars()
+                        .filter(|c| !c.is_control() || *c == '\n' || *c == '\t' || *c == '\r')
+                        .collect();
+                    if sanitized.len() != call.function.arguments.len() {
+                        call.function.arguments = sanitized;
+                    }
+                }
+            }
+        }
         // 1. heal: 截断过大的 tool 结果
         //    - 历史中的 tool 消息：LLM 首次调用时已看到完整内容，后续轮次只需摘要
         //    - 按 token 数截断（而非字符数），避免中文场景 2× token 代价
@@ -1678,6 +1718,7 @@ impl AgentRuntime {
             again_reasonings,
             reasoning,
             images: None,
+            videos: None,
             weight: 0,
         };
 
@@ -2131,7 +2172,7 @@ impl AgentRuntime {
             role: "assistant".to_string(),
             content: format!("[INTERMEDIATE STEPS — previous steps completed, key progress below]{}", record_text),
             tool_calls: None, tool_call_id: None, tool_name: None,
-            first_reasoning: None, again_reasonings: None, reasoning: None, images: None,
+            first_reasoning: None, again_reasonings: None, reasoning: None, images: None, videos: None,
             weight: 0,
         };
 

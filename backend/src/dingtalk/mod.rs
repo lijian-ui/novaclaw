@@ -32,6 +32,7 @@ pub mod message;
 
 use crate::dingtalk::connection::{start_connection, ConnectionConfig, DingTalkConnection};
 use crate::dingtalk::credential::TokenManager;
+use crate::dingtalk::frames::MediaUploadResponse;
 use crate::dingtalk::handler::{CallbackHandler, HandlerRegistry};
 use crate::dingtalk::message::MessageSender;
 use crate::error::AppError;
@@ -238,6 +239,148 @@ impl DingTalkClient {
     /// 下载消息中的文件，返回下载 URL
     pub async fn download_file(&self, download_code: &str) -> Result<String, AppError> {
         self.message_sender.download_file(download_code).await
+    }
+
+    /// 下载消息中的媒体文件并转为 Base64 data URL
+    pub async fn download_media_to_base64(
+        &self,
+        download_code: &str,
+        mime_type: &str,
+    ) -> Result<String, AppError> {
+        self.message_sender
+            .download_media_to_base64(download_code, mime_type)
+            .await
+    }
+
+    /// 发送私聊图片消息
+    pub async fn send_private_image(
+        &self,
+        user_ids: Vec<String>,
+        photo_url: &str,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .send_private_image(user_ids, photo_url)
+            .await
+    }
+
+    /// 发送群聊图片消息
+    pub async fn send_group_image(
+        &self,
+        open_conversation_id: &str,
+        photo_url: &str,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .send_group_image(open_conversation_id, photo_url)
+            .await
+    }
+
+    /// 发送私聊文件消息
+    pub async fn send_private_file(
+        &self,
+        user_ids: Vec<String>,
+        url: &str,
+        file_name: &str,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .send_private_file(user_ids, url, file_name)
+            .await
+    }
+
+    /// 发送群聊文件消息
+    pub async fn send_group_file(
+        &self,
+        open_conversation_id: &str,
+        url: &str,
+        file_name: &str,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .send_group_file(open_conversation_id, url, file_name)
+            .await
+    }
+
+    /// 发送私聊视频消息
+    pub async fn send_private_video(
+        &self,
+        user_ids: Vec<String>,
+        url: &str,
+        duration: i64,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .send_private_video(user_ids, url, duration)
+            .await
+    }
+
+    /// 发送群聊视频消息
+    pub async fn send_group_video(
+        &self,
+        open_conversation_id: &str,
+        url: &str,
+        duration: i64,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .send_group_video(open_conversation_id, url, duration)
+            .await
+    }
+
+    /// 发送私聊音频消息
+    pub async fn send_private_audio(
+        &self,
+        user_ids: Vec<String>,
+        url: &str,
+        duration: i64,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .send_private_audio(user_ids, url, duration)
+            .await
+    }
+
+    /// 发送群聊音频消息
+    pub async fn send_group_audio(
+        &self,
+        open_conversation_id: &str,
+        url: &str,
+        duration: i64,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .send_group_audio(open_conversation_id, url, duration)
+            .await
+    }
+
+    /// 通过会话 Webhook 回复文本（带 @ 某人）
+    pub async fn reply_with_at(
+        &self,
+        webhook_url: &str,
+        content: &str,
+        at_user_ids: Vec<String>,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .reply_with_at(webhook_url, content, at_user_ids)
+            .await
+    }
+
+    /// 通过会话 Webhook 回复 Markdown（带 @ 某人）
+    pub async fn reply_markdown_with_at(
+        &self,
+        webhook_url: &str,
+        title: &str,
+        text: &str,
+        at_user_ids: Vec<String>,
+    ) -> Result<(), AppError> {
+        self.message_sender
+            .reply_markdown_with_at(webhook_url, title, text, at_user_ids)
+            .await
+    }
+
+    /// 上传媒体文件到钉钉 OAPI
+    pub async fn upload_media(
+        &self,
+        media_type: &str,
+        file_data: Vec<u8>,
+        file_name: &str,
+    ) -> Result<MediaUploadResponse, AppError> {
+        self.message_sender
+            .upload_media(media_type, file_data, file_name)
+            .await
     }
 
     // ─── AI Card 流式回复 ──────────────────────────

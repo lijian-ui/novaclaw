@@ -40,6 +40,32 @@ pub static ALLOW_PATTERNS: once_cell::sync::Lazy<RwLock<Vec<String>>> =
 pub static DENY_PATTERNS: once_cell::sync::Lazy<RwLock<Vec<String>>> =
     once_cell::sync::Lazy::new(|| RwLock::new(Vec::new()));
 
+/// 审批模式缓存
+pub static APPROVAL_MODE: once_cell::sync::Lazy<RwLock<String>> =
+    once_cell::sync::Lazy::new(|| RwLock::new("approval".to_string()));
+
+/// 加载审批模式
+pub fn load_approval_mode() -> String {
+    let mode = match crate::APP_STATE.try_read() {
+        Ok(state) => {
+            let m = state.config.approval_mode.clone();
+            if m.is_empty() { "approval".to_string() } else { m }
+        }
+        Err(_) => {
+            if let Ok(cached) = APPROVAL_MODE.read() {
+                let m = cached.clone();
+                if m.is_empty() { return "approval".to_string(); }
+                return m;
+            }
+            "approval".to_string()
+        }
+    };
+    if let Ok(mut cached) = APPROVAL_MODE.write() {
+        *cached = mode.clone();
+    }
+    mode
+}
+
 /// 加载项目级白名单到缓存
 pub fn load_allow_patterns() -> Vec<String> {
     let patterns = match crate::APP_STATE.try_read() {

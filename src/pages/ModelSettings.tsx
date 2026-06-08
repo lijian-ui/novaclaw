@@ -457,14 +457,14 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
                           </button>
                           <button
                             onClick={() => toggleEnabled(model.id)}
-                            className={`relative w-7 h-3.5 rounded-full transition-colors mx-1 ${
+                            className={`relative w-9 h-5 rounded-full transition-colors ${
                               model.enabled ? 'bg-green-500' : 'bg-foreground/20'
                             }`}
                             title={model.enabled ? t('modelSettings.disable') : t('modelSettings.enable')}
                           >
                             <div
-                              className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-foreground transition-transform ${
-                                model.enabled ? 'translate-x-3.5' : 'translate-x-0.5'
+                              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                                model.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'
                               }`}
                             />
                           </button>

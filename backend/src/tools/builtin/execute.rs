@@ -61,11 +61,14 @@ pub async fn register(registry: &ToolRegistry) {
                             pattern
                         ));
                     }
-                    // 2. 检查白名单（安全命令直行）
-                    if crate::tools::execute::check_command_allow(command) {
-                        // 白名单命令直接执行
+                    // 2. 检查审批模式
+                    let approval_mode = crate::tools::execute::load_approval_mode();
+                    if approval_mode == "auto" {
+                        // auto 模式：跳过审批，直接执行（仍受黑名单限制）
+                    } else if crate::tools::execute::check_command_allow(command) {
+                        // 审批模式下，白名单命令直接执行
                     } else {
-                        // 3. 不在白名单 → 返回 PendingApproval 等待用户确认
+                        // 3. 审批模式 + 不在白名单 → 返回 PendingApproval 等待用户确认
                         let cmd_str = command.to_string();
                         let description = args.get("description")
                             .and_then(|v| v.as_str())

@@ -60,12 +60,12 @@ fn make_session_title(msg: &str) -> String {
 }
 
 /// 获取图片存储目录
-fn get_images_dir() -> std::path::PathBuf {
+pub fn get_images_dir() -> std::path::PathBuf {
     crate::config::get_sessions_dir().join("images")
 }
 
 /// 解码 data: URL → 保存到磁盘，返回相对文件名
-fn save_image_data_url(data_url: &str, session_id: &str) -> Result<String, String> {
+pub fn save_image_data_url(data_url: &str, session_id: &str) -> Result<String, String> {
     // 解析 "data:image/png;base64,iVBORw..."
     let after_comma = data_url.find(',').ok_or("Invalid data URL format")?;
     let header = &data_url[..after_comma];   // "data:image/png;base64"
@@ -110,6 +110,7 @@ fn storage_msg_to_agent_msg(m: &storage::Message) -> AgentMessage {
         tool_call_id: m.tool_call_id.clone(), tool_name: m.tool_name.clone(),
         first_reasoning: m.first_reasoning.clone(), again_reasonings: m.again_reasonings.clone(), reasoning: m.reasoning.clone(),
         images: None,
+        videos: None,
         weight: 0,
     }
 
@@ -195,7 +196,7 @@ async fn chat(Json(req): Json<ChatRequestHttp>) -> Json<serde_json::Value> {
         &state.config.skills,
     );
     let mut runtime = AgentRuntime::new(agent_session, llm_client, Arc::new(state.tool_registry.clone()), &state.config, state.models_config.clone(), skills);
-    let result = match runtime.run_turn(&req.message, None, None, &[]).await {
+    let result = match runtime.run_turn(&req.message, None, None, &[], &[]).await {
         Ok(r) => r, Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
     };
 
@@ -342,7 +343,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
             }
 
             let mut runtime = AgentRuntime::new(agent_session, llm_client, tool_registry, &config, models_config, skills);
-            let result = runtime.run_turn(&req.message, Some(step_tx), Some(cancel_flag), &image_data_urls).await;
+            let result = runtime.run_turn(&req.message, Some(step_tx), Some(cancel_flag), &image_data_urls, &[]).await;
             let _ = step_fwd_handle.await;
 
             match result {

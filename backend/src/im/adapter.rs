@@ -49,6 +49,56 @@ pub trait IMAdapter: Send + Sync {
         text: &str,
     ) -> Result<SendResult, AppError>;
 
+    /// 发送图片消息（可选）。url 为图片在线地址。
+    async fn send_image(
+        &self,
+        target: &MessageTarget,
+        url: &str,
+        caption: Option<&str>,
+    ) -> Result<SendResult, AppError> {
+        // 默认降级：如果平台不支持图片，返回错误
+        Err(AppError::External("该平台不支持发送图片".to_string()))
+    }
+
+    /// 发送文件消息（可选）。url 为文件在线地址。
+    async fn send_file(
+        &self,
+        target: &MessageTarget,
+        url: &str,
+        file_name: &str,
+    ) -> Result<SendResult, AppError> {
+        Err(AppError::External("该平台不支持发送文件".to_string()))
+    }
+
+    /// 发送视频消息（可选）。url 为视频在线地址。
+    async fn send_video(
+        &self,
+        target: &MessageTarget,
+        url: &str,
+        caption: Option<&str>,
+    ) -> Result<SendResult, AppError> {
+        Err(AppError::External("该平台不支持发送视频".to_string()))
+    }
+
+    /// 发送音频消息（可选）。url 为音频在线地址。
+    async fn send_audio(
+        &self,
+        target: &MessageTarget,
+        url: &str,
+    ) -> Result<SendResult, AppError> {
+        Err(AppError::External("该平台不支持发送音频".to_string()))
+    }
+
+    /// 回复原始消息并 @ 消息发送者
+    async fn reply_with_at(
+        &self,
+        original: &IncomingMessage,
+        text: &str,
+    ) -> Result<SendResult, AppError> {
+        // 默认降级到普通 reply
+        self.reply(original, text).await
+    }
+
     /// 流式回复（可选）。返回一个 Sender，调用方可通过它发送文本块
     /// 默认实现降级为非流式 reply
     async fn start_stream_reply(

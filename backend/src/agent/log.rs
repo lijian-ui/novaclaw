@@ -208,6 +208,7 @@ mod tests {
             again_reasonings: None,
             reasoning: None,
             images: None,
+            videos: None,
             weight: 0,
         };
         let entry: LogEntry = (&msg).into();
@@ -244,6 +245,7 @@ mod tests {
             again_reasonings: None,
             reasoning: Some("deepseek reasoning content".to_string()),
             images: None,
+            videos: None,
             weight: 0,
         };
         let entry: LogEntry = (&msg).into();

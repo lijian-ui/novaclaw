@@ -20,6 +20,7 @@ async fn get_config() -> Json<serde_json::Value> {
             "temperature": config.temperature,
             "deny_patterns": config.deny_patterns,
             "shell_allowlist": config.shell_allowlist,
+            "approval_mode": config.approval_mode,
             "memories_dir": config.memories_dir().to_string_lossy(),
         },
     }))
@@ -33,6 +34,10 @@ async fn update_config(Json(config): Json<AppConfig>) -> Json<serde_json::Value>
         if let Ok(mut cached) = crate::tools::execute::DENY_PATTERNS.write() {
             *cached = config.deny_patterns.clone();
         }
+    }
+    // 同步审批模式到运行时缓存
+    if let Ok(mut cached) = crate::tools::execute::APPROVAL_MODE.write() {
+        *cached = config.approval_mode.clone();
     }
     state.config = config;
 

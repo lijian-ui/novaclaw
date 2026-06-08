@@ -173,6 +173,7 @@ impl IMSessionManager {
                     again_reasonings: None,
                     reasoning: None,
                     images: None,
+                    videos: None,
                     weight: 0,
                 });
 
@@ -266,9 +267,12 @@ mod tests {
             platform: PlatformType::DingTalk,
             conversation_id: "cid".into(),
             sender_id: sender.map(|s| s.into()),
+            sender_staff_id: None,
             sender_name: sender.map(|s| s.into()),
             text: text.into(),
             media_urls: vec![],
+            video_data_urls: vec![],
+            attachments: vec![],
             raw: serde_json::Value::Null,
             session_webhook: None,
             conversation_type: conv_type,

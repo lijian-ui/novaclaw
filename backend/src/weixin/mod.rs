@@ -20,10 +20,12 @@
 //!
 //! - 不支持 Markdown 渲染（自动转纯文本）
 //! - 单条消息最长 4000 token
-//! - 不支持图片/文件消息（一期）
+//! - 支持图片/文件/视频消息（CDN 上传）
 
 pub mod adapter;
+pub mod cdn;
 pub mod client;
+pub mod upload;
 
 pub use adapter::WeixinAdapter;
 pub use client::WeixinClient;

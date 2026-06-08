@@ -1130,6 +1130,7 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 name = "jeeves-backend"
 version = "0.1.0"
 dependencies = [
+ "aes",
  "anyhow",
  "async-stream",
  "async-trait",
@@ -1142,6 +1143,7 @@ dependencies = [
  "futures",
  "futures-util",
  "glob",
+ "md-5",
  "mime_guess",
  "nix 0.28.0",
  "notify",
@@ -1306,6 +1308,16 @@ name = "matchit"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
+
+[[package]]
+name = "md-5"
+version = "0.10.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d89e7ee0cfbedfc4da3340218492196241d89eefb6dab27de5df917a6d2e78cf"
+dependencies = [
+ "cfg-if",
+ "digest",
+]
 
 [[package]]
 name = "memchr"
@@ -1866,6 +1878,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "quinn",

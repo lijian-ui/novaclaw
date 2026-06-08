@@ -78,6 +78,9 @@ pub struct AgentMessage {
     /// 图片 data URL 列表（仅 user 消息，临时传递，不持久化到 AgentSession）
     #[serde(skip_serializing_if = "Option::is_none")]
     pub images: Option<Vec<String>>,
+    /// 视频 data URL 列表 (data:video/...;base64, 格式，用于多模态 LLM)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub videos: Option<Vec<String>>,
     /// 消息权重：用于压缩算法优先级。包含代码变更、核心决策的消息权重较高。
     #[serde(default)]
     pub weight: u32,
@@ -307,9 +310,53 @@ impl AgentSession {
             again_reasonings: None,
             reasoning: None,
             images: if image_urls.is_empty() { None } else { Some(image_urls.to_vec()) },
+            videos: None,
             weight: 0,
         });
 
+    }
+
+    /// 添加用户消息（含视频 data URL）
+    pub fn push_user_with_videos(&mut self, content: &str, video_urls: &[String]) {
+        self.push_message(AgentMessage {
+            role: "user".to_string(),
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            first_reasoning: None,
+            again_reasonings: None,
+            reasoning: None,
+            images: None,
+            videos: if video_urls.is_empty() { None } else { Some(video_urls.to_vec()) },
+            weight: 0,
+        });
+    }
+
+    /// 添加用户消息（含图片和视频 data URL）
+    pub fn push_user_with_images_and_videos(&mut self, content: &str, image_urls: &[String], video_urls: &[String]) {
+        let has_images = !image_urls.is_empty();
+        let has_videos = !video_urls.is_empty();
+        if has_images && has_videos {
+            // 同时有图片和视频时，合并到一条消息中
+            self.push_message(AgentMessage {
+                role: "user".to_string(),
+                content: content.to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                tool_name: None,
+                first_reasoning: None,
+                again_reasonings: None,
+                reasoning: None,
+                images: Some(image_urls.to_vec()),
+                videos: Some(video_urls.to_vec()),
+                weight: 0,
+            });
+        } else if has_videos {
+            self.push_user_with_videos(content, video_urls);
+        } else {
+            self.push_user_with_images(content, image_urls);
+        }
     }
 
     /// 添加助手消息
@@ -324,6 +371,7 @@ impl AgentSession {
             again_reasonings: None,
             reasoning: None,
             images: None,
+            videos: None,
             weight: 0,
         });
 
@@ -368,6 +416,7 @@ impl AgentSession {
             again_reasonings: None,
             reasoning: None,
             images: None,
+            videos: None,
             weight,
         });
     }
@@ -516,6 +565,7 @@ impl AgentSession {
             again_reasonings: None,
             reasoning: None,
             images: None,
+            videos: None,
             weight: 0,
         };
 
@@ -731,7 +781,7 @@ mod tests {
                 role: "assistant".to_string(),
                 content: "Call A".to_string(),
                 tool_calls: Some(vec![AgentToolCall { id: "A".to_string(), name: "test".to_string(), arguments: "{}".to_string() }]),
-                tool_call_id: None, tool_name: None, first_reasoning: None, again_reasonings: None, reasoning: None, images: None, weight: 0,
+                tool_calls: None, tool_name: None, first_reasoning: None, again_reasonings: None, reasoning: None, images: None, videos: None, weight: 0,
             },
             AgentMessage {
                 role: "tool".to_string(),
@@ -739,25 +789,25 @@ mod tests {
                 tool_calls: None,
                 tool_call_id: Some("A".to_string()),
                 tool_name: Some("test".to_string()),
-                first_reasoning: None, again_reasonings: None, reasoning: None, images: None, weight: 0,
+                first_reasoning: None, again_reasonings: None, reasoning: None, images: None, videos: None, weight: 0,
             },
             AgentMessage {
                 role: "assistant".to_string(),
                 content: "Call B".to_string(),
                 tool_calls: Some(vec![AgentToolCall { id: "B".to_string(), name: "test".to_string(), arguments: "{}".to_string() }]),
-                tool_call_id: None, tool_name: None, first_reasoning: None, again_reasonings: None, reasoning: None, images: None, weight: 0,
+                tool_calls: None, tool_name: None, first_reasoning: None, again_reasonings: None, reasoning: None, images: None, videos: None, weight: 0,
             },
             AgentMessage {
                 role: "user".to_string(),
                 content: "Next".to_string(),
-                tool_calls: None, tool_call_id: None, tool_name: None, first_reasoning: None, again_reasonings: None, reasoning: None, images: None, weight: 0,
+                tool_calls: None, tool_call_id: None, tool_name: None, first_reasoning: None, again_reasonings: None, reasoning: None, images: None, videos: None, weight: 0,
             },
             AgentMessage {
                 role: "tool".to_string(),
                 content: "Orphan Result C".to_string(),
                 tool_call_id: Some("C".to_string()),
                 tool_name: Some("test".to_string()),
-                tool_calls: None, first_reasoning: None, again_reasonings: None, reasoning: None, images: None, weight: 0,
+                tool_calls: None, first_reasoning: None, again_reasonings: None, reasoning: None, images: None, videos: None, weight: 0,
             },
         ];
 

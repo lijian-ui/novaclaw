@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, Trash2, X, Clock, ArrowLeft, Pencil, Play } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 interface CronJob {
   id: string
@@ -32,6 +34,7 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
   const [showDeleteConfirm, setShowDeleteConfirm] = useState<string | null>(null)
   const [editingTask, setEditingTask] = useState<CronJob | null>(null)
   const [loading, setLoading] = useState(false)
+  const [previewTab, setPreviewTab] = useState<'edit' | 'preview'>('edit')
 
   const loadTasks = useCallback(async () => {
     setLoading(true)
@@ -139,8 +142,9 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
                     </div>
                     <p className="text-xs text-foreground/40 mt-0.5 truncate">{task.payload}</p>
                     <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[10px] text-foreground/30">{task.status} · 执行 {task.run_count} 次</span>
-                      {task.last_error && <span className="text-[10px] text-red-400/60">{task.last_error}</span>}
+                      <span className={`text-[10px] ${task.status === 'failed' ? 'text-red-400/60' : task.run_count > 0 ? 'text-green-400/60' : 'text-foreground/30'}`}>
+                        执行第：{task.run_count} 次{task.run_count > 0 ? (task.status === 'failed' ? ' 失败' : ' 成功') : ''}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -154,9 +158,9 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
                     <Play className="w-3.5 h-3.5 text-foreground/40 hover:text-green-400" />
                   </button>
                   <button onClick={() => handleToggle(task.id)}
-                    className={`relative w-8 h-4 rounded-full transition-colors mx-1 ${task.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
+                    className={`relative w-9 h-5 rounded-full transition-colors ${task.enabled ? 'bg-green-500' : 'bg-foreground/20'}`}
                     title={task.enabled ? t('scheduledTasksPage.disable') : t('scheduledTasksPage.enable')}>
-                    <div className={`absolute top-0.5 w-3 h-3 rounded-full bg-foreground transition-transform ${task.enabled ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${task.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
                   </button>
                   <button onClick={() => setShowDeleteConfirm(task.id)} className="p-1 rounded hover:bg-red-500/10 transition-colors" title={t('scheduledTasksPage.delete')}>
                     <Trash2 className="w-3.5 h-3.5 text-foreground/40 hover:text-red-400" />
@@ -195,10 +199,28 @@ export function ScheduledTasksPage({ onBack }: ScheduledTasksPageProps) {
                 </div>
                 <div>
                   <label className="text-xs text-foreground/50 mb-1 block">{t('scheduledTasksPage.payload')}</label>
-                  <textarea value={form.payload} onChange={e => setForm(f => ({ ...f, payload: e.target.value }))}
-                    placeholder={t('scheduledTasksPage.placeholderPayload')}
-                    rows={4}
-                    className="w-full px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors resize-y font-mono" />
+                  <div className="flex items-center gap-1 mb-1">
+                    <button
+                      className={`px-2.5 py-1 rounded text-xs transition-colors ${previewTab === 'edit' ? 'bg-foreground/10 text-foreground/90' : 'text-foreground/40 hover:text-foreground/70'}`}
+                      onClick={() => setPreviewTab('edit')}
+                    >编辑</button>
+                    <button
+                      className={`px-2.5 py-1 rounded text-xs transition-colors ${previewTab === 'preview' ? 'bg-foreground/10 text-foreground/90' : 'text-foreground/40 hover:text-foreground/70'}`}
+                      onClick={() => setPreviewTab('preview')}
+                    >预览</button>
+                  </div>
+                  {previewTab === 'edit' ? (
+                    <textarea value={form.payload}
+                      onChange={e => setForm(f => ({ ...f, payload: e.target.value }))}
+                      placeholder={t('scheduledTasksPage.placeholderPayload')}
+                      className="w-full h-[300px] px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 placeholder-foreground/30 outline-none focus:border-foreground/20 transition-colors resize-y font-mono" />
+                  ) : (
+                    <div className="w-full h-[300px] px-3 py-2 rounded-lg bg-foreground/5 border border-border text-sm text-foreground/80 overflow-y-auto leading-relaxed [&_h1]:text-lg [&_h1]:font-bold [&_h1]:text-foreground/90 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-foreground/85 [&_h3]:text-sm [&_h3]:font-semibold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 [&_li]:mb-1 [&_p]:mb-2 [&_code]:bg-foreground/10 [&_code]:px-1 [&_code]:py-0.5 [&_code]:rounded [&_code]:text-xs [&_pre]:bg-foreground/10 [&_pre]:p-3 [&_pre]:rounded-lg [&_pre]:mb-3 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_hr]:border-foreground/10 [&_strong]:text-foreground/90 [&_blockquote]:border-l-2 [&_blockquote]:border-foreground/20 [&_blockquote]:pl-3 [&_blockquote]:text-foreground/60">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {form.payload || '*暂无内容*'}
+                      </ReactMarkdown>
+                    </div>
+                  )}
                 </div>
               </div>
               <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border">
