@@ -300,7 +300,7 @@ sudo systemctl status jeeves
 
 数据默认存储在：
 - Windows: `%USERPROFILE%\Documents\jeeves\`
-- macOS: `~/Library/Application Support/jeeves/`
+- macOS: `~/Documents/jeeves/`
 - Linux: `~/.local/share/jeeves/`
 
 ### Q: 生产环境安全建议

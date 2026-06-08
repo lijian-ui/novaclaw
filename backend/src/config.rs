@@ -451,34 +451,37 @@ impl ModelsConfig {
     }
 }
 
-/// 获取应用根目录
-/// 
-/// | 平台   | 路径示例                                  |
-/// |--------|-------------------------------------------|
-/// | Win    | %USERPROFILE%\Documents\jeeves\          |
-/// | macOS  | ~/Library/Application Support/jeeves/    |
-/// | Linux  | ~/.local/share/jeeves/                   |
-pub fn get_base_dir() -> PathBuf {
-    #[cfg(target_os = "windows")]
-    {
-        // 使用用户文档目录，更友好且非隐藏
-        std::env::var("USERPROFILE")
-            .map(|p| PathBuf::from(p).join("Documents").join("jeeves"))
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join("Documents")
-                    .join("jeeves")
-            })
-    }
+    /// 获取应用根目录
+    ///
+    /// | 平台   | 路径示例                                  |
+    /// |--------|-------------------------------------------|
+    /// | Win    | %USERPROFILE%\Documents\jeeves\          |
+    /// | macOS  | ~/Documents/jeeves/                      |
+    /// | Linux  | ~/.local/share/jeeves/                   |
+    pub fn get_base_dir() -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            // 使用用户文档目录，更友好且非隐藏
+            std::env::var("USERPROFILE")
+                .map(|p| PathBuf::from(p).join("Documents").join("jeeves"))
+                .unwrap_or_else(|_| {
+                    dirs::home_dir()
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join("Documents")
+                        .join("jeeves")
+                })
+        }
 
-    #[cfg(target_os = "macos")]
-    {
-        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        home.join("Library")
-            .join("Application Support")
-            .join("jeeves")
-    }
+        #[cfg(target_os = "macos")]
+        {
+            dirs::document_dir()
+                .unwrap_or_else(|| {
+                    dirs::home_dir()
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join("Documents")
+                })
+                .join("jeeves")
+        }
 
     #[cfg(target_os = "linux")]
     {
@@ -506,7 +509,7 @@ pub fn get_base_dir() -> PathBuf {
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
 /// | Win    | %USERPROFILE%\Documents\jeeves\config\    |
-/// | macOS  | ~/Library/Application Support/jeeves/config/ |
+/// | macOS  | ~/Documents/jeeves/config/                |
 /// | Linux  | ~/.config/jeeves/                        |
 pub fn get_config_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
@@ -542,7 +545,7 @@ pub fn get_config_dir() -> PathBuf {
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
 /// | Win    | %USERPROFILE%\Documents\jeeves\workspace\ |
-/// | macOS  | ~/Library/Application Support/jeeves/workspace/ |
+/// | macOS  | ~/Documents/jeeves/workspace/              |
 /// | Linux  | ~/.local/share/jeeves/workspace/         |
 pub fn get_workspace_dir() -> PathBuf {
     get_base_dir().join("workspace")
@@ -553,7 +556,7 @@ pub fn get_workspace_dir() -> PathBuf {
 /// | 平台   | 路径示例                                  |
 /// |--------|-------------------------------------------|
 /// | Win    | %USERPROFILE%\Documents\jeeves\skills\    |
-/// | macOS  | ~/Library/Application Support/jeeves/skills/ |
+/// | macOS  | ~/Documents/jeeves/skills/                 |
 /// | Linux  | ~/.local/share/jeeves/skills/            |
 pub fn get_skills_dir() -> PathBuf {
     get_base_dir().join("skills")
