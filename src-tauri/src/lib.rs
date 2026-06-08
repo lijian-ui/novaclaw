@@ -21,12 +21,14 @@ pub fn run() {
         }))
         .setup(|app| {
             let window = app.get_webview_window("main").expect("窗口不存在");
-            let window_clone = window.clone();
+            let app_handle = app.handle();
 
             window.on_window_event(move |event| {
                 if let WindowEvent::CloseRequested { api, .. } = event {
                     api.prevent_close();
-                    let _ = window_clone.hide();
+                    // 隐藏整个应用而非仅隐藏窗口
+                    // 这样 Mac 上点击 Dock 图标能正确恢复窗口
+                    let _ = app_handle.hide();
                 }
             });
 
