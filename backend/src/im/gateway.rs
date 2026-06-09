@@ -8,7 +8,7 @@
 use crate::error::AppError;
 use crate::im::registry::{AccountInfo, AccountRegistry};
 use crate::im::session::{self as im_session, IMSessionManager};
-use crate::im::types::{Attachment, IncomingMessage, MessageTarget, PlatformType, SendResult};
+use crate::im::types::{IncomingMessage, MessageTarget, PlatformType, SendResult};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;

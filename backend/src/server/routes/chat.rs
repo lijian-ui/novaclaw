@@ -243,6 +243,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
         if let Some(ref agent_id) = req.agent_id {
             let paths = crate::soul::SoulPaths::default();
             // 加载 SOUL.md
+            agent_session.agent_id = Some(agent_id.clone());
             match crate::soul::AgentConfig::get_soul_content(&paths, agent_id) {
                 Ok(soul_content) => {
                     agent_session.system_prompt_override = Some(soul_content);

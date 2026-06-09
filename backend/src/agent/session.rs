@@ -16,6 +16,8 @@ pub struct AgentSession {
     pub model: String,
     /// 系统提示词（可选覆盖）
     pub system_prompt_override: Option<String>,
+    /// 当前使用的智能体 ID（用于刷新 SOUL.md 变更）
+    pub agent_id: Option<String>,
     /// 冻结的系统提示词前缀（会话生命周期内只构建一次，用于 DeepSeek 前缀缓存）
     pub frozen_system_prompt: Option<String>,
     /// frozen_system_prompt 的 SHA256 指纹（前 16 字符 hex），用于检测缓存漂移
@@ -120,6 +122,7 @@ impl AgentSession {
             pinned_files: HashMap::new(),
             consecutive_read_count: 0,
             session_store: None,
+            agent_id: None,
         }
     }
 
@@ -665,104 +668,71 @@ impl AgentSession {
         }
     }
 
-    /// 扫描并清理孤立 tool_calls 和孤立的 tool 消息 — 防止违反 API 协议
+    /// 修复 tool_call 配对 — 参考 DeepSeek-Reasonix 的 fixToolCallPairing
     ///
-    /// 严格清理规则（顺序相关）：
-    /// 1. tool 消息必须紧随包含该 ID 的 assistant 消息（中间只能有其他 tool 消息）
-    /// 2. assistant 消息中的 tool_calls 必须被紧随其后的 tool 消息完整响应
-    /// 3. 任何不符合顺序约束的工具调用/结果都将被剥离或删除
+    /// 严格规则（顺序相关）：
+    /// 1. assistant 的 tool_calls 必须被紧随其后的连续 tool 消息完整响应（顺序对应）
+    /// 2. 匹配不完整的整个 group 直接丢弃（避免级联孤立）
+    /// 3. 孤立的 tool 消息（无紧邻的前置 assistant）直接丢弃
     pub fn strip_orphan_tool_calls(messages: &mut Vec<AgentMessage>) {
-        if messages.is_empty() {
-            return;
-        }
-
+        if messages.is_empty() { return; }
         let original_len = messages.len();
+        let mut out: Vec<AgentMessage> = Vec::with_capacity(messages.len());
 
-        // --- 第一阶段：清理孤立的 tool 消息（找不到对应的前置调用者） ---
-        let mut to_remove_indices = std::collections::HashSet::new();
-        for i in 0..messages.len() {
-            if messages[i].role == "tool" {
-                let current_id = messages[i].tool_call_id.as_deref().unwrap_or("");
-                let mut found_parent = false;
-                
-                // 向前查找，跳过连续的 tool 消息
-                for j in (0..i).rev() {
-                    if messages[j].role == "tool" {
-                        continue;
-                    } else if messages[j].role == "assistant" {
-                        if let Some(ref calls) = messages[j].tool_calls {
-                            if calls.iter().any(|tc| tc.id == current_id) {
-                                found_parent = true;
-                            }
-                        }
-                        break;
-                    } else {
-                        // 遇到 user/system，说明 tool 消息是孤立的
-                        break;
-                    }
-                }
-                
-                if !found_parent {
-                    tracing::warn!("[Heal] 发现孤立工具响应 (ID: {}), 索引: {}, 已标记移除", current_id, i);
-                    to_remove_indices.insert(i);
-                }
-            }
-        }
-
-        // 执行第一阶段删除
         let mut i = 0;
-        messages.retain(|_| {
-            let keep = !to_remove_indices.contains(&i);
-            i += 1;
-            keep
-        });
-
-        // --- 修复阶段：确保 tool 消息有 tool_call_id，如果没有则尝试恢复或删除 ---
-        for msg in messages.iter_mut() {
-            if msg.role == "tool" && (msg.tool_call_id.is_none() || msg.tool_call_id.as_deref().unwrap_or("").is_empty()) {
-                // 尝试从 content 标签中恢复（如果存在）
-                if let Some(ref name) = msg.tool_name {
-                    tracing::warn!("[Heal] 发现 role='tool' 但缺失 tool_call_id 的消息 (工具: {})", name);
+        while i < messages.len() {
+            if messages[i].role != "assistant"
+                || messages[i].tool_calls.is_none()
+                || messages[i].tool_calls.as_ref().map_or(true, |c| c.is_empty())
+            {
+                // 非 tool_call 的 assistant 或普通消息 → 保留
+                if messages[i].role == "tool" {
+                    // 孤立 tool（前无配对的 assistant）→ 丢弃
+                    tracing::debug!("[Heal] 丢弃孤立 tool 消息 (工具: {:?}, 索引: {})", messages[i].tool_name, i);
+                    i += 1;
+                    continue;
                 }
+                out.push(messages[i].clone());
+                i += 1;
+                continue;
+            }
+
+            // 遇到有 tool_calls 的 assistant
+            let calls = messages[i].tool_calls.as_ref().unwrap();
+            let needed: std::collections::HashSet<String> = calls.iter()
+                .map(|tc| tc.id.clone())
+                .collect();
+            let mut consumed = needed.len();
+
+            // 收集紧随其后的连续 tool 消息
+            let mut j = i + 1;
+            while j < messages.len() && consumed > 0 {
+                let nxt = &messages[j];
+                if nxt.role != "tool" { break; }
+                if let Some(ref id) = nxt.tool_call_id {
+                    if !needed.contains(id) { break; }
+                    consumed -= 1;
+                } else {
+                    break;
+                }
+                j += 1;
+            }
+
+            if consumed == 0 {
+                // 全部匹配 → 保留整个 group（assistant + 连续 tool 消息）
+                out.push(messages[i].clone());
+                for k in (i + 1)..j {
+                    out.push(messages[k].clone());
+                }
+                i = j;
+            } else {
+                // 有任何不匹配 → 整个 group 全丢（避免部分保留导致级联孤立）
+                tracing::debug!("[Heal] 丢弃不完整的 tool_call group (assistant 索引: {}, 需要 {} 个响应)", i, needed.len());
+                i = j;
             }
         }
 
-        // --- 第二阶段：清理 assistant 消息中未被响应的 tool_calls ---
-        for i in 0..messages.len() {
-            if messages[i].role != "assistant" { continue; }
-            if messages[i].tool_calls.is_none() { continue; }
-            
-            // 先收集响应 ID（不可变借用，不与接下来的可变借用冲突）
-            let mut responded_ids = std::collections::HashSet::new();
-            for j in (i + 1)..messages.len() {
-                if messages[j].role == "tool" {
-                    if let Some(ref id) = messages[j].tool_call_id {
-                        responded_ids.insert(id.clone());
-                    }
-                } else { break; }
-            }
-            
-            // 再执行清理（可变借用，与上一步不冲突）
-            if let Some(ref mut calls) = messages[i].tool_calls {
-                let before_count = calls.len();
-                calls.retain(|tc| responded_ids.contains(&tc.id));
-                if calls.len() < before_count {
-                    tracing::warn!("[Heal] Assistant 消息 (索引: {}) 中有 {} 个工具调用未收到响应，已剥离", i, before_count - calls.len());
-                }
-                if calls.is_empty() {
-                    messages[i].tool_calls = None;
-                }
-            }
-        }
-
-        // --- 第三阶段：确保所有剩余的 tool 消息都有 tool_call_id ---
-        for msg in messages.iter_mut() {
-            if msg.role == "tool" && (msg.tool_call_id.is_none() || msg.tool_call_id.as_deref().unwrap_or("").is_empty()) {
-                // 这是一个严重的格式错误，API 会直接报错
-                // 尝试恢复或补齐
-                msg.tool_call_id = Some("recovered_id".to_string());
-            }
-        }
+        *messages = out;
 
         if messages.len() < original_len {
             tracing::info!("[Heal] 会话自修复完成: 移除了 {} 条无效工具响应", original_len - messages.len());

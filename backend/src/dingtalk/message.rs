@@ -3,8 +3,8 @@
 use crate::dingtalk::credential::TokenManager;
 use std::sync::Arc;
 use crate::dingtalk::frames::{
-    AudioMsgParam, FileDownloadRequest, FileDownloadResponse, FileMsgParam, GroupMessageRequest,
-    MediaUploadResponse, PrivateMessageRequest, VideoMsgParam, WebhookAtConfig, WebhookReply,
+    FileDownloadRequest, FileDownloadResponse, GroupMessageRequest,
+    MediaUploadResponse, PrivateMessageRequest, WebhookAtConfig, WebhookReply,
     MSG_KEY_AUDIO, MSG_KEY_FILE, MSG_KEY_IMAGE, MSG_KEY_MARKDOWN, MSG_KEY_TEXT, MSG_KEY_VIDEO,
 };
 use crate::error::AppError;

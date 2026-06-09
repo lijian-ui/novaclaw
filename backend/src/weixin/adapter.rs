@@ -261,7 +261,6 @@ fn is_text_file(file_name: &str) -> bool {
             | "sh" | "bat" | "ps1" | "py" | "js" | "ts" | "rs"
             | "go" | "java" | "c" | "cpp" | "h" | "hpp"
             | "sql" | "html" | "css" | "scss" | "less"
-            | "yaml" | "yml" | "json" | "xml"
     )
 }
 

@@ -3,7 +3,7 @@
 //! 管理 IM 消息到 Agent 会话的映射，支持跨平台会话持久化。
 //! 参考 Hermes Agent 的 SessionSource 设计。
 
-use crate::agent::session::{AgentMessage, AgentSession};
+use crate::agent::session::{AgentMessage, AgentSession, AgentToolCall};
 use crate::error::AppError;
 use crate::im::types::{ConversationType, IncomingMessage, PlatformType, SessionSource};
 use crate::storage::SessionStore;
@@ -36,21 +36,14 @@ pub fn platform_chinese_name(platform: &PlatformType) -> String {
 
 /// 格式化 IM 消息为 Agent 可读文本（注入平台上下文）
 pub fn format_im_message(msg: &IncomingMessage) -> String {
-    let platform_name = platform_chinese_name(&msg.platform);
-    let conv_type = match msg.conversation_type {
-        ConversationType::Private => "私聊",
-        ConversationType::Group => "群聊",
-    };
     let sender = msg.sender_name.as_deref().unwrap_or("未知用户");
     let group_name = msg.conversation_title.as_deref().unwrap_or("");
 
     match msg.conversation_type {
         ConversationType::Private => {
-            // 私聊：无需额外标识
             msg.text.clone()
         }
         ConversationType::Group => {
-            // 群聊：标注发送者身份
             if group_name.is_empty() {
                 format!("[来自 {}] {}", sender, msg.text)
             } else {
@@ -149,15 +142,20 @@ impl IMSessionManager {
             session.id = existing.id.clone();
             session.session_store = Some(self.session_store.clone());
             for m in &history {
+                let tool_calls = m.tool_calls.as_ref().map(|tcs| {
+                    tcs.iter().map(|tc| AgentToolCall {
+                        id: tc.id.clone(), name: tc.name.clone(), arguments: tc.arguments.clone().unwrap_or_default(),
+                    }).collect()
+                });
                 session.push_message(AgentMessage {
                     role: m.role.clone(),
                     content: m.content.clone(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    tool_name: None,
-                    first_reasoning: None,
-                    again_reasonings: None,
-                    reasoning: None,
+                    tool_calls,
+                    tool_call_id: m.tool_call_id.clone(),
+                    tool_name: m.tool_name.clone(),
+                    first_reasoning: m.first_reasoning.clone(),
+                    again_reasonings: m.again_reasonings.clone(),
+                    reasoning: m.reasoning.clone(),
                     images: None,
                     videos: None,
                     weight: 0,

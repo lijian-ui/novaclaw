@@ -52,20 +52,19 @@ pub trait IMAdapter: Send + Sync {
     /// 发送图片消息（可选）。url 为图片在线地址。
     async fn send_image(
         &self,
-        target: &MessageTarget,
-        url: &str,
-        caption: Option<&str>,
+        _target: &MessageTarget,
+        _url: &str,
+        _caption: Option<&str>,
     ) -> Result<SendResult, AppError> {
-        // 默认降级：如果平台不支持图片，返回错误
         Err(AppError::External("该平台不支持发送图片".to_string()))
     }
 
     /// 发送文件消息（可选）。url 为文件在线地址。
     async fn send_file(
         &self,
-        target: &MessageTarget,
-        url: &str,
-        file_name: &str,
+        _target: &MessageTarget,
+        _url: &str,
+        _file_name: &str,
     ) -> Result<SendResult, AppError> {
         Err(AppError::External("该平台不支持发送文件".to_string()))
     }
@@ -73,9 +72,9 @@ pub trait IMAdapter: Send + Sync {
     /// 发送视频消息（可选）。url 为视频在线地址。
     async fn send_video(
         &self,
-        target: &MessageTarget,
-        url: &str,
-        caption: Option<&str>,
+        _target: &MessageTarget,
+        _url: &str,
+        _caption: Option<&str>,
     ) -> Result<SendResult, AppError> {
         Err(AppError::External("该平台不支持发送视频".to_string()))
     }
@@ -83,8 +82,8 @@ pub trait IMAdapter: Send + Sync {
     /// 发送音频消息（可选）。url 为音频在线地址。
     async fn send_audio(
         &self,
-        target: &MessageTarget,
-        url: &str,
+        _target: &MessageTarget,
+        _url: &str,
     ) -> Result<SendResult, AppError> {
         Err(AppError::External("该平台不支持发送音频".to_string()))
     }

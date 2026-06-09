@@ -296,9 +296,6 @@ impl AgentRuntime {
             user_input.to_string()
         };
 
-        // ── P0: 会话自我修复（防止孤立工具消息导致的 API 400 错误） ──
-        self.session.heal();
-
         self.session.push_user_with_images_and_videos(&processed_input, images, videos);
 
 
@@ -417,8 +414,7 @@ impl AgentRuntime {
 
             tracing::info!("[Agent] ReAct 迭代 {}/{}", iterations, self.max_iterations);
 
-            // ⚠️ 预检：每轮 LLM 调用前检查上下文大小及修复消息一致性
-            self.session.heal();
+            // ⚠️ 预检：检查上下文大小
             self.maybe_compact_for_preflight().await;
 
 
@@ -1203,8 +1199,8 @@ impl AgentRuntime {
             .expect("[Cache] frozen_system_prompt 必须在首次调用前设置")
             .clone();
 
-        // 安全兜底：发送前清理可能的孤立 tool_calls/tool 消息，防止违反 API 协议
-        AgentSession::strip_orphan_tool_calls(&mut self.session.messages);
+        // 发送前清理孤立 tool 消息并同步 log（确保 LLM 收到一致的消息序列）
+        self.session.heal();
 
         let tools: Vec<crate::tools::types::ToolDefinition> = if self.grace_terminating {
             // 优雅终止：不传工具，LLM 只能返回文本
@@ -1731,6 +1727,14 @@ impl AgentRuntime {
 
     /// 构建冻结的 system prompt（仅首次运行）
     async fn build_frozen_system_prompt(&self) -> String {
+        // 如果有 agent_id，每次重新加载 SOUL.md（支持用户编辑后即时生效）
+        if let Some(ref agent_id) = self.session.agent_id {
+            let paths = crate::soul::SoulPaths::default();
+            if let Ok(soul_content) = crate::soul::AgentConfig::get_soul_content(&paths, agent_id) {
+                return soul_content;
+            }
+            // 加载失败则 fallthrough 到 system_prompt_override
+        }
         if let Some(ref override_prompt) = self.session.system_prompt_override {
             return override_prompt.clone();
         }
@@ -1743,6 +1747,11 @@ impl AgentRuntime {
             "Linux"
         };
 
+        // 先清除 Soul 缓存，确保外部修改 SOUL.md 后能立即生效
+        {
+            let state = crate::APP_STATE.read().await;
+            let _ = state.soul_manager.clear_cache();
+        }
         // 从全局状态获取 SoulManager（冻结部分需要 soul 身份）
         let soul_manager = {
             let state = crate::APP_STATE.read().await;

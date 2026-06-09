@@ -59,7 +59,7 @@ pub async fn register(registry: &ToolRegistry) {
                     let paths = crate::soul::SoulPaths::default();
                     let agent_config = crate::soul::AgentConfig::load(&paths, &agent_id)
                         .map_err(|e| format!("未找到智能体 '{}': {}", agent_id, e))?;
-                    let soul_content = crate::soul::AgentConfig::get_soul_content(&paths, &agent_id)
+                    let _soul_content = crate::soul::AgentConfig::get_soul_content(&paths, &agent_id)
                         .map_err(|e| format!("读取智能体 '{}' SOUL.md 失败: {}", agent_id, e))?;
 
                     tracing::info!(
