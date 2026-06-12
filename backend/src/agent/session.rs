@@ -448,8 +448,10 @@ impl AgentSession {
         // 根据模型名称估算上下文窗口大小
         let ctx_window = Self::estimate_context_window_for_model(&self.model);
         let tail_token_budget: u64 = (ctx_window as f64 * 0.20) as u64;
-        // 最少保留 3 条，最多不超过 keep_last
+        // 最少保留 3 条
         const MIN_TAIL_MESSAGES: usize = 3;
+        // 最小节省量：如果节省少于 30% 的历史消息，跳过压缩（参考 Reasonix HISTORY_FOLD_MIN_SAVINGS_FRACTION）
+        const MIN_SAVINGS_FRACTION: f64 = 0.30;
 
         if self.messages.len() <= keep_last + 2 {
             return;
@@ -479,13 +481,52 @@ impl AgentSession {
 
         // 保留前2条（系统上下文）和后 effective_keep 条（按 token 预算）
         let front: Vec<_> = self.messages.iter().take(2).cloned().collect();
-        let to_remove_count = total - 2 - effective_keep;
+        let mut to_remove_count = total - 2 - effective_keep;
         if to_remove_count == 0 {
             return;
         }
+
+        // ── 最小节省量检查（参考 Reasonix） ──
+        // 如果移除的消息占比不足 30%，压缩收益太小，跳过
+        let savings_ratio = to_remove_count as f64 / (total - 2) as f64;
+        if savings_ratio < MIN_SAVINGS_FRACTION {
+            tracing::debug!(
+                "[Cache] compact_in_place 跳过: 节省 {:.1}% < 最小 {:.0}% (仅移除 {} 条)",
+                savings_ratio * 100.0, MIN_SAVINGS_FRACTION * 100.0, to_remove_count
+            );
+            return;
+        }
+
+        // ── 调整分界点：确保落在 user 消息上（参考 Reasonix fold split 逻辑） ──
+        // 分界点索引 = 2 + to_remove_count（即尾部起始位置）
+        // 如果分界点不是 user 消息，向前扩展折叠区直到遇到 user 消息
+        let split_idx = 2 + to_remove_count;
+        let adjusted_split = if split_idx < self.messages.len() {
+            // 从 split_idx 开始向后找第一条 user 消息
+            let mut adjusted = split_idx;
+            for i in split_idx..self.messages.len() {
+                if self.messages[i].role == "user" {
+                    adjusted = i;
+                    break;
+                }
+            }
+            adjusted
+        } else {
+            split_idx
+        };
+
+        if adjusted_split > split_idx {
+            let extra_removed = adjusted_split - split_idx;
+            to_remove_count = adjusted_split - 2;
+            tracing::debug!(
+                "[Cache] compact_in_place 调整分界点: 从 {} 扩展到 {} (多移除 {} 条，确保 user 边界)",
+                split_idx, adjusted_split, extra_removed
+            );
+        }
+
         let back: Vec<_> = self.messages.iter().skip(2 + to_remove_count).cloned().collect();
 
-        // 扫描中间区域（ folding zone ），提取工具执行记录，并保留高权重消息
+        // 扫描中间区域（folding zone），提取工具执行记录，并保留高权重消息
         let mid_msgs = &self.messages[2..2 + to_remove_count];
         let mut pinned_from_mid = Vec::new();
         let mut folded_msgs = Vec::new();
@@ -657,15 +698,28 @@ impl AgentSession {
     }
 
     /// 治愈整个会话（清理孤立工具消息，同步 log）
-    pub fn heal(&mut self) {
+    ///
+    /// # 返回
+    /// - `true` — 有消息被移除或修改（需重建 log）
+    /// - `false` — 无变化（跳过 log 重建以保持前缀缓存稳定）
+    ///
+    /// 参考 DeepSeek-Reasonix：仅当实际发生变化时才重建 log，
+    /// 避免每次请求都改变字节序列，破坏前缀缓存。
+    pub fn heal(&mut self) -> bool {
+        let before = self.messages.len();
         Self::strip_orphan_tool_calls(&mut self.messages);
-        
-        // 同步 log
-        self.log.clear();
-        for msg in &self.messages {
-            let entry: LogEntry = msg.into();
-            self.log.push(entry);
+        let changed = self.messages.len() != before;
+
+        if changed {
+            // 同步 log
+            self.log.clear();
+            for msg in &self.messages {
+                let entry: LogEntry = msg.into();
+                self.log.push(entry);
+            }
         }
+
+        changed
     }
 
     /// 修复 tool_call 配对 — 参考 DeepSeek-Reasonix 的 fixToolCallPairing

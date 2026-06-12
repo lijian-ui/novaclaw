@@ -24,12 +24,6 @@ pub struct AppConfig {
     /// Agent 温度参数
     #[serde(default)]
     pub temperature: f64,
-    /// 上下文压缩阈值（消息数超过此值时触发压缩）
-    #[serde(default)]
-    pub compact_threshold: usize,
-    /// 上下文压缩保留消息数
-    #[serde(default)]
-    pub compact_keep: usize,
     /// 允许的来源（CORS）
     #[serde(default)]
     pub allowed_origins: Vec<String>,
@@ -158,8 +152,6 @@ impl Default for AppConfig {
             max_retries: 1,
             max_iterations: 0, // 0=无硬上限，由上下文使用率驱动循环
             temperature: 0.7,
-            compact_threshold: 100,
-            compact_keep: 40,
             allowed_origins: vec![
 
                 "http://localhost:1420".to_string(),

@@ -1,29 +1,32 @@
 use crate::llm::types::ChatMessage;
+use std::sync::OnceLock;
 
-/// 本地 Token 估算器
-///
-/// 提供针对 DeepSeek V4 模型的 Token 数量估算。
-/// 注意：这是启发式估算，不是精确 BPE 分词（精确分词需要 tiktoken-rs + 完整词汇表）。
-///
-/// # 估算精度
-/// - 英文文本：误差 ±10%
-/// - 中文文本：误差 ±15%
-/// - 代码：误差 ±20%
-/// - 工具定义：误差 ±10%
-///
-/// 参考：DeepSeek-Reasonix 的 tokenizer.ts
+/// 全局缓存的 BPE 分词器（cl100k_base）
+/// 只初始化一次，后续所有 token 估算复用同一实例
+fn get_cached_tokenizer() -> Option<&'static tiktoken_rs::CoreBPE> {
+    static BPE: OnceLock<Option<tiktoken_rs::CoreBPE>> = OnceLock::new();
+    BPE.get_or_init(|| {
+        match tiktoken_rs::cl100k_base() {
+            Ok(bpe) => Some(bpe),
+            Err(e) => {
+                tracing::warn!("[Tokenizer] tiktoken 初始化失败 ({}), 将使用后备估算", e);
+                None
+            }
+        }
+    })
+    .as_ref()
+}
 
 /// 估算字符串的 Token 数
 ///
-/// 优先使用 tiktoken-rs 进行精确计数（cl100k_base 编码），
+/// 优先使用缓存的 tiktoken-rs 进行精确计数（cl100k_base 编码），
 /// 如果初始化失败，则回退到加权字符计数法。
 pub fn estimate_string_tokens(s: &str) -> u64 {
     if s.is_empty() {
         return 0;
     }
 
-    // 尝试精确计数 (tiktoken cl100k_base)
-    if let Ok(bpe) = tiktoken_rs::cl100k_base() {
+    if let Some(bpe) = get_cached_tokenizer() {
         return bpe.encode_with_special_tokens(s).len() as u64;
     }
 

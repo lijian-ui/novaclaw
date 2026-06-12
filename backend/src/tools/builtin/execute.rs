@@ -128,21 +128,36 @@ pub async fn register(registry: &ToolRegistry) {
                         ));
                     }
 
-                    // 截断 stdout：只保留最后 300 字符（安装过程、进度条等对 LLM 无用）
+                    // 截断 stdout：采用 Reasonix 式的头尾保留策略
+                    // 保留前 60% + 后 30%，中间插入截断标记，让 LLM 既能看头也能看尾
+                    const MAX_OUTPUT_CHARS: usize = 32000;
                     let stdout = &result.stdout;
-                    let truncated = if stdout.len() > 300 {
-                        let mut pos = 300;
-                        while !stdout.is_char_boundary(pos) { pos -= 1; }
-                        format!("...\n{}", &stdout[stdout.len() - pos..])
+                    let truncated = if stdout.len() > MAX_OUTPUT_CHARS {
+                        let head_chars = (MAX_OUTPUT_CHARS as f64 * 0.60) as usize;
+                        let tail_chars = (MAX_OUTPUT_CHARS as f64 * 0.30) as usize;
+                        let mut head_end = head_chars.min(stdout.len());
+                        while head_end > 0 && !stdout.is_char_boundary(head_end) { head_end -= 1; }
+                        let mut tail_start = stdout.len().saturating_sub(tail_chars);
+                        while tail_start < stdout.len() && !stdout.is_char_boundary(tail_start) { tail_start += 1; }
+                        let head = &stdout[..head_end];
+                        let tail = &stdout[tail_start..];
+                        format!(
+                            "{}\n\n[… 中间 {} 字符已截断 …]\n\n{}",
+                            head,
+                            stdout.len() - head_end - (stdout.len() - tail_start),
+                            tail
+                        )
                     } else {
                         stdout.to_string()
                     };
 
                     let mut output = truncated;
+                    // 参考 Reasonix formatCommandResult: 始终显示 [exit N] 标记
+                    // 即使 exit code = 0 也显示，让 LLM 始终知道命令执行状态
                     if let Some(code) = result.exit_code {
-                        if code != 0 {
-                            output.push_str(&format!("\n\n[Exit code: {}]", code));
-                        }
+                        output.push_str(&format!("\n\n[exit {}]", code));
+                    } else {
+                        output.push_str("\n\n[exit ?]");
                     }
                     if result.timed_out {
                         // 区分"被取消"和"超时"

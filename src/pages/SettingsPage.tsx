@@ -35,8 +35,6 @@ const sections: SettingsSection[] = [
 
 interface AppConfig {
   max_iterations: number
-  compact_threshold: number
-  compact_keep: number
   temperature?: number
   deny_patterns?: string[]
   [key: string]: unknown

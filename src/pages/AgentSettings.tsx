@@ -12,8 +12,6 @@ interface SubAgentProfile {
   enabled_tools: string[]
   max_iterations: number
   temperature: number | null
-  compact_threshold: number | null
-  compact_keep: number | null
 }
 
 interface AgentSettingsProps {
@@ -41,8 +39,6 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
           enabled_tools: a.enabled_tools || [],
           max_iterations: a.max_iterations ?? 0,
           temperature: a.temperature ?? null,
-          compact_threshold: a.compact_threshold ?? null,
-          compact_keep: a.compact_keep ?? null,
         }))
         setProfiles(items)
       }
@@ -59,8 +55,6 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
         enabled_tools: profile.enabled_tools,
         max_iterations: profile.max_iterations,
         temperature: profile.temperature,
-        compact_threshold: profile.compact_threshold,
-        compact_keep: profile.compact_keep,
       }
       if (profile.system_prompt) {
         body.system_prompt = profile.system_prompt
@@ -143,7 +137,6 @@ export function AgentSettings({ onBack }: AgentSettingsProps) {
                         <span>{profile.enabled_tools.length} 工具</span>
                         <span>{t('settings.maxIter', { n: profile.max_iterations })}</span>
                         {profile.temperature !== null && <span>温度 {profile.temperature.toFixed(2)}</span>}
-                        {profile.compact_threshold !== null && <span>压缩 {profile.compact_threshold}→{profile.compact_keep}</span>}
                       </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
@@ -243,8 +236,6 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
   }, [toolsLoaded, allTools, initial])
   const [maxIterations, setMaxIterations] = useState(initial?.max_iterations ?? 0)
   const [temperature, setTemperature] = useState<number | null>(initial?.temperature ?? null)
-  const [compactThreshold, setCompactThreshold] = useState<number | null>(initial?.compact_threshold ?? null)
-  const [compactKeep, setCompactKeep] = useState<number | null>(initial?.compact_keep ?? null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
 
   const [modelOptions, setModelOptions] = useState<string[]>([])
@@ -292,8 +283,6 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
         system_prompt: systemPrompt, model: model || null,
         enabled_tools: enabledTools, max_iterations: maxIterations,
         temperature,
-        compact_threshold: compactThreshold,
-        compact_keep: compactKeep,
       })
     } finally { setSaving(false) }
   }
@@ -384,36 +373,6 @@ function ProfileForm({ initial, onSave, onCancel }: ProfileFormProps) {
           </span>
           {temperature !== null && (
             <button onClick={() => setTemperature(null)}
-              className="text-[10px] px-1.5 py-0.5 rounded hover:bg-foreground/10 text-foreground/40">
-              重置
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* 上下文压缩设置 */}
-      <div>
-        <label className="block text-[10px] text-foreground/50 mb-1">上下文压缩
-          <span className="text-foreground/30 ml-1">（留空使用全局默认值）</span>
-        </label>
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="text-[10px] text-foreground/50">超过</span>
-          <input
-            type="number" min={0} max={999} placeholder="40"
-            value={compactThreshold ?? ''}
-            onChange={e => setCompactThreshold(e.target.value ? parseInt(e.target.value) : null)}
-            className="w-16 px-2 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20"
-          />
-          <span className="text-[10px] text-foreground/50">条消息时压缩，保留</span>
-          <input
-            type="number" min={1} max={200} placeholder="20"
-            value={compactKeep ?? ''}
-            onChange={e => setCompactKeep(e.target.value ? parseInt(e.target.value) : null)}
-            className="w-16 px-2 py-1.5 rounded-lg bg-foreground/5 border border-border text-xs text-foreground/80 outline-none focus:border-foreground/20"
-          />
-          <span className="text-[10px] text-foreground/50">条</span>
-          {(compactThreshold !== null || compactKeep !== null) && (
-            <button onClick={() => { setCompactThreshold(null); setCompactKeep(null) }}
               className="text-[10px] px-1.5 py-0.5 rounded hover:bg-foreground/10 text-foreground/40">
               重置
             </button>

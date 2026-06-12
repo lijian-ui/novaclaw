@@ -198,22 +198,27 @@ pub async fn register(registry: &ToolRegistry) {
         .register(ToolDef {
             name: "read_file".to_string(),
             display_name: "读取文件".to_string(),
-            description: "Read file content. Supports range reading and symbol-based reading. \
-                          Use 'symbol' to read a specific function/struct definition precisely. \
-                          Use 'outline' to see all symbols first.".to_string(),
+            description: "Read file content. Supports range, head/tail, outline and symbol-based reading. \
+                          Default returns FULL CONTENT for files ≤ 64KB. \
+                          Larger files auto-switch to outline mode (head 80 lines + symbol outline). \
+                          Use 'range' to read a specific line range (e.g. \"50-100\"), \
+                          'head'/'tail' for first/last N lines.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "File path" },
                     "offset": { "type": "integer", "description": "Start line (1-based)", "default": 1 },
-                    "limit": { "type": "integer", "description": "Number of lines to read", "default": 500 },
+                    "limit": { "type": "integer", "description": "Number of lines to read", "default": 2000 },
+                    "range": { "type": "string", "description": "Inclusive line range like \"50-100\" or \"50-50\". 1-indexed. Takes precedence over offset/limit." },
+                    "head": { "type": "integer", "description": "If set, return only the first N lines." },
+                    "tail": { "type": "integer", "description": "If set, return only the last N lines." },
                     "outline": { "type": "boolean", "description": "If true, only returns symbols/outline of the file", "default": false },
                     "symbol": { "type": "string", "description": "Read a specific symbol definition (function, struct, etc.) precisely using Tree-sitter" }
                 },
                 "required": ["path"]
             }),
 
-            skip_truncation_save: false,
+            skip_truncation_save: true,
             handler: std::sync::Arc::new(
                 |args: serde_json::Value,
                  _chunk_tx: Option<
@@ -225,12 +230,15 @@ pub async fn register(registry: &ToolRegistry) {
 
                     // 打印详细参数日志，方便观察 LLM 是否使用了 symbol 等高级功能
                     tracing::info!(
-                        "[Tool: read_file] path=\"{}\", symbol={:?}, outline={:?}, range={:?}-{:?}",
+                        "[Tool: read_file] path=\"{}\", symbol={:?}, outline={:?}, offset={:?}, limit={:?}, range={:?}, head={:?}, tail={:?}",
                         path_str,
                         args.get("symbol").and_then(|v| v.as_str()),
                         args.get("outline").and_then(|v| v.as_bool()),
-                        args.get("offset"),
-                        args.get("limit")
+                        args.get("offset").and_then(|v| v.as_u64()),
+                        args.get("limit").and_then(|v| v.as_u64()),
+                        args.get("range").and_then(|v| v.as_str()),
+                        args.get("head").and_then(|v| v.as_u64()),
+                        args.get("tail").and_then(|v| v.as_u64()),
                     );
 
 
@@ -292,10 +300,35 @@ pub async fn register(registry: &ToolRegistry) {
                         }
                     }
 
-                    let (start_line, read_limit) = {
-                        let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
-                        let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
-                        (offset.saturating_sub(1), limit.min(MAX_LINES))
+                    // ── 计算实际读取的行范围（参考 Reasonix 优先级: range > head/tail > offset/limit） ──
+                    let (start_line, read_limit, source_desc) = {
+                        // 1. range 参数 (如 "50-100" 或 "50-50") — 最高优先级
+                        if let Some(range_str) = args.get("range").and_then(|v| v.as_str()) {
+                            if let Some((raw_start, raw_end)) = range_str.split_once('-') {
+                                let s = raw_start.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
+                                let e = raw_end.trim().parse::<usize>().unwrap_or(total_lines).min(total_lines);
+                                let count = e.saturating_sub(s).min(MAX_LINES);
+                                (s, count, format!("range {}-{} of {} lines", s + 1, e, total_lines))
+                            } else {
+                                (0usize, MAX_LINES, format!("full file ({} lines)", total_lines))
+                            }
+                        // 2. head 参数 — 返回前 N 行
+                        } else if let Some(n) = args.get("head").and_then(|v| v.as_u64()) {
+                            let count = (n as usize).min(total_lines).min(MAX_LINES);
+                            (0usize, count, format!("head {} of {} lines", count, total_lines))
+                        // 3. tail 参数 — 返回后 N 行
+                        } else if let Some(n) = args.get("tail").and_then(|v| v.as_u64()) {
+                            let count = (n as usize).min(total_lines).min(MAX_LINES);
+                            let start = total_lines.saturating_sub(count);
+                            (start, count, format!("tail {} of {} lines", count, total_lines))
+                        // 4. offset/limit 参数 — 默认值
+                        } else {
+                            let offset = args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1) as usize;
+                            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(2000) as usize;
+                            let s = offset.saturating_sub(1);
+                            let c = limit.min(MAX_LINES).min(total_lines.saturating_sub(s));
+                            (s, c, format!("lines {}-{} of {}", s + 1, s + c, total_lines))
+                        }
                     };
 
 
@@ -319,11 +352,13 @@ pub async fn register(registry: &ToolRegistry) {
                         }
                     }
 
-                    // ── 大文件检测：如果没有分片参数且文件 > 64KB，提示用分片读取 ──
-                    let no_paging = args.get("range").is_none()
-                        && args.get("head").is_none()
-                        && args.get("tail").is_none();
-                    if no_paging && file_size > FULL_READ_THRESHOLD_BYTES && start_line == 0 && read_limit >= MAX_LINES {
+                    // ── 大文件检测：如果没有分片参数且文件 > 64KB，自动切换 outline 模式 ──
+                    let has_scoping = args.get("range").is_some()
+                        || args.get("head").is_some()
+                        || args.get("tail").is_some()
+                        || args.get("offset").map(|v| v.as_u64().unwrap_or(1) > 1).unwrap_or(false)
+                        || args.get("limit").map(|v| v.as_u64().unwrap_or(2000) < MAX_LINES as u64).unwrap_or(false);
+                    if !has_scoping && file_size > FULL_READ_THRESHOLD_BYTES && start_line == 0 && read_limit >= MAX_LINES {
                         // 返回大纲模式：前 80 行 + 文件信息 + 符号列表
                         let outline_limit = 80usize.min(total_lines);
                         let head_lines: Vec<String> = content.lines().take(outline_limit).enumerate().map(|(i, line)| {

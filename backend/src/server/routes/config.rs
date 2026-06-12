@@ -15,8 +15,6 @@ async fn get_config() -> Json<serde_json::Value> {
             "port": config.port,
             "host": config.host,
             "max_iterations": config.max_iterations,
-            "compact_threshold": config.compact_threshold,
-            "compact_keep": config.compact_keep,
             "temperature": config.temperature,
             "deny_patterns": config.deny_patterns,
             "shell_allowlist": config.shell_allowlist,
@@ -98,8 +96,6 @@ async fn list_agents() -> Json<serde_json::Value> {
                     "enabled_tools": config.enabled_tools,
                     "max_iterations": config.max_iterations,
                     "temperature": config.temperature,
-                    "compact_threshold": config.compact_threshold,
-                    "compact_keep": config.compact_keep,
                     "has_soul": has_soul,
                 }));
             }
@@ -113,8 +109,6 @@ async fn list_agents() -> Json<serde_json::Value> {
                     "enabled_tools": [],
                     "max_iterations": 0,
                     "temperature": null,
-                    "compact_threshold": null,
-                    "compact_keep": null,
                     "has_soul": has_soul,
                 }));
             }
@@ -139,8 +133,6 @@ async fn upsert_agent(Path(agent_id): Path<String>, Json(body): Json<serde_json:
             .unwrap_or_default(),
         max_iterations: body.get("max_iterations").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
         temperature: body.get("temperature").and_then(|v| v.as_f64()),
-        compact_threshold: body.get("compact_threshold").and_then(|v| v.as_u64()).map(|v| v as usize),
-        compact_keep: body.get("compact_keep").and_then(|v| v.as_u64()).map(|v| v as usize),
     };
 
     match config.save(&paths) {

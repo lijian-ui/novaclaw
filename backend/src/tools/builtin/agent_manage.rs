@@ -134,8 +134,6 @@ Examples:
                                     .unwrap_or_default(),
                                 max_iterations: args["max_iterations"].as_u64().unwrap_or(0) as u32,
                                 temperature: args["temperature"].as_f64(),
-                                compact_threshold: None,
-                                compact_keep: None,
                             };
                             config.save(&paths)?;
 

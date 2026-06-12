@@ -103,8 +103,6 @@ pub async fn initialize() {
                     enabled_tools: tools.iter().map(|t| t.to_string()).collect(),
                     max_iterations: 0,
                     temperature: None,
-                    compact_threshold: None,
-                    compact_keep: None,
                 };
                 if let Err(e) = config.save(&paths) {
                     tracing::warn!("创建默认智能体 '{}' 失败: {}", id, e);
@@ -160,8 +158,6 @@ pub async fn initialize() {
                 enabled_tools: Vec::new(),
                 max_iterations: 0,
                 temperature: None,
-                compact_threshold: None,
-                compact_keep: None,
             };
             if let Err(e) = config.save(&paths) {
                 tracing::warn!("创建默认智能体配置失败: {}", e);

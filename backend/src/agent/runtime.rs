@@ -1,5 +1,6 @@
 use crate::agent::cot::CotExtractor;
 use crate::agent::session::{AgentMessage, AgentSession, AgentToolCall};
+use crate::agent::storm::StormBreaker;
 use crate::config::AppConfig;
 use crate::config::ModelsConfig;
 use crate::llm::client::LlmClient;
@@ -157,6 +158,10 @@ pub struct AgentRuntime {
     cached_tool_schemas: Option<Vec<crate::tools::types::ToolDefinition>>,
     /// 文件访问计数器，用于语义级"隐式钉住"
     file_access_counts: HashMap<String, usize>,
+    /// StormBreaker 滑动窗口重复调用检测（参考 DeepSeek-Reasonix）
+    storm_breaker: crate::agent::storm::StormBreaker,
+    /// 是否已给自修正机会（当前轮内）
+    turn_self_corrected: bool,
     /// IM 回复上下文（仅在 IM 会话时设置，用于 volatile suffix）
     pub im_reply_context: Option<String>,
 }
@@ -200,6 +205,8 @@ impl AgentRuntime {
             consecutive_tool_failures: 0,
             cached_tool_schemas: None,
             file_access_counts: HashMap::new(),
+            storm_breaker: crate::agent::storm::StormBreaker::new(6, 3),
+            turn_self_corrected: false,
             im_reply_context: None,
         }
     }
@@ -208,7 +215,9 @@ impl AgentRuntime {
     // ── 工具结果压缩阈值（超过此字符数的工具结果，在轮次结束后压缩） ──
     const TOOL_RESULT_COMPRESS_LIMIT: usize = 6000;
     // ── 工具结果 Token 上限（超过此 token 数则截断，适配中文场景） ──
-    const TOOL_RESULT_TOKEN_LIMIT: u64 = 800; // 降低：800 token ≈ 3200 英文字符 ≈ 1600 中文字符
+    // 参考 DeepSeek-Reasonix: DEFAULT_MAX_RESULT_TOKENS = 8000
+    // 提升到 8000 token 避免 read_file 等只读工具结果被过早截断
+    const TOOL_RESULT_TOKEN_LIMIT: u64 = 8000;
 
     // ── 预检：消息历史总字符数触发压缩的阈值 ──
     const PREFLIGHT_CHAR_LIMIT: usize = 300_000;
@@ -224,8 +233,13 @@ impl AgentRuntime {
     /// 动态会话部分（Body After Prefix）的 Token 预算
     /// 当消息历史中除了前 2 条（系统上下文）之外的部分超过此预算时，触发压缩。
     /// 这有助于保持 DeepSeek 前缀缓存后的"动荡区"大小受控，提高处理效率。
-    const VOLATILE_BODY_TOKEN_BUDGET: u64 = 20_000;
+    /// 参考 Reasonix：1M 窗口保留 20% 尾部（200K tokens），动荡区预算设为 200K
+    const VOLATILE_BODY_TOKEN_BUDGET: u64 = 200_000;
 
+
+    // ── 轮开始前预折叠阈值（参考 Reasonix TURN_START_FOLD_THRESHOLD） ──
+    /// 上下文使用率 ≥ 此值时，在 LLM 请求发送前先折叠历史
+    const TURN_START_FOLD_THRESHOLD: f64 = 0.90;
 
     // ── Post-usage 折叠阈值（基于真实 prompt_tokens，参考 Reasonix） ──
     /// 真实 prompt_tokens / ctxMax ≥ 此值时，下一轮开始前触发折叠
@@ -250,6 +264,10 @@ impl AgentRuntime {
         let mut iterations = 0;
         let mut final_content = String::new();
         let mut max_iterations_reached = false;
+
+        // ── P0: StormBreaker 重置（新用户输入 → 新意图 → 清空窗口） ──
+        self.storm_breaker.reset();
+        self.turn_self_corrected = false;
 
         // ── P0: 成本控制 - 模型升级决议 ──
         self.current_turn_pro = false;
@@ -299,31 +317,35 @@ impl AgentRuntime {
         self.session.push_user_with_images_and_videos(&processed_input, images, videos);
 
 
-        // ── P0: 上下文压缩检查 ──
-        let compact_keep = if self.config.compact_keep > 0 {
-            self.config.compact_keep
-        } else {
-            COMPACT_KEEP_LAST_FALLBACK
-        };
-        if self.config.compact_threshold > 0 && self.session.message_count() > self.config.compact_threshold {
-            let keep = compact_keep;
+        // ── P0: 上下文压缩检查（基于 Token 百分比，不再使用消息数量触发） ──
+        // 参考 DeepSeek-Reasonix 设计：压缩由 maybe_compact_for_preflight 和 post-usage 折叠驱动
+        // 这里只做预折叠检查：上下文 > 90% 时在发送请求前先压缩
+        let ctx_window = self.estimate_context_window();
+        let mut estimated_tokens: u64 = 0;
+        if ctx_window > 0 {
+            estimated_tokens = self.session.messages.iter()
+                .map(|m| tokenizer::quick_estimate_message_tokens(&m.content, &m.role))
+                .sum();
+            let ratio = estimated_tokens as f64 / ctx_window as f64;
+            // 记录当前上下文使用情况（方便用户了解真实占用）
             tracing::info!(
-                "[Agent] 消息数 {} 超过阈值 {}，触发上下文压缩 (compact_in_place)，保留最近 {} 条",
-                self.session.message_count(),
-                self.config.compact_threshold,
-                keep
+                "[Context] 消息 {} 条, 估算 {} tokens ({:.1}% / {}), 模型: {}",
+                self.session.messages.len(),
+                estimated_tokens,
+                ratio * 100.0,
+                ctx_window,
+                self.session.model
             );
-
-            // P1: 生成 AI 摘要（优先使用 flash 模型，降级到当前模型）
-            let ai_summary = self.generate_ai_summary(keep).await;
-            self.session.compact_in_place(keep, ai_summary);
-            self.session.aggressive_compact_tool_results(3); // 激进清理 3 个回合之前的工具结果
-
-            tracing::info!(
-                "[Agent] 压缩完成，当前消息数: {}，累计压缩次数: {}",
-                self.session.message_count(),
-                self.session.compaction_count
-            );
+            if ratio >= Self::TURN_START_FOLD_THRESHOLD {
+                let keep = COMPACT_KEEP_LAST_FALLBACK;
+                tracing::warn!(
+                    "[Preflight] 🔴 上下文使用率 {:.1}% ≥ 90%，轮开始前预折叠，保留最近 {} 条",
+                    ratio * 100.0, keep
+                );
+                let ai_summary = self.generate_ai_summary(keep).await;
+                self.session.compact_in_place(keep, ai_summary);
+                self.session.aggressive_compact_tool_results(3);
+            }
         }
 
         // ── P0: 预取工具定义，缓存到 runtime（确保每次请求的 tools 参数字节一致） ──
@@ -440,13 +462,21 @@ impl AgentRuntime {
                 .clone()
                 .unwrap_or_default();
 
-            // 先过滤重复工具调用，再推入会话，避免 assistant 消息带有 tool_calls
-            // 但后续缺少对应的 tool 响应（违反 OpenAI API 协议）
-            let valid_tool_calls = self.filter_duplicate_tool_calls(&tool_calls);
+            // ── StormBreaker 检测重复模式（参考 DeepSeek-Reasonix） ──
+            let storm_report = self.storm_breaker.inspect_batch(&tool_calls);
+            let all_suppressed = storm_report.all_suppressed;
+
+            // 根据 StormBreaker 结果过滤工具调用
+            let valid_tool_calls: Vec<AgentToolCall> = tool_calls.iter()
+                .enumerate()
+                .filter(|(idx, _)| !storm_report.suppressed_indices.contains(idx))
+                .map(|(_, tc)| tc.clone())
+                .collect();
+
             let has_filtered = valid_tool_calls.len() < tool_calls.len();
 
+            // 推入 assistant 消息（只含有效工具调用）
             if has_filtered {
-                // 创建只含有效 tool_calls 的 assistant 消息推入会话
                 let mut clean_msg = assistant_message.clone();
                 clean_msg.tool_calls = if valid_tool_calls.is_empty() {
                     None
@@ -467,12 +497,95 @@ impl AgentRuntime {
                         self.current_turn_pro = true;
                         self.session.model = pro_model.clone();
                         tracing::info!("[Cost] ⬆️ 检测到 <<<NEEDS_PRO>>> 标记，升级到 Pro 模型 ({})", pro_model);
-                        // 清理标记并重试本轮
                         final_content = final_content.replace("<<<NEEDS_PRO>>>", "").trim().to_string();
                     }
                 }
 
                 break;
+            }
+
+            // ── StormBreaker: 被压制的调用 → 注入 Stub 响应（参考 Reasonix） ──
+            if !storm_report.suppressed_indices.is_empty() {
+                if all_suppressed && self.turn_self_corrected {
+                    // 第二次全部压制 → 强制退出（死循环检测）
+                    tracing::warn!(
+                        "[StormBreaker] 全部工具调用被压制（已给过自修正机会），强制退出循环 (iter={})",
+                        iterations
+                    );
+                    // 注入一条 tool 响应让 LLM 看到原因
+                    for (idx, call) in tool_calls.iter().enumerate() {
+                        if storm_report.suppressed_indices.contains(&idx) {
+                            let stub_msg = format!(
+                                "[repeat-loop guard] 工具 {} 的调用被压制——本轮中已出现多次相同调用。\
+                                 请换一种完全不同的方法，或者如果已有足够信息则直接回答。\
+                                 压制原因: {}",
+                                call.name,
+                                storm_report.notes.first().map(|s| s.as_str()).unwrap_or("重复检测触发")
+                            );
+                            self.session.push_tool_result(&call.id, &call.name, &stub_msg);
+                        }
+                    }
+                    // 清空 valid_tool_calls 以跳出循环
+                    let _ = valid_tool_calls.is_empty(); // 确保使用
+                    // 设置 final_content 并优雅退出
+                    let _ = self.session.messages.iter_mut().last().map(|m| {
+                        m.content.push_str(
+                            "\n\n[SYSTEM: 检测到重复工具调用循环，已强制中断。请换一种方案。]"
+                        );
+                    });
+                    final_content = "[检测到重复工具调用循环，已中断]".to_string();
+                    break;
+                }
+
+                // 第一次全部压制 → 给自修正机会
+                if all_suppressed && !self.turn_self_corrected {
+                    self.turn_self_corrected = true;
+                    tracing::warn!(
+                        "[StormBreaker] 全部工具调用被压制，给模型一次自修正机会 (iter={})",
+                        iterations
+                    );
+                    // 注入 stub 工具响应，解释为什么被压制
+                    for (idx, call) in tool_calls.iter().enumerate() {
+                        if storm_report.suppressed_indices.contains(&idx) {
+                            let note = storm_report.notes.iter()
+                                .find(|n| n.contains(&call.name))
+                                .map(|s| s.as_str())
+                                .unwrap_or("重复调用检测");
+                            let stub_msg = format!(
+                                "[repeat-loop guard] 此调用被压制——{}。\
+                                 之前的相同调用结果已在上下文中。请换一个完全不同的方法，\
+                                 或者如果已有足够信息则直接回答。",
+                                note
+                            );
+                            self.session.push_tool_result(&call.id, &call.name, &stub_msg);
+                        }
+                    }
+                    // 仍然保留有效工具调用继续执行（如果有）
+                    if valid_tool_calls.is_empty() {
+                        continue;
+                    }
+                }
+
+                // 部分压制：记录日志
+                if !storm_report.notes.is_empty() {
+                    tracing::warn!(
+                        "[StormBreaker] 压制了 {} 个重复工具调用 ({}): {}",
+                        storm_report.suppressed_indices.len(),
+                        valid_tool_calls.len(),
+                        storm_report.notes.join("; ")
+                    );
+                    // 对被压制的调用注入 stub 响应
+                    for (idx, call) in tool_calls.iter().enumerate() {
+                        if storm_report.suppressed_indices.contains(&idx) {
+                            let stub_msg = format!(
+                                "[repeat-loop guard] 此调用被压制——相同的 {} 调用已在本轮中出现多次。\
+                                 请用不同的参数或方法重试。",
+                                call.name
+                            );
+                            self.session.push_tool_result(&call.id, &call.name, &stub_msg);
+                        }
+                    }
+                }
             }
 
             if valid_tool_calls.is_empty() {
@@ -494,8 +607,6 @@ impl AgentRuntime {
                         .await;
                 }
                 // 连续跳过次数过多时，清除去重缓存并重置跳过计数
-                // 原因：上下文压缩后 LLM 丢失了进度信息，生成了已执行过的工具调用
-                // 清除去重缓存后这些工具可以重新执行，LLM 就能继续推进
                 if self.skip_count >= 5 {
                     tracing::warn!("[Agent] 连续跳过 {} 次，清除去重缓存让 LLM 继续", self.skip_count);
                     self.executed_tools.clear();
@@ -572,8 +683,23 @@ impl AgentRuntime {
 
                 match result {
                     Ok(crate::tools::types::ToolResult::Success(output)) => {
-                        // 工具执行成功：重置失败计数
-                        self.consecutive_tool_failures = 0;
+                        // ── 检测 exit code ≠ 0 的 execute_command（参考 Reasonix） ──
+                        // execute_command 结果中已包含 [exit N] 标记（由 execute.rs 添加）
+                        // 如果 exit code ≠ 0，视为工具失败，计入 consecutive_tool_failures
+                        let is_command_failure = tc_name == "execute_command"
+                            && output.contains("[exit ")
+                            && !output.contains("[exit 0]")
+                            && !output.contains("[exit ?]");
+                        if is_command_failure {
+                            self.consecutive_tool_failures += 1;
+                            tracing::warn!(
+                                "[Agent] 命令 {} 返回非零退出码 (连续失败: {})",
+                                tc_name, self.consecutive_tool_failures
+                            );
+                        } else {
+                            // 工具执行成功：重置失败计数
+                            self.consecutive_tool_failures = 0;
+                        }
                         // 首次截断：按 token 数（而非字符数），适配中文场景
                         // TOOL_RESULT_TOKEN_LIMIT = 800 tokens ≈ 3200 英文字符 ≈ 1600 中文字符
                         fn truncate_by_tokens(s: &str, max_tokens: u64) -> String {
@@ -622,8 +748,17 @@ impl AgentRuntime {
                                 .await;
                         }
 
-                        // 明确标注工具返回的是真实数据，避免小模型误判为帮助信息
-                        let contextualized = format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, truncated);
+                        // 参考 Reasonix: read_file 等只读工具的结果不加前缀
+                        // 结果已包含文件路径等自描述信息（如 <path>...</path>）
+                        // 前缀只会浪费 token 且干扰 LLM 理解文件内容
+                        let is_readonly_tool = matches!(tc_name.as_str(), 
+                            "read_file" | "list_dir" | "glob" | "grep" | "search_replace"
+                        );
+                        let contextualized = if is_readonly_tool {
+                            truncated.clone()
+                        } else {
+                            format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, truncated)
+                        };
                         
                         // 监控工具调用频率
                         if tc_name == "read_file" {
@@ -875,7 +1010,9 @@ impl AgentRuntime {
                         }
                     }
                     Err(e) => {
-                        let err_msg = format!("工具执行错误: {}", e);
+                        // 参考 Reasonix: 工具异常序列化为 JSON 格式，方便 LLM 解析
+                        let err_json = serde_json::json!({"error": format!("{}: {}", tc_name, e)});
+                        let err_msg = err_json.to_string();
                         self.consecutive_tool_failures += 1;
                         tracing::warn!("[Agent] 工具 {} 执行失败: {} (连续失败: {})", tc_name, e, self.consecutive_tool_failures);
 
@@ -906,9 +1043,9 @@ impl AgentRuntime {
                                 .await;
                         }
 
-                        // 明确标注工具返回的是真实数据，避免小模型误判为帮助信息
-                        let contextualized = format!("← {} 工具返回的数据（实时读取结果，非帮助信息）:\n{}", tc_name, err_msg);
-                        self.session.push_tool_result(&tc_id, &tc_name, &contextualized);
+                        // 参考 Reasonix: 错误结果直接以 JSON 格式返回，不添加前缀
+                        // 让 LLM 能从 JSON 结构直接识别出错误
+                        self.session.push_tool_result(&tc_id, &tc_name, &err_msg);
 
                         // 累加重试计数（同 key 递增，用于跨迭代硬限制）
                         *self.tool_retry_count.entry(key.clone()).or_insert(0) += 1;
@@ -955,11 +1092,13 @@ impl AgentRuntime {
         for msg in self.session.messages.iter_mut().rev() {
             if msg.role == "tool" && msg.content.len() > Self::TOOL_RESULT_COMPRESS_LIMIT {
                 let full_len = msg.content.len();
+                // 使用 safe_truncate 避免 UTF-8 字符边界 panic
+                let truncated = crate::utils::safe_truncate(&msg.content, Self::TOOL_RESULT_COMPRESS_LIMIT);
                 msg.content = format!(
                     "[工具结果已压缩: 原始 {} 字符 | {} 行]\n\n{}",
                     full_len,
                     full_len / 80, // 粗略行数
-                    &msg.content[..Self::TOOL_RESULT_COMPRESS_LIMIT.min(full_len)]
+                    truncated
                 );
                 compressed_count += 1;
             }
@@ -968,12 +1107,22 @@ impl AgentRuntime {
             tracing::info!("[Compress] 轮末压缩了 {} 个大工具结果", compressed_count);
         }
 
+        // 计算实际上下文使用率（基于最后请求的真实 prompt_tokens，而非累计输入）
+        let ctx_window = self.estimate_context_window();
+        let ctx_usage_pct = if ctx_window > 0 && self.last_input_tokens > 0 {
+            self.last_input_tokens as f64 / ctx_window as f64 * 100.0
+        } else {
+            0.0
+        };
+
         tracing::info!(
-            "[Agent] ReAct 完成: {} 次迭代, {} 字符输出, max_iterations_reached={}. Token: 本次输入 {}, 本次输出 {}, 缓存 {}, 累计输入 {}, 累计输出 {}, 缓存命中率 {:.1}%",
+            "[Agent] ReAct 完成: {} 次迭代, {} 字符输出, max_iterations_reached={}. Token: 本次输入 {} ({:.1}% / {}), 本次输出 {}, 缓存 {}, 累计输入 {}, 累计输出 {}, 缓存命中率 {:.1}%",
             iterations,
             final_content.len(),
             max_iterations_reached,
             self.last_input_tokens,
+            ctx_usage_pct,
+            ctx_window,
             self.last_output_tokens,
             self.total_cached_tokens,
             self.session.total_input_tokens,
@@ -1200,6 +1349,8 @@ impl AgentRuntime {
             .clone();
 
         // 发送前清理孤立 tool 消息并同步 log（确保 LLM 收到一致的消息序列）
+        // heal() 返回 true 表示消息被修改（log 已重建），false 表示无变化
+        // 无变化时 log 字节序列保持不变，有利于 DeepSeek 前缀缓存命中
         self.session.heal();
 
         let tools: Vec<crate::tools::types::ToolDefinition> = if self.grace_terminating {
@@ -1336,8 +1487,9 @@ impl AgentRuntime {
         // 1. heal: 截断过大的 tool 结果
         //    - 历史中的 tool 消息：LLM 首次调用时已看到完整内容，后续轮次只需摘要
         //    - 按 token 数截断（而非字符数），避免中文场景 2× token 代价
-        //    - 阈值 400 tokens ≈ 1600 英文字符 ≈ 800 中文字符（历史消息比首次更激进）
-        const MAX_HISTORY_TOOL_RESULT_TOKENS: u64 = 400;
+        //    - 与 TOOL_RESULT_TOKEN_LIMIT 保持一致（8000 token），
+        //      之前的 400 token 导致天气脚本输出（~350 token）刚过线就被切
+        const MAX_HISTORY_TOOL_RESULT_TOKENS: u64 = 8000;
         for msg in &mut messages {
             if msg.role == "tool" {
                 if let serde_json::Value::String(ref content) = msg.content {
@@ -1747,12 +1899,11 @@ impl AgentRuntime {
             "Linux"
         };
 
-        // 先清除 Soul 缓存，确保外部修改 SOUL.md 后能立即生效
-        {
-            let state = crate::APP_STATE.read().await;
-            let _ = state.soul_manager.clear_cache();
-        }
         // 从全局状态获取 SoulManager（冻结部分需要 soul 身份）
+        // 不再调用 clear_cache() — 该操作每轮都强制重建缓存，导致
+        // frozen_system_prompt 的字节序列变化，破坏 DeepSeek 前缀缓存。
+        // SOUL.md 的外部修改通过 agent_id 的 get_soul_content() 路径即时生效，
+        // 或通过重启 Agent 生效。
         let soul_manager = {
             let state = crate::APP_STATE.read().await;
             state.soul_manager.clone()
@@ -1925,9 +2076,11 @@ impl AgentRuntime {
             formatted.len()
         );
 
-        // 调用 LLM（非流式）
-        match self.llm_client.chat(&summary_request).await {
-            Ok(resp) => {
+        // 调用 LLM（非流式），添加 15 秒超时（参考 Reasonix HISTORY_FOLD_SUMMARY_TIMEOUT_MS）
+        // 超时或失败时跳过压缩而非使用占位符，避免信息丢失
+        const SUMMARY_TIMEOUT: Duration = Duration::from_secs(15);
+        match tokio::time::timeout(SUMMARY_TIMEOUT, self.llm_client.chat(&summary_request)).await {
+            Ok(Ok(resp)) => {
                 let summary = resp.choices
                     .first()
                     .and_then(|c| c.message.as_ref())
@@ -1942,8 +2095,12 @@ impl AgentRuntime {
                 }
                 summary
             }
-            Err(e) => {
-                tracing::warn!("[Summary] 摘要生成失败 (将使用占位符): {}", e);
+            Ok(Err(e)) => {
+                tracing::warn!("[Summary] 摘要生成失败 (跳过压缩，保留原始消息): {}", e);
+                None
+            }
+            Err(_elapsed) => {
+                tracing::warn!("[Summary] 摘要生成超时 (15s)，跳过压缩，保留原始消息");
                 None
             }
         }
@@ -2114,13 +2271,10 @@ impl AgentRuntime {
             );
         }
 
-        // Level 1.5: 消息数超过 compact_threshold 也触发压缩（应对同一轮内大量工具调用）
-        let msg_count_exceeded = self.config.compact_threshold > 0
-            && self.session.messages.len() > self.config.compact_threshold as usize;
-
         // Level 2: 触发压缩（≥50% 或字符数超限 或 动荡区超限）
-        if ratio >= Self::PREFLIGHT_LEVEL2_RATIO || total_chars > Self::PREFLIGHT_CHAR_LIMIT || msg_count_exceeded || volatile_exceeded {
-            let keep = if self.config.compact_keep > 0 { self.config.compact_keep } else { COMPACT_KEEP_LAST_FALLBACK };
+        // 压缩由 Token 百分比驱动，不再依赖消息数量
+        if ratio >= Self::PREFLIGHT_LEVEL2_RATIO || total_chars > Self::PREFLIGHT_CHAR_LIMIT || volatile_exceeded {
+            let keep = COMPACT_KEEP_LAST_FALLBACK;
             tracing::warn!(
                 "[Preflight] 🔄 触发上下文压缩 (ratio={:.1}%, volatile={}, chars={}), 保留最近 {} 条",
                 ratio * 100.0, volatile_tokens, total_chars, keep

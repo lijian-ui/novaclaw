@@ -128,7 +128,8 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
   const [toolsOpen, setToolsOpen] = useState(false)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<MessageData[]>([])
-  // 会话累计输入 Token（用于上下文用量环形进度条）
+  // 当前请求实际上下文 Token 用量（用于环形进度条）
+  // 使用 last_input_tokens（当前请求的 prompt_token），而非累计值
   const [sessionInputTokens, setSessionInputTokens] = useState(0)
   // 当前模型的上下文窗口大小（如 DeepSeek V4 为 1_000_000）
   const [modelContextWindow, setModelContextWindow] = useState(0)
@@ -443,12 +444,13 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
         return merged
       })
 
-      // 从历史消息中获取累计 inputTokens（后端已存储为累计值，取最后一条 assistant 消息即可）
+      // 从历史消息中获取最近一次请求的上下文 Token 用量（用于环形进度条）
+      // 使用 lastInputTokens（当前请求的 prompt_token），而非累计 inputTokens
       const lastAssistantMsg = [...converted].reverse().find(
-        m => m.role === 'assistant' && m.inputTokens && m.inputTokens > 0
+        m => m.role === 'assistant' && (m.lastInputTokens || (m as any).last_input_tokens)
       )
       if (lastAssistantMsg) {
-        setSessionInputTokens(lastAssistantMsg.inputTokens ?? 0)
+        setSessionInputTokens(lastAssistantMsg.lastInputTokens ?? (lastAssistantMsg as any).last_input_tokens ?? 0)
       }
 
       // 从最后一条 assistant 消息中恢复缓存命中率统计
@@ -757,12 +759,12 @@ export function ChatPanel({ onOpenFilePanel, onOpenTool, workspacePath, onWorksp
             return m
           }))
 
-          // 更新会话累计 Token（用于上下文用量环形进度条）
-          // 使用后端计算的累计值 cumulative_input_tokens（后端已跨轮次累加好），
-          // 前端直接使用，无需自行累加
-          const cumulativeInput = (result as any).cumulativeInputTokens
-          if (typeof cumulativeInput === 'number' && cumulativeInput > 0) {
-            setSessionInputTokens(cumulativeInput)
+          // 更新当前请求的实际上下文用量（用于环形进度条）
+          // 使用 lastInputTokens（当前请求的 prompt_token），而非累计值
+          // 累计值会让环形进度条错误地显示超过 100% 的用量
+          const lastInput = (result as any).lastInputTokens ?? (result as any).last_input_tokens
+          if (typeof lastInput === 'number' && lastInput > 0) {
+            setSessionInputTokens(lastInput)
           }
 
           // 更新缓存命中率统计

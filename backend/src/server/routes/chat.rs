@@ -255,16 +255,10 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                     }
                 }
             }
-            // 加载 agent.json 并合并温度/压缩配置
+            // 加载 agent.json 并合并温度配置
             if let Ok(agent_cfg) = crate::soul::AgentConfig::load(&paths, agent_id) {
                 if let Some(t) = agent_cfg.temperature {
                     config.temperature = t;
-                }
-                if let Some(c) = agent_cfg.compact_threshold {
-                    config.compact_threshold = c;
-                }
-                if let Some(c) = agent_cfg.compact_keep {
-                    config.compact_keep = c;
                 }
             }
         } else {
