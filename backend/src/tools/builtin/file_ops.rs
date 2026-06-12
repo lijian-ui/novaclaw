@@ -383,7 +383,7 @@ pub async fn register(registry: &ToolRegistry) {
 
                         let symbols = extract_symbols(&content, Some(&path));
                         let symbols_preview = if symbols.len() > 2000 {
-                            format!("{}... (truncated)", &symbols[..2000])
+                            format!("{}... (truncated)", crate::utils::safe_truncate(&symbols, 2000))
                         } else {
                             symbols
                         };

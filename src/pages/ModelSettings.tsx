@@ -82,6 +82,7 @@ const supplierOptions = [
   { id: 'aliyun', name: '阿里云 Coding Plan' },
   { id: 'ollama', name: 'Ollama' },
   { id: 'lmstudio', name: 'LM Studio' },
+  { id: 'custom', name: '自定义' },
 ]
 
 /** 各供应商官方 API 地址 */
@@ -347,6 +348,7 @@ export function ModelSettings({ onBack }: ModelSettingsProps) {
     xiaomi: 'text-orange-500',
     ollama: 'text-amber-400',
     lmstudio: 'text-cyan-400',
+    custom: 'text-foreground/80',
   }
 
   return (

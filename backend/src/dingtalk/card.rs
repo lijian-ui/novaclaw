@@ -39,7 +39,7 @@ impl CardSender {
         let token = self.token_manager.get_token().await?;
         let card_instance_id = format!("card_{}_{}", 
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
-            &uuid::Uuid::new_v4().to_string()[..8]);
+            &uuid::Uuid::new_v4().simple().to_string()[..8]);
 
         // 创建卡片实例
         let create_body = json!({
@@ -153,7 +153,7 @@ impl CardSender {
     pub async fn stream_update(&self, card: &AICardInstance, content: &str, is_finalize: bool) -> Result<(), AppError> {
         let guid = format!("{:x}_{}",
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis(),
-            &uuid::Uuid::new_v4().to_string()[..8]);
+            &uuid::Uuid::new_v4().simple().to_string()[..8]);
 
         let body = json!({
             "outTrackId": card.card_instance_id,

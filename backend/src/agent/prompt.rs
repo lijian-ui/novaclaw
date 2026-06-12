@@ -19,8 +19,7 @@ use crate::soul::SoulManager;
 ///
 /// - **build_volatile()** — 每次请求可能变化的层：
 ///   1. Current Time (每天变化)
-///   2. Memory (跨会话记忆，随用户操作变化)
-///   3. Pinned Files (用户 pin/unpin 时变化)
+///   2. Pinned Files (用户 pin/unpin 时变化)
 ///
 /// 使用方式: frozen 一次构建后存入 AgentSession.frozen_system_prompt，
 /// volatile 每次请求时构建，追加到第一个 user 消息中。
@@ -31,8 +30,6 @@ pub struct SystemPromptBuilder<'a> {
     workspace: Option<String>,
     skill_list: Vec<String>,
     soul_manager: Option<SoulManager>,
-    /// MEMORY.md 内容（跨会话持久记忆，可选）
-    memory_content: Option<String>,
     /// 固定到上下文的文件内容
     pinned_files_content: Option<String>,
     /// IM 回复上下文（platform, robot, target_id 等）
@@ -52,7 +49,6 @@ impl<'a> SystemPromptBuilder<'a> {
             workspace: workspace.map(|s| s.into()),
             skill_list: Vec::new(),
             soul_manager: None,
-            memory_content: None,
             pinned_files_content: None,
             im_reply_context: None,
         }
@@ -106,12 +102,6 @@ impl<'a> SystemPromptBuilder<'a> {
         self
     }
 
-    /// 注入 MEMORY.md 记忆内容
-    pub fn with_memory(mut self, content: Option<String>) -> Self {
-        self.memory_content = content;
-        self
-    }
-
     /// 注入 IM 回复上下文
     pub fn with_im_reply_context(mut self, context: Option<String>) -> Self {
         self.im_reply_context = context;
@@ -139,6 +129,8 @@ impl<'a> SystemPromptBuilder<'a> {
         if !self.skill_list.is_empty() {
             sections.push(self.build_skill_index());
         }
+        // Memory 提示放冻结部分（不注入实际内容，只是使用提示，永远不变）
+        sections.push(self.build_memory());
         // IM 上下文放冻结部分（会话内完全不变）
         if let Some(ref im_ctx) = self.im_reply_context {
             if !im_ctx.is_empty() {
@@ -151,11 +143,10 @@ impl<'a> SystemPromptBuilder<'a> {
 
     /// 构建易变后缀（每天/每次请求可能变化的内容）
     ///
-    /// 包含：Current Time → Memory → Pinned Files
+    /// 包含：Current Time → Pinned Files
     pub fn build_volatile(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
         sections.push(format!("## Current Time\n- Today: {}", chrono::Local::now().format("%Y-%m-%d %A")));
-        sections.push(self.build_memory());
         if let Some(ref pinned) = self.pinned_files_content {
             if !pinned.is_empty() {
                 sections.push(pinned.clone());
@@ -183,18 +174,12 @@ impl<'a> SystemPromptBuilder<'a> {
 - 执行用户明确要求的操作，不做未授权的操作"#.to_string()
     }
 
-    /// Memory injection
+    /// Memory hint（不注入实际内容，引导 LLM 使用 memory 工具主动查询）
     fn build_memory(&self) -> String {
-        let mut output = String::from("## Memory\n\nUse `memory` tool to save/recall user preferences.\n\n");
-        if let Some(m) = &self.memory_content {
-            if !m.trim().is_empty() {
-                let truncated = if m.len() > 3500 { format!("{}...", &m[..3500]) } else { m.trim().to_string() };
-                output.push_str(&format!("Saved facts:\n\n{}", truncated));
-                return output;
-            }
-        }
-        output.push_str("No saved facts yet.");
-        output
+        "## Memory\n\n\
+         You have a persistent memory store. Use `memory search <query>` to recall \
+         relevant saved facts when you are unsure or need context. \
+         Use `memory add` to save important information.".to_string()
     }
 
     /// System rules

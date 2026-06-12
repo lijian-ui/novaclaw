@@ -20,3 +20,8 @@ pub fn safe_truncate_with_ellipsis(s: &str, max_len: usize) -> String {
         s.to_string()
     }
 }
+
+/// 辅助函数：判断布尔值是否为 false（用于 serde skip_serializing_if）
+pub fn is_false(b: &bool) -> bool {
+    !b
+}

@@ -112,6 +112,10 @@ pub struct AgentResult {
     pub last_input_tokens: u64,
     pub last_output_tokens: u64,
     pub cache_hit_rate: f64,
+    /// 本轮是否发生了上下文压缩（用于同步 compact 标记到 JSONL 存储）
+    pub compaction_occurred: bool,
+    /// 压缩摘要内容
+    pub compaction_summary: Option<String>,
 }
 
 pub struct AgentRuntime {
@@ -1168,6 +1172,8 @@ impl AgentRuntime {
             last_input_tokens: self.last_input_tokens,
             last_output_tokens: self.last_output_tokens,
             cache_hit_rate: self.session.cache_hit_rate(),
+            compaction_occurred: self.session.compaction_occurred,
+            compaction_summary: self.session.compaction_summary.clone(),
         })
     }
 
@@ -1891,6 +1897,10 @@ impl AgentRuntime {
         let (soul_manager, skills) = {
             let state = crate::APP_STATE.read().await;
             let soul = state.soul_manager.clone();
+            // 如果会话指定了 agent_id，让 soul_manager 加载对应 Agent 的 SOUL
+            if let Some(ref agent_id) = self.session.agent_id {
+                soul.set_current_agent(agent_id.clone()).await;
+            }
             let skill_list: Vec<String> = self.skills.iter().map(|s| {
                 format!("{}: {}", s.name, s.description)
             }).collect();
@@ -2098,13 +2108,8 @@ impl AgentRuntime {
     /// 构建易变后缀（含 memory、日期、Pinned 文件）
     ///
     /// Skills 和 IM 上下文已移入 frozen system prompt（build_frozen_system_prompt 中处理）
+    /// Memory 不再注入实际内容，只保留提示让 LLM 使用 memory 工具主动查询
     async fn build_volatile_suffix(&self) -> String {
-        let memory_content = {
-            let state = crate::APP_STATE.read().await;
-            let memory = state.memory_store.list_memories();
-            if memory.is_empty() { None } else { Some(memory) }
-        };
-
         let os_name = if cfg!(target_os = "windows") {
             "Windows"
         } else if cfg!(target_os = "macos") {
@@ -2118,7 +2123,6 @@ impl AgentRuntime {
             os_name,
             self.session.workspace.as_deref(),
         )
-        .with_memory(memory_content)
         .with_pinned_files(Some(self.session.get_pinned_files_context()))
         .build_volatile()
     }

@@ -50,6 +50,10 @@ pub struct AgentSession {
     /// 会话存储（实时持久化用，不序列化）
     #[serde(skip)]
     pub session_store: Option<crate::storage::SessionStore>,
+    /// 本轮是否发生了压缩（Compact 标记写回 JSONL 用）
+    pub compaction_occurred: bool,
+    /// 压缩摘要内容（写回 JSONL 时用）
+    pub compaction_summary: Option<String>,
 }
 
 /// Agent 消息
@@ -123,6 +127,8 @@ impl AgentSession {
             consecutive_read_count: 0,
             session_store: None,
             agent_id: None,
+            compaction_occurred: false,
+            compaction_summary: None,
         }
     }
 
@@ -627,6 +633,8 @@ impl AgentSession {
         }
 
         self.compaction_count += 1;
+        self.compaction_occurred = true;
+        self.compaction_summary = ai_summary.clone();
         tracing::info!(
             "[Cache] compact_in_place{}: 移除了 {} 条消息，剩余 {} 条 (压缩次数: {})，尾部预算 {} tokens",
             if ai_summary.is_some() { " (AI 摘要)" } else { "" },

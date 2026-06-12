@@ -323,6 +323,9 @@ pub struct PrivateMessageRequest {
 }
 
 /// 发送群聊消息
+/// 注意：钉钉主动推送 API 不识别独立的 at 字段，
+/// @ 通过文本中的 @userId 实现，由 append_at_to_content 追加。
+/// 参考 DingTalk OpenClaw SDK: sendProactiveInternal 中 body 不包含 at。
 #[derive(Debug, Serialize)]
 pub struct GroupMessageRequest {
     #[serde(rename = "robotCode")]

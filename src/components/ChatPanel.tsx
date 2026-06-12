@@ -55,6 +55,7 @@ import anthropicIcon from '@/assets/Anthropic.png'
 import zhipuIcon from '@/assets/zhipu.png'
 import xiaomiIcon from '@/assets/Xiaomi.png'
 import bailianIcon from '@/assets/bailian.png'
+import customAiIcon from '@/assets/AI.png'
 
 const tools = [
   { id: 'editor', nameKey: 'dashboard.editor', icon: Code2, iconColor: 'text-emerald-400' },
@@ -77,6 +78,7 @@ interface ModelOption {
 // 根据提供商名称匹配图标
 function getProviderIcon(providerId: string): string | undefined {
   const id = providerId.toLowerCase().replace(/[\s_-]/g, '')
+  if (id === 'custom' || id.includes('自定义') || id.includes('custom')) return customAiIcon
   if (id.includes('openai') || id === 'openai') return openaiIcon
   if (id.includes('lmstudio') || id.includes('lm_studio') || id.includes('lm-studio')) return lmStudioIcon
   if (id.includes('ollama')) return ollamaIcon

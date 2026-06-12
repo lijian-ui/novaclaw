@@ -53,6 +53,7 @@ impl IMGateway {
         account_id: &str,
         target: &MessageTarget,
         text: &str,
+        options: &crate::im::adapter::MessageOptions,
     ) -> Result<SendResult, AppError> {
         let composite_key = format!("{}:{}", target.platform.as_str(), account_id);
         let adapter = self
@@ -60,7 +61,7 @@ impl IMGateway {
             .get(&composite_key)
             .await
             .ok_or_else(|| AppError::NotFound(format!("账号未注册: {}", account_id)))?;
-        adapter.send_text(target, text).await
+        adapter.send_text(target, text, options).await
     }
 
     /// 通过指定账号发送 Markdown
@@ -70,6 +71,7 @@ impl IMGateway {
         target: &MessageTarget,
         title: &str,
         text: &str,
+        options: &crate::im::adapter::MessageOptions,
     ) -> Result<SendResult, AppError> {
         let composite_key = format!("{}:{}", target.platform.as_str(), account_id);
         let adapter = self
@@ -77,7 +79,7 @@ impl IMGateway {
             .get(&composite_key)
             .await
             .ok_or_else(|| AppError::NotFound(format!("账号未注册: {}", account_id)))?;
-        adapter.send_markdown(target, title, text).await
+        adapter.send_markdown(target, title, text, options).await
     }
 
     /// 按消息来源账号回复

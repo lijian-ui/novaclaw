@@ -29,9 +29,9 @@ pub struct UploadedFileInfo {
 }
 
 /// 生成 16 字节随机十六进制字符串
+/// 使用 Uuid::simple() 返回 32 个 ASCII 十六进制字符（无分隔符），安全切片
 fn random_hex_16() -> String {
-    // 用 UUID v4 生成随机 hex
-    uuid::Uuid::new_v4().to_string().replace('-', "")[..32].to_string()
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 /// 通用媒体上传管线
@@ -60,6 +60,7 @@ async fn upload_media_to_cdn(
     let filesize = cdn::aes_ecb_padded_size(plaintext.len()) as i64;
     let filekey = random_hex_16();
     let aeskey_bytes = random_hex_16()[..16].as_bytes().to_vec();
+    // 注：random_hex_16 返回 32 个 ASCII 十六进制字符，[..16] 安全
     let aeskey_hex = hex_encode(&aeskey_bytes);
 
     // 4. 获取上传 URL

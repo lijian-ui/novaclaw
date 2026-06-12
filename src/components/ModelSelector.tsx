@@ -5,9 +5,11 @@ import { useChat } from '@/contexts/ChatContext'
 import { useApi } from '@/hooks/useApi'
 import type { Model } from '@/types'
 import xiaomiIcon from '@/assets/Xiaomi.png'
+import customAiIcon from '@/assets/AI.png'
 
 function getProviderIcon(providerName: string): string | undefined {
   const name = providerName.toLowerCase().replace(/[\s_-]/g, '')
+  if (name === 'custom' || name.includes('自定义') || name.includes('custom')) return customAiIcon
   if (name.includes('xiaomi') || name.includes('mimo')) return xiaomiIcon
   return undefined
 }

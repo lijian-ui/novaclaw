@@ -34,13 +34,18 @@ pub fn platform_chinese_name(platform: &PlatformType) -> String {
     }
 }
 
-/// 格式化 IM 消息为 Agent 可读文本（注入平台上下文）
+/// 格式化 IM 消息为 Agent 可读文本（注入平台上下文和用户身份）
+/// sender_chat_user_id / sender_staff_id 放在消息文本中而非系统提示词，
+/// 避免群聊不同用户说话时前缀缓存被破坏。
 pub fn format_im_message(msg: &IncomingMessage) -> String {
     let sender = msg.sender_name.as_deref().unwrap_or("未知用户");
     let platform_name = platform_chinese_name(&msg.platform);
     let channel_name = msg.account_name.as_deref().unwrap_or(&msg.account_id);
+    let sender_id = msg.sender_id.as_deref().unwrap_or("");
+    let sender_staff_id = msg.sender_staff_id.as_deref().unwrap_or("");
+    let uid = if !sender_staff_id.is_empty() { sender_staff_id } else { sender_id };
 
-    match msg.conversation_type {
+    let mut base = match msg.conversation_type {
         ConversationType::Private => {
             format!(
                 "{} (来自{}私聊<{}>，用户：[{}])",
@@ -61,13 +66,23 @@ pub fn format_im_message(msg: &IncomingMessage) -> String {
                 )
             }
         }
+    };
+
+    // 追加用户身份 ID（结构化字段，LLM 直接复制到 im_push 的 at_user_ids 参数）
+    base.push_str(&format!("\nsender_chat_user_id: {}", uid));
+    if !sender_staff_id.is_empty() {
+        base.push_str(&format!("\nat_user_ids: [\"{}\"]", sender_staff_id));
     }
+
+    base
 }
 
 /// 构建 IM 回复上下文（注入 system prompt，告知 LLM 如何通过 im_push 回复）
 ///
-/// 字段名与 im_push 工具的参数名保持一致，方便 LLM 直接复制使用
-/// 见 im_push 的 parameters 定义：platform, robot, target_type, target_id
+/// 字段名与 im_push 工具的参数名保持一致，方便 LLM 直接复制使用。
+/// 注意：只包含会话级别不变的字段（platform, robot, target_type, target_id），
+/// 不包含 sender_chat_user_id / sender_staff_id 等每次消息可能不同的用户信息。
+/// 用户身份信息已放到 format_im_message() 的消息文本中，避免破坏前缀缓存。
 pub fn build_im_reply_context(msg: &IncomingMessage) -> String {
     let platform_str = msg.platform.as_str();
     let conv_type = match msg.conversation_type {
@@ -75,18 +90,14 @@ pub fn build_im_reply_context(msg: &IncomingMessage) -> String {
         ConversationType::Group => "群聊",
     };
     let platform_name = platform_chinese_name(&msg.platform);
-    let sender_id = msg.sender_id.as_deref().unwrap_or("");
-    let sender_staff_id = msg.sender_staff_id.as_deref().unwrap_or("");
-    let uid = if !sender_staff_id.is_empty() { sender_staff_id } else { sender_id };
     let target_id = match msg.conversation_type {
-        ConversationType::Private => uid,
+        ConversationType::Private => &msg.conversation_id,
         ConversationType::Group => &msg.conversation_id,
     };
     let target_type_str = match msg.conversation_type {
         ConversationType::Private => "private",
         ConversationType::Group => "group",
     };
-
     let robot_name = msg.account_name.as_deref().unwrap_or(&msg.account_id);
 
     format!(

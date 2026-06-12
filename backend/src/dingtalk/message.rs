@@ -8,7 +8,24 @@ use crate::dingtalk::frames::{
     MSG_KEY_AUDIO, MSG_KEY_FILE, MSG_KEY_IMAGE, MSG_KEY_MARKDOWN, MSG_KEY_TEXT, MSG_KEY_VIDEO,
 };
 use crate::error::AppError;
+use crate::im::adapter::MessageOptions;
 use base64::Engine;
+
+/// 参考 DingTalk OpenClaw SDK buildMsgPayload → appendAtMentions:
+/// 将 @userId 以纯文本形式追加到消息内容末尾，而非使用独立的 at 字段。
+fn append_at_to_content(content: &str, options: &MessageOptions) -> String {
+    let mut out = content.to_string();
+    for uid in &options.at_user_ids {
+        let tag = format!("@{}", uid);
+        if !out.contains(&tag) {
+            out.push_str(&format!(" {}", tag));
+        }
+    }
+    if options.at_all && !out.contains("@all") {
+        out.push_str(" @all");
+    }
+    out
+}
 
 /// 消息发送器
 pub struct MessageSender {
@@ -73,19 +90,24 @@ impl MessageSender {
         Ok(())
     }
 
-    /// 发送群聊消息
+    /// 发送群聊消息（支持 @ 提及）
+    /// 参考 DingTalk OpenClaw SDK:
+    /// 参考 DingTalk OpenClaw SDK: @ 通过文本追加实现，请求体无独立 at 字段
     pub async fn send_group_message(
         &self,
         open_conversation_id: &str,
         content: &str,
+        options: &MessageOptions,
     ) -> Result<(), AppError> {
         let token = self.token_manager.get_token().await?;
         let url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send";
 
+        let final_content = append_at_to_content(content, options);
+
         let request = GroupMessageRequest {
             robot_code: self.robot_code.clone(),
             open_conversation_id: open_conversation_id.to_string(),
-            msg_param: serde_json::json!({"content": content}).to_string(),
+            msg_param: serde_json::json!({"content": final_content}).to_string(),
             msg_key: MSG_KEY_TEXT.to_string(),
         };
 
@@ -150,20 +172,25 @@ impl MessageSender {
         Ok(())
     }
 
-    /// 发送 Markdown 群聊消息
+    /// 发送 Markdown 群聊消息（支持 @ 提及）
+    /// 参考 DingTalk OpenClaw SDK:
+    /// 参考 DingTalk OpenClaw SDK: @ 通过文本追加实现
     pub async fn send_group_markdown(
         &self,
         open_conversation_id: &str,
         title: &str,
         text: &str,
+        options: &MessageOptions,
     ) -> Result<(), AppError> {
         let token = self.token_manager.get_token().await?;
         let url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send";
 
+        let final_text = append_at_to_content(text, options);
+
         let request = GroupMessageRequest {
             robot_code: self.robot_code.clone(),
             open_conversation_id: open_conversation_id.to_string(),
-            msg_param: serde_json::json!({"title": title, "text": text}).to_string(),
+            msg_param: serde_json::json!({"title": title, "text": final_text}).to_string(),
             msg_key: MSG_KEY_MARKDOWN.to_string(),
         };
 
@@ -450,10 +477,12 @@ impl MessageSender {
 
     /// 发送群聊图片消息
     /// 参考 DingTalk OpenClaw SDK: photoURL = 原始 mediaId（带 @）
+    /// 注意：sampleImageMsg 不支持 at 字段，图片消息不处理 @ 提及
     pub async fn send_group_image(
         &self,
         open_conversation_id: &str,
         photo_url: &str,
+        _options: &MessageOptions,
     ) -> Result<(), AppError> {
         let is_local = std::path::Path::new(photo_url).exists();
         let photo_param = if is_local {

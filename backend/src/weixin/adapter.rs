@@ -3,7 +3,7 @@
 //! 实现 IMAdapter trait，将微信 iLink 协议接入 Jeeves IM 系统。
 
 use crate::error::AppError;
-use crate::im::adapter::IMAdapter;
+use crate::im::adapter::{IMAdapter, MessageOptions};
 use crate::im::types::{
     Attachment, ConversationType, IncomingMessage, MessageTarget, PlatformCapabilities,
     PlatformType, SendResult,
@@ -567,7 +567,7 @@ async fn convert_incoming_async(
     tracing::info!(
         "[微信] 转换完成: message_id={:?}, text={:?}, media_urls数量={}, from={:?}",
         msg.message_id,
-        &final_text[..final_text.len().min(50)],
+        crate::utils::safe_truncate(&final_text, 50),
         media_urls.len(),
         from
     );
@@ -678,14 +678,14 @@ impl IMAdapter for WeixinAdapter {
         }
     }
 
-    async fn send_text(&self, target: &MessageTarget, text: &str) -> Result<SendResult, AppError> {
+    async fn send_text(&self, target: &MessageTarget, text: &str, _options: &MessageOptions) -> Result<SendResult, AppError> {
         self.client.send_text(&target.conversation_id, text, None).await?;
         Ok(SendResult::ok())
     }
 
-    async fn send_markdown(&self, _target: &MessageTarget, _title: &str, text: &str) -> Result<SendResult, AppError> {
+    async fn send_markdown(&self, _target: &MessageTarget, _title: &str, text: &str, _options: &MessageOptions) -> Result<SendResult, AppError> {
         let plain = strip_markdown(text);
-        self.send_text(_target, &plain).await
+        self.send_text(_target, &plain, _options).await
     }
 
     async fn reply(&self, original: &IncomingMessage, text: &str) -> Result<SendResult, AppError> {
@@ -700,6 +700,7 @@ impl IMAdapter for WeixinAdapter {
         target: &MessageTarget,
         url: &str,
         caption: Option<&str>,
+        _options: &MessageOptions,
     ) -> Result<SendResult, AppError> {
         tracing::info!("[微信] 发送图片: target={}, url存在={}, caption={:?}",
             target.conversation_id, !url.is_empty(), caption);

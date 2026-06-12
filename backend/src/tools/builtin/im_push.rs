@@ -1,3 +1,4 @@
+use crate::im::adapter::MessageOptions;
 use crate::im::types::*;
 use crate::IM_GATEWAY;
 use crate::tools::registry::{ToolDef, ToolRegistry};
@@ -127,8 +128,9 @@ Examples:
                             .ok_or_else(|| format!("机器人账号 '{}' 未注册或未连接 (key={})", robot, composite_key))?;
 
                         // 优先级: image_url > file_url > video_url > markdown > text
+                        let options = MessageOptions::default();
                         let result = if let Some(img_url) = image_url {
-                            adapter.send_image(&target, img_url, None).await
+                            adapter.send_image(&target, img_url, None, &options).await
                         } else if let Some(f_url) = file_url {
                             let fname = file_name.unwrap_or("file");
                             adapter.send_file(&target, f_url, fname).await
@@ -141,9 +143,9 @@ Examples:
                             // 微信不支持 markdown
                             let supports_md = target.platform.as_str() == "dingtalk";
                             if content_type == "markdown" && !title.is_empty() && supports_md {
-                                adapter.send_markdown(&target, title, content).await
+                                adapter.send_markdown(&target, title, content, &options).await
                             } else {
-                                adapter.send_text(&target, content).await
+                                adapter.send_text(&target, content, &options).await
                             }
                         };
 

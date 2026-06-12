@@ -6,7 +6,7 @@
 use crate::dingtalk::card::AICardInstance;
 use crate::dingtalk::DingTalkClient;
 use crate::error::AppError;
-use crate::im::adapter::IMAdapter;
+use crate::im::adapter::{IMAdapter, MessageOptions};
 use crate::im::types::{
     ConversationType, IncomingMessage, MessageTarget, PlatformCapabilities, PlatformType,
     SendResult,
@@ -52,7 +52,7 @@ impl IMAdapter for DingTalkAdapter {
         PlatformCapabilities::dingtalk()
     }
 
-    async fn send_text(&self, target: &MessageTarget, text: &str) -> Result<SendResult, AppError> {
+    async fn send_text(&self, target: &MessageTarget, text: &str, options: &MessageOptions) -> Result<SendResult, AppError> {
         match target.conversation_type {
             ConversationType::Private => {
                 self.client
@@ -61,7 +61,7 @@ impl IMAdapter for DingTalkAdapter {
             }
             ConversationType::Group => {
                 self.client
-                    .send_group_message(&target.conversation_id, text)
+                    .send_group_message(&target.conversation_id, text, options)
                     .await?;
             }
         }
@@ -73,6 +73,7 @@ impl IMAdapter for DingTalkAdapter {
         target: &MessageTarget,
         title: &str,
         text: &str,
+        options: &MessageOptions,
     ) -> Result<SendResult, AppError> {
         match target.conversation_type {
             ConversationType::Private => {
@@ -82,7 +83,7 @@ impl IMAdapter for DingTalkAdapter {
             }
             ConversationType::Group => {
                 self.client
-                    .send_group_markdown(&target.conversation_id, title, text)
+                    .send_group_markdown(&target.conversation_id, title, text, options)
                     .await?;
             }
         }
@@ -94,9 +95,18 @@ impl IMAdapter for DingTalkAdapter {
         original: &IncomingMessage,
         text: &str,
     ) -> Result<SendResult, AppError> {
-        // 优先使用 sessionWebhook 回复（钉钉独有优化，实时性最好）
+        // 优先使用 sessionWebhook 回复，自动 @ 原发送者（群聊时让发送者感知到被回复）
         if let Some(webhook) = &original.session_webhook {
-            self.client.reply_markdown_via_webhook(webhook, "🤖 Jeeves", text).await?;
+            let user_id = original.sender_staff_id.as_deref()
+                .or(original.sender_id.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let at_user_ids = if user_id.is_empty() {
+                vec![]
+            } else {
+                vec![user_id]
+            };
+            self.client.reply_markdown_with_at(webhook, "🤖 Jeeves", text, at_user_ids).await?;
         } else {
             // 兜底：通过 REST API 回复，按会话类型选择正确目标
             match original.conversation_type {
@@ -111,7 +121,8 @@ impl IMAdapter for DingTalkAdapter {
                     self.client.send_private_markdown(vec![user_id.to_string()], "🤖 Jeeves", text).await?;
                 }
                 ConversationType::Group => {
-                    self.client.send_group_markdown(&original.conversation_id, "🤖 Jeeves", text).await?;
+                    let default_options = crate::im::adapter::MessageOptions::default();
+                    self.client.send_group_markdown(&original.conversation_id, "🤖 Jeeves", text, &default_options).await?;
                 }
             }
         }
@@ -208,6 +219,7 @@ impl IMAdapter for DingTalkAdapter {
         target: &MessageTarget,
         url: &str,
         _caption: Option<&str>,
+        options: &MessageOptions,
     ) -> Result<SendResult, AppError> {
         match target.conversation_type {
             ConversationType::Private => {
@@ -217,7 +229,7 @@ impl IMAdapter for DingTalkAdapter {
             }
             ConversationType::Group => {
                 self.client
-                    .send_group_image(&target.conversation_id, url)
+                    .send_group_image(&target.conversation_id, url, options)
                     .await?;
             }
         }

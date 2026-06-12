@@ -59,6 +59,8 @@ async fn get_session_messages(Query(params): Query<HashMap<String, String>>) -> 
     let limit: usize = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
     tracing::info!("get_session_messages: session_id={}, limit={}", session_id, limit);
     let state = APP_STATE.read().await;
+    // 返回全部消息（含 compaction 之前的旧内容，前端需要完整历史渲染）
+    // 性能由内存缓存保障：同一会话内首次加载后，后续直接从缓存返回
     match state.session_store.get_messages(session_id) {
         Ok(mut messages) => {
             tracing::info!("get_session_messages: {} 条消息，limit={}", messages.len(), limit);

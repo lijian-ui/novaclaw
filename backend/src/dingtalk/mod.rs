@@ -36,6 +36,7 @@ use crate::dingtalk::frames::MediaUploadResponse;
 use crate::dingtalk::handler::{CallbackHandler, HandlerRegistry};
 use crate::dingtalk::message::MessageSender;
 use crate::error::AppError;
+use crate::im::adapter::MessageOptions;
 use std::sync::Arc;
 
 /// 钉钉客户端（统一外观）
@@ -183,9 +184,10 @@ impl DingTalkClient {
         &self,
         open_conversation_id: &str,
         content: &str,
+        options: &MessageOptions,
     ) -> Result<(), AppError> {
         self.message_sender
-            .send_group_message(open_conversation_id, content)
+            .send_group_message(open_conversation_id, content, options)
             .await
     }
 
@@ -207,9 +209,10 @@ impl DingTalkClient {
         open_conversation_id: &str,
         title: &str,
         text: &str,
+        options: &MessageOptions,
     ) -> Result<(), AppError> {
         self.message_sender
-            .send_group_markdown(open_conversation_id, title, text)
+            .send_group_markdown(open_conversation_id, title, text, options)
             .await
     }
 
@@ -263,14 +266,15 @@ impl DingTalkClient {
             .await
     }
 
-    /// 发送群聊图片消息
+    /// 发送群聊图片消息（支持 @ 提及）
     pub async fn send_group_image(
         &self,
         open_conversation_id: &str,
         photo_url: &str,
+        options: &MessageOptions,
     ) -> Result<(), AppError> {
         self.message_sender
-            .send_group_image(open_conversation_id, photo_url)
+            .send_group_image(open_conversation_id, photo_url, options)
             .await
     }
 

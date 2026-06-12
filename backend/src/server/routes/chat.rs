@@ -185,7 +185,8 @@ async fn chat(Json(req): Json<ChatRequestHttp>) -> Json<serde_json::Value> {
         Ok(c) => c,
         Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
     };
-    let history = state.session_store.get_messages(&session_id).unwrap_or_default();
+    // 使用 compaction 感知加载（参考 Codex: 跳过 compaction 标记之前的旧内容）
+    let history = state.session_store.get_messages_since_last_compaction(&session_id).unwrap_or_default();
     let mut agent_session = AgentSession::new(&make_session_title(&req.message), &model, None);
     agent_session.id = session_id.clone();
     agent_session.session_store = Some(state.session_store.clone());
@@ -200,7 +201,12 @@ async fn chat(Json(req): Json<ChatRequestHttp>) -> Json<serde_json::Value> {
         Ok(r) => r, Err(e) => return Json(serde_json::json!({"success": false, "message": e.to_string()})),
     };
 
-    let history_len = state.session_store.get_messages(&session_id).unwrap_or_default().len();
+    // 使用 compaction 感知计数（确保增量计算正确）
+    let history_len = state.session_store.get_messages_since_last_compaction(&session_id).unwrap_or_default().len();
+    // 先写 compaction 标记（参考 Codex: Compacted 标记放在新消息之前，标记旧内容已被压缩）
+    if result.compaction_occurred {
+        let _ = state.session_store.write_compaction_marker(&session_id, result.compaction_summary.as_deref().unwrap_or(""));
+    }
     let _ = state.session_store.append_message(&session_id, &make_storage_msg(&session_id, "user", &req.message, None, None, None));
     let new_msgs = if history_len <= result.messages.len() { &result.messages[history_len..] } else { &result.messages[..] };
     for m in new_msgs {
@@ -234,7 +240,7 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
             Some(p) => p.clone(),
             None => { let _ = sse_tx.send(serde_json::json!({"type": "error", "data": {"message": format!("未找到模型 '{}' 的提供商配置", model)}}).to_string()).await; return; }
         };
-        let history = state.session_store.get_messages(&session_id).unwrap_or_default();
+        let history = state.session_store.get_messages_since_last_compaction(&session_id).unwrap_or_default();
         let mut agent_session = AgentSession::new(&make_session_title(&req.message), &model, req.workspace.as_deref());
         agent_session.id = session_id.clone();
         agent_session.session_store = Some(state.session_store.clone());
@@ -347,6 +353,10 @@ async fn chat_stream(Json(req): Json<ChatStreamRequest>) -> Sse<SseEventStream> 
                     let mut user_msg = make_storage_msg(&session_id, "user", &req.message, None, None, None);
                     if !saved_image_paths.is_empty() {
                         user_msg.image_paths = Some(saved_image_paths.clone());
+                    }
+                    // 先写 compaction 标记（参考 Codex: 标记放在新消息之前）
+                    if agent_result.compaction_occurred {
+                        let _ = state.session_store.write_compaction_marker(&session_id, agent_result.compaction_summary.as_deref().unwrap_or(""));
                     }
                     let _ = state.session_store.append_message(&session_id, &user_msg);
                     let new_msgs = if history_msg_count <= agent_result.messages.len() { &agent_result.messages[history_msg_count..] }

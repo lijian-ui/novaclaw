@@ -7,6 +7,18 @@ use crate::error::AppError;
 use crate::im::types::{IncomingMessage, MessageTarget, PlatformCapabilities, PlatformType, SendResult};
 use async_trait::async_trait;
 use tokio::sync::mpsc;
+use serde::Serialize;
+
+/// 消息发送选项（@提及等）
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MessageOptions {
+    /// @普通用户 ID 列表（staffId）
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub at_user_ids: Vec<String>,
+    /// @全体成员
+    #[serde(skip_serializing_if = "crate::utils::is_false")]
+    pub at_all: bool,
+}
 
 /// 流式回复回调
 pub struct StreamCallbacks {
@@ -32,7 +44,7 @@ pub trait IMAdapter: Send + Sync {
     fn capabilities(&self) -> PlatformCapabilities;
 
     /// 发送文本消息到指定目标
-    async fn send_text(&self, target: &MessageTarget, text: &str) -> Result<SendResult, AppError>;
+    async fn send_text(&self, target: &MessageTarget, text: &str, options: &MessageOptions) -> Result<SendResult, AppError>;
 
     /// 发送 Markdown 消息
     async fn send_markdown(
@@ -40,6 +52,7 @@ pub trait IMAdapter: Send + Sync {
         target: &MessageTarget,
         title: &str,
         text: &str,
+        options: &MessageOptions,
     ) -> Result<SendResult, AppError>;
 
     /// 回复原始消息（利用平台的回复/Webhook 机制）
@@ -50,11 +63,13 @@ pub trait IMAdapter: Send + Sync {
     ) -> Result<SendResult, AppError>;
 
     /// 发送图片消息（可选）。url 为图片在线地址。
+    /// @ 提及通过 options.at_user_ids / options.at_all 传递。
     async fn send_image(
         &self,
         _target: &MessageTarget,
         _url: &str,
         _caption: Option<&str>,
+        _options: &MessageOptions,
     ) -> Result<SendResult, AppError> {
         Err(AppError::External("该平台不支持发送图片".to_string()))
     }
