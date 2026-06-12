@@ -615,8 +615,15 @@ fn strip_markdown(md: &str) -> String {
     result
 }
 
-/// 下载远程图片到本地临时文件，返回临时文件路径
+/// 下载图片到本地临时文件，返回临时文件路径
+/// 支持远程 URL 和本地文件路径
 async fn download_remote_image(url: &str) -> Result<String, AppError> {
+    // 支持本地文件路径
+    let local_path = std::path::Path::new(url);
+    if local_path.exists() && local_path.is_file() {
+        return Ok(url.to_string());
+    }
+
     let resp = reqwest::get(url)
         .await
         .map_err(|e| AppError::External(format!("下载远程图片失败: {}", e)))?;

@@ -349,8 +349,9 @@ impl MessageSender {
             _ => "application/octet-stream",
         };
 
+        // 参考 DingTalk OpenClaw SDK: type 是 query 参数，不是 form 字段
+        // POST /media/upload?access_token=TOKEN&type=image
         let form = reqwest::multipart::Form::new()
-            .text("type", media_type.to_string())
             .part(
                 "media",
                 reqwest::multipart::Part::bytes(file_data)
@@ -362,7 +363,7 @@ impl MessageSender {
         let resp = self
             .http_client
             .post(url)
-            .query(&[("access_token", &token)])
+            .query(&[("access_token", &token), ("type", &media_type.to_string())])
             .multipart(form)
             .send()
             .await
@@ -393,18 +394,36 @@ impl MessageSender {
     }
 
     /// 发送私聊图片消息
+    /// 钉钉机器人 API 的 sampleImageMsg：photoURL 传原始 mediaId（带 @ 前缀）。
+    /// 参考 DingTalk OpenClaw SDK: sendMediaToDingTalk → sendProactive → buildMsgPayload
+    ///   => msgParam = { photoURL: "@{mediaId}" }
+    /// 对于本地路径：上传到 OAPI media 服务器 → 原始 mediaId（带 @）作为 photoURL。
+    /// 对于远程 URL：直接传给钉钉（钉钉服务端自行下载）。
     pub async fn send_private_image(
         &self,
         user_ids: Vec<String>,
         photo_url: &str,
     ) -> Result<(), AppError> {
+        let is_local = std::path::Path::new(photo_url).exists();
+        let photo_param = if is_local {
+            // 本地文件：上传到钉钉媒体服务器 → 取原始 mediaId（带 @ 前缀）
+            let (temp_path, file_data) = self.download_remote_file(photo_url).await?;
+            let upload_resp = self.upload_media("image", file_data, "image.jpg").await?;
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            // 参考 SDK: photoURL = 原始 mediaId（带 @）
+            upload_resp.media_id.unwrap_or_default()
+        } else {
+            // 远程 URL：直接传给钉钉
+            photo_url.to_string()
+        };
+
         let token = self.token_manager.get_token().await?;
         let url = "https://api.dingtalk.com/v1.0/robot/oToMessages/batchSend";
 
         let request = PrivateMessageRequest {
             robot_code: self.robot_code.clone(),
             user_ids,
-            msg_param: serde_json::json!({"photoURL": photo_url}).to_string(),
+            msg_param: serde_json::json!({"photoURL": photo_param}).to_string(),
             msg_key: MSG_KEY_IMAGE.to_string(),
         };
 
@@ -430,18 +449,30 @@ impl MessageSender {
     }
 
     /// 发送群聊图片消息
+    /// 参考 DingTalk OpenClaw SDK: photoURL = 原始 mediaId（带 @）
     pub async fn send_group_image(
         &self,
         open_conversation_id: &str,
         photo_url: &str,
     ) -> Result<(), AppError> {
+        let is_local = std::path::Path::new(photo_url).exists();
+        let photo_param = if is_local {
+            let (temp_path, file_data) = self.download_remote_file(photo_url).await?;
+            let upload_resp = self.upload_media("image", file_data, "image.jpg").await?;
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            // 参考 SDK: photoURL = 原始 mediaId（带 @）
+            upload_resp.media_id.unwrap_or_default()
+        } else {
+            photo_url.to_string()
+        };
+
         let token = self.token_manager.get_token().await?;
         let url = "https://api.dingtalk.com/v1.0/robot/groupMessages/send";
 
         let request = GroupMessageRequest {
             robot_code: self.robot_code.clone(),
             open_conversation_id: open_conversation_id.to_string(),
-            msg_param: serde_json::json!({"photoURL": photo_url}).to_string(),
+            msg_param: serde_json::json!({"photoURL": photo_param}).to_string(),
             msg_key: MSG_KEY_IMAGE.to_string(),
         };
 
@@ -466,8 +497,26 @@ impl MessageSender {
         Ok(())
     }
 
-    /// 下载远程文件到临时文件，返回(临时文件路径, 文件字节)
+    /// 下载文件到临时文件，返回(临时文件路径, 文件字节)
+    /// 支持远程 URL 和本地文件路径
     async fn download_remote_file(&self, url: &str) -> Result<(String, Vec<u8>), AppError> {
+        // 检查是否为本地文件路径
+        let local_path = std::path::Path::new(url);
+        if local_path.exists() && local_path.is_file() {
+            let bytes = tokio::fs::read(local_path).await
+                .map_err(|e| AppError::External(format!("读取本地文件失败: {}", e)))?;
+            let file_name = local_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file");
+            let temp_dir = std::env::temp_dir();
+            let temp_path = temp_dir.join(file_name);
+            // 复制到临时文件，保持与远程流程一致的返回格式
+            tokio::fs::write(&temp_path, &bytes).await
+                .map_err(|e| AppError::External(format!("写入临时文件失败: {}", e)))?;
+            return Ok((temp_path.to_string_lossy().to_string(), bytes));
+        }
+
+        // 远程 URL：HTTP 下载
         let resp = self
             .http_client
             .get(url)

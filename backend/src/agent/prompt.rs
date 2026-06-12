@@ -8,19 +8,22 @@ use crate::soul::SoulManager;
 ///
 /// 此构建器将 system prompt 分为两个部分：
 ///
-/// - **build_frozen()** — 会话生命周期内完全不变的层：
+/// - **build_frozen()** — 会话生命周期内基本不变的层：
 ///   1. Identity (SOUL.md)
-///   3. System rules
-///   4. Output format
-///   5. --- boundary
+///   2. System rules
+///   3. Output format
+///   4. Environment
+///   5. Skills (技能索引 — 几乎不变，安装新 skill 才变)
+///   6. IM Reply Context (平台/机器人/目标 — 会话内完全不变)
+///   7. --- boundary
 ///
 /// - **build_volatile()** — 每次请求可能变化的层：
+///   1. Current Time (每天变化)
 ///   2. Memory (跨会话记忆，随用户操作变化)
-///   6. Environment (含日期，每天变化)
-///   7. Skills (技能索引)
+///   3. Pinned Files (用户 pin/unpin 时变化)
 ///
 /// 使用方式: frozen 一次构建后存入 AgentSession.frozen_system_prompt，
-/// volatile 每次请求时构建，追加到最后一个 user 消息中。
+/// volatile 每次请求时构建，追加到第一个 user 消息中。
 pub struct SystemPromptBuilder<'a> {
     #[allow(dead_code)]
     config: &'a AppConfig,
@@ -122,19 +125,33 @@ impl<'a> SystemPromptBuilder<'a> {
         format!("{}\n\n{}", frozen, volatile)
     }
 
-    /// 构建冻结前缀（不含 memory、技能等易变内容）
-    /// 此部分在会话期内固定不变，用于 DeepSeek 精确前缀缓存
+    /// 构建冻结前缀（会话期内基本不变，用于 DeepSeek 精确前缀缓存）
+    ///
+    /// 包含：Identity → Rules → Output → Environment → Skills → IM Context
+    /// Skills 和 IM 上下文几乎不变，放这里缓存命中率高
     pub async fn build_frozen(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
         sections.push(self.build_identity().await);
         sections.push(self.build_system_rules());
         sections.push(self.build_output_format());
         sections.push(self.build_static_environment());
+        // Skills 放冻结部分（几乎不变，安装新 skill 时失效一次缓存）
+        if !self.skill_list.is_empty() {
+            sections.push(self.build_skill_index());
+        }
+        // IM 上下文放冻结部分（会话内完全不变）
+        if let Some(ref im_ctx) = self.im_reply_context {
+            if !im_ctx.is_empty() {
+                sections.push(im_ctx.clone());
+            }
+        }
         sections.push("---".to_string());
         sections.join("\n\n")
     }
 
-    /// 构建易变后缀（memory、技能、日期、Pinned Files、IM 上下文）
+    /// 构建易变后缀（每天/每次请求可能变化的内容）
+    ///
+    /// 包含：Current Time → Memory → Pinned Files
     pub fn build_volatile(&self) -> String {
         let mut sections: Vec<String> = Vec::new();
         sections.push(format!("## Current Time\n- Today: {}", chrono::Local::now().format("%Y-%m-%d %A")));
@@ -143,14 +160,6 @@ impl<'a> SystemPromptBuilder<'a> {
             if !pinned.is_empty() {
                 sections.push(pinned.clone());
             }
-        }
-        if let Some(ref im_ctx) = self.im_reply_context {
-            if !im_ctx.is_empty() {
-                sections.push(im_ctx.clone());
-            }
-        }
-        if !self.skill_list.is_empty() {
-            sections.push(self.build_skill_index());
         }
         sections.join("\n\n")
     }

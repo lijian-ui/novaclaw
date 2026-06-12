@@ -68,9 +68,25 @@ Examples:
                     "title": {
                         "type": "string",
                         "description": "Title for markdown messages (required when content_type=markdown)"
+                    },
+                    "image_url": {
+                        "type": "string",
+                        "description": "Image URL (remote http/https or local file path) to send as image message. When set, content/content_type/title are ignored."
+                    },
+                    "file_url": {
+                        "type": "string",
+                        "description": "File URL (remote http/https or local file path) to send as file attachment. Requires 'file_name'."
+                    },
+                    "file_name": {
+                        "type": "string",
+                        "description": "File name for file_url (e.g. 'report.pdf')"
+                    },
+                    "video_url": {
+                        "type": "string",
+                        "description": "Video URL (remote http/https or local file path) to send as video message."
                     }
                 },
-                "required": ["robot", "target_type", "target_id", "content"]
+                "required": ["robot", "target_type", "target_id"]
             }),
             skip_truncation_save: false,
             handler: std::sync::Arc::new(
@@ -81,9 +97,10 @@ Examples:
                     let robot = args["robot"].as_str().ok_or("Missing 'robot' — specify which bot account to send from")?.to_string();
                     let target_type = args["target_type"].as_str().ok_or("Missing 'target_type'")?;
                     let target_id = args["target_id"].as_str().ok_or("Missing 'target_id'")?;
-                    let content = args["content"].as_str().ok_or("Missing 'content'")?;
-                    let content_type = args["content_type"].as_str().unwrap_or("text");
-                    let title = args["title"].as_str().unwrap_or("");
+                    let image_url = args.get("image_url").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+                    let file_url = args.get("file_url").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+                    let file_name = args.get("file_name").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+                    let video_url = args.get("video_url").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
 
                     let platform = parse_platform(platform_str);
                     let conversation_type = match target_type {
@@ -109,12 +126,25 @@ Examples:
                         let adapter = gw.registry.get(&composite_key).await
                             .ok_or_else(|| format!("机器人账号 '{}' 未注册或未连接 (key={})", robot, composite_key))?;
 
-                        // 微信不支持 markdown
-                        let supports_md = target.platform.as_str() == "dingtalk";
-                        let result = if content_type == "markdown" && !title.is_empty() && supports_md {
-                            adapter.send_markdown(&target, title, content).await
+                        // 优先级: image_url > file_url > video_url > markdown > text
+                        let result = if let Some(img_url) = image_url {
+                            adapter.send_image(&target, img_url, None).await
+                        } else if let Some(f_url) = file_url {
+                            let fname = file_name.unwrap_or("file");
+                            adapter.send_file(&target, f_url, fname).await
+                        } else if let Some(v_url) = video_url {
+                            adapter.send_video(&target, v_url, None).await
                         } else {
-                            adapter.send_text(&target, content).await
+                            let content = args["content"].as_str().ok_or("Missing 'content'")?;
+                            let content_type = args["content_type"].as_str().unwrap_or("text");
+                            let title = args["title"].as_str().unwrap_or("");
+                            // 微信不支持 markdown
+                            let supports_md = target.platform.as_str() == "dingtalk";
+                            if content_type == "markdown" && !title.is_empty() && supports_md {
+                                adapter.send_markdown(&target, title, content).await
+                            } else {
+                                adapter.send_text(&target, content).await
+                            }
                         };
 
                         match result {

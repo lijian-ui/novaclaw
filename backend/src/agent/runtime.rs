@@ -1533,21 +1533,13 @@ impl AgentRuntime {
         }
         // 3. strip: 剥离旧 reasoning（已在上面消息循环中完成）
 
-        // ── P0: 将 volatile 后缀追加到第一个 user 消息末尾 ──
-        //
-        // 设计原则（参考 Reasonix）：
-        // - volatile 内容（memory、skills）只追加到第一条 user 消息
-        // - 后续轮次的 user 消息保持原始内容，字节稳定
-        // - 这样 system + 第一条user + 历史 的前缀在同一会话内保持稳定
-        // - memory 变化时接受一次 cache miss（下次 run_turn 重建 volatile_suffix）
-        //
-        // 注意：日期和环境信息已移入 frozen system prompt，不在此处处理
+        // ── P0: 将 volatile 后缀（memory + 时间 + pinned）注入到首条 user 消息 ──
+        // IM 上下文和 Skills 已移入 frozen system prompt，不再需要额外注入
+        // volatile 只包含可变内容，每条 User 消息都带相同的 volatile 也无意义
         if let Some(ref volatile) = self.volatile_suffix {
             if !volatile.trim().is_empty() {
-                // 找第一条 user 消息（索引1，system 是索引0）
                 if let Some(first_user) = messages.iter_mut().find(|m| m.role == "user") {
                     if let serde_json::Value::String(ref content) = first_user.content {
-                        // 将易变后缀注入到第一个 user 消息中，利用 DeepSeek 前缀缓存
                         let augmented = format!("{}\n\n---\n## Session Context\n\n{}", content, volatile);
                         first_user.content = serde_json::Value::String(augmented);
                         tracing::debug!("[Cache] 易变后缀已注入到首条 User 消息");
@@ -1877,19 +1869,15 @@ impl AgentRuntime {
         Ok((agent_msg, reasoning_blocks, was_cancelled, input_tokens, output_tokens, cached_tokens))
     }
 
-    /// 构建冻结的 system prompt（仅首次运行）
+    /// 构建冻结的 system prompt（会话内稳定不变）
+    ///
+    /// 注意：不再直接返回 SOUL.md 内容（之前 agent_id 路径会绕过整个 builder）
+    /// SystemPromptBuilder.build_frozen() 中的 build_identity() 已经会加载 SOUL 身份，
+    /// 此外还会注入 Rules、Output Format、Environment 等必要部分。
+    /// 直接返回 SOUL.md 会导致这些部分丢失。
     async fn build_frozen_system_prompt(&self) -> String {
-        // 如果有 agent_id，每次重新加载 SOUL.md（支持用户编辑后即时生效）
-        if let Some(ref agent_id) = self.session.agent_id {
-            let paths = crate::soul::SoulPaths::default();
-            if let Ok(soul_content) = crate::soul::AgentConfig::get_soul_content(&paths, agent_id) {
-                return soul_content;
-            }
-            // 加载失败则 fallthrough 到 system_prompt_override
-        }
-        if let Some(ref override_prompt) = self.session.system_prompt_override {
-            return override_prompt.clone();
-        }
+        // system_prompt_override 也交由 builder 统一处理（追加到末尾而非替换）
+        // 让 build_identity() 负责加载 SOUL 身份
 
         let os_name = if cfg!(target_os = "windows") {
             "Windows"
@@ -1899,14 +1887,14 @@ impl AgentRuntime {
             "Linux"
         };
 
-        // 从全局状态获取 SoulManager（冻结部分需要 soul 身份）
-        // 不再调用 clear_cache() — 该操作每轮都强制重建缓存，导致
-        // frozen_system_prompt 的字节序列变化，破坏 DeepSeek 前缀缓存。
-        // SOUL.md 的外部修改通过 agent_id 的 get_soul_content() 路径即时生效，
-        // 或通过重启 Agent 生效。
-        let soul_manager = {
+        // 从全局状态获取 SoulManager + Skills
+        let (soul_manager, skills) = {
             let state = crate::APP_STATE.read().await;
-            state.soul_manager.clone()
+            let soul = state.soul_manager.clone();
+            let skill_list: Vec<String> = self.skills.iter().map(|s| {
+                format!("{}: {}", s.name, s.description)
+            }).collect();
+            (soul, skill_list)
         };
 
         crate::agent::prompt::SystemPromptBuilder::new(
@@ -1915,8 +1903,9 @@ impl AgentRuntime {
             self.session.workspace.as_deref(),
         )
         .with_soul_manager(soul_manager)
-        .with_skills(Vec::new()) // skills 放入 volatile 部分
-        .build_frozen()          // ⚠️ 只构建冻结部分
+        .with_skills(skills)
+        .with_im_reply_context(self.im_reply_context.clone())
+        .build_frozen()
         .await
     }
 
@@ -2106,25 +2095,16 @@ impl AgentRuntime {
         }
     }
 
-    /// 构建易变后缀（含 memory、日期、环境、技能）
+    /// 构建易变后缀（含 memory、日期、Pinned 文件）
+    ///
+    /// Skills 和 IM 上下文已移入 frozen system prompt（build_frozen_system_prompt 中处理）
     async fn build_volatile_suffix(&self) -> String {
-        // 如果使用了 system_prompt_override，冻结部分已含所有内容
-        if self.session.system_prompt_override.is_some() {
-            return String::new();
-        }
-
-        let (memory_content, skills) = {
+        let memory_content = {
             let state = crate::APP_STATE.read().await;
             let memory = state.memory_store.list_memories();
-            let mem = if memory.is_empty() { None } else { Some(memory) };
-            let skills: Vec<String> = self.skills.iter().map(|s| {
-                format!("{}: {}", s.name, s.description)
-            }).collect();
-            (mem, skills)
+            if memory.is_empty() { None } else { Some(memory) }
         };
 
-        // 注意：OS、日期、工作目录已移入 frozen system prompt（build_frozen 中的 build_environment）
-        // volatile 只保留真正可能在会话中变化的内容：memory 和 skills
         let os_name = if cfg!(target_os = "windows") {
             "Windows"
         } else if cfg!(target_os = "macos") {
@@ -2133,20 +2113,14 @@ impl AgentRuntime {
             "Linux"
         };
 
-        let mut builder = crate::agent::prompt::SystemPromptBuilder::new(
+        crate::agent::prompt::SystemPromptBuilder::new(
             &self.config,
             os_name,
             self.session.workspace.as_deref(),
         )
-        .with_skills(skills)
         .with_memory(memory_content)
-        .with_pinned_files(Some(self.session.get_pinned_files_context()));
-
-        if let Some(ref im_ctx) = self.im_reply_context {
-            builder = builder.with_im_reply_context(Some(im_ctx.clone()));
-        }
-
-        builder.build_volatile()
+        .with_pinned_files(Some(self.session.get_pinned_files_context()))
+        .build_volatile()
     }
 
     /// 机械截断：丢弃最早的一对 user+assistant 消息

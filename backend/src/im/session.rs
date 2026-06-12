@@ -37,29 +37,44 @@ pub fn platform_chinese_name(platform: &PlatformType) -> String {
 /// 格式化 IM 消息为 Agent 可读文本（注入平台上下文）
 pub fn format_im_message(msg: &IncomingMessage) -> String {
     let sender = msg.sender_name.as_deref().unwrap_or("未知用户");
-    let group_name = msg.conversation_title.as_deref().unwrap_or("");
+    let platform_name = platform_chinese_name(&msg.platform);
+    let channel_name = msg.account_name.as_deref().unwrap_or(&msg.account_id);
 
     match msg.conversation_type {
         ConversationType::Private => {
-            msg.text.clone()
+            format!(
+                "{} (来自{}私聊<{}>，用户：[{}])",
+                msg.text, platform_name, channel_name, sender
+            )
         }
         ConversationType::Group => {
+            let group_name = msg.conversation_title.as_deref().unwrap_or("");
             if group_name.is_empty() {
-                format!("[来自 {}] {}", sender, msg.text)
+                format!(
+                    "{} (来自{}群聊<{}>，用户：[{}])",
+                    msg.text, platform_name, channel_name, sender
+                )
             } else {
-                format!("[{}] {} (来自群聊「{}」)", sender, msg.text, group_name)
+                format!(
+                    "{} (来自{}群聊<{}>「{}」，用户：[{}])",
+                    msg.text, platform_name, channel_name, group_name, sender
+                )
             }
         }
     }
 }
 
-/// 构建 IM 回复上下文（注入 volatile suffix，告知 LLM 如何通过 im_push 回复）
+/// 构建 IM 回复上下文（注入 system prompt，告知 LLM 如何通过 im_push 回复）
+///
+/// 字段名与 im_push 工具的参数名保持一致，方便 LLM 直接复制使用
+/// 见 im_push 的 parameters 定义：platform, robot, target_type, target_id
 pub fn build_im_reply_context(msg: &IncomingMessage) -> String {
-    let platform_name = platform_chinese_name(&msg.platform);
+    let platform_str = msg.platform.as_str();
     let conv_type = match msg.conversation_type {
         ConversationType::Private => "私聊",
         ConversationType::Group => "群聊",
     };
+    let platform_name = platform_chinese_name(&msg.platform);
     let sender_id = msg.sender_id.as_deref().unwrap_or("");
     let sender_staff_id = msg.sender_staff_id.as_deref().unwrap_or("");
     let uid = if !sender_staff_id.is_empty() { sender_staff_id } else { sender_id };
@@ -72,9 +87,16 @@ pub fn build_im_reply_context(msg: &IncomingMessage) -> String {
         ConversationType::Group => "group",
     };
 
+    let robot_name = msg.account_name.as_deref().unwrap_or(&msg.account_id);
+
     format!(
-        "## IM Reply Context\n- Platform: {} ({})\n- Robot: {}\n- Reply target: type={}, id={}",
-        platform_name, conv_type, msg.account_id, target_type_str, target_id
+        "## IM Reply Context\n\
+         - platform: {} ({} {})\n\
+         - target_type: {}\n\
+         - robot: {} (名称: {})\n\
+         - target_id: {}",
+        platform_str, platform_name, conv_type,
+        target_type_str, msg.account_id, robot_name, target_id
     )
 }
 
